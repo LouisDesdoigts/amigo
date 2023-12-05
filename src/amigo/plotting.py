@@ -5,7 +5,9 @@ import matplotlib.pyplot as plt
 from matplotlib import colormaps
 import matplotlib.pyplot as plt
 
-from .lib import get_likelihoods, pairwise_vectors, osamp_freqs
+# from .lib import get_likelihoods, pairwise_vectors, osamp_freqs
+from misc import get_likelihoods
+from interferometry import pairwise_vectors, osamp_freqs
 
 inferno = colormaps["inferno"]
 seismic = colormaps["seismic"]

@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as np
 import dLux as dl
-import dlux.utils as dlu
+import dLux.utils as dlu
 
 
 ### Sub-propagations ###
@@ -76,7 +76,7 @@ class DynamicAMI(dl.layers.optical_layers.OpticalLayer):
         return jax.vmap(hole_fn)(self.holes).sum(0)
 
     def apply(self, wavefront):
-        return wavefront * self.gen_AMI(wavefront.npixels, 6.65)
+        return wavefront * self.gen_AMI(wavefront.npixels, wavefront.diameter)
 
     def __getattr__(self, key):
         if hasattr(self.transformation, key):

@@ -2,6 +2,7 @@ import dLux as dl
 import jax
 import itertools
 import jax.numpy as np
+from jax import vmap
 
 
 def triu_indices(N, order=2):
@@ -31,9 +32,6 @@ def triu_indices(N, order=2):
 
     return np.array(tuple(triangle_indices))
 
-
-
-from jax import vmap
 
 vmap2d_ij = lambda fn: vmap(vmap(fn, (0, None)), (None, 0))
 vmap2d_im = lambda fn: vmap(vmap(fn, (0,)), (1,))

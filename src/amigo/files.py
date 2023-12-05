@@ -100,7 +100,7 @@ def get_webb_osys_fits(file, load_wss=True):
     return inst, psf_fits
 
 
-def initialise_for_data(tel, file=None, im=None, err=None, scale_to_counts=True):
+def initialise_for_data(tel, file=None, im=None, err=None):
     if file is not None:
         im, err = image_from_file(file)
         psf_npix, pos, flux = get_intial_values(tel, im, err)

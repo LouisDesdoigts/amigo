@@ -5,6 +5,7 @@ import jax.scipy as jsp
 import dLux as dl
 import tqdm.notebook as tqdm
 
+
 def fit_image(
     model,
     data,
@@ -156,3 +157,11 @@ def get_likelihoods(psf, data, err):
         jsp.stats.norm.pdf(psf, loc=data, scale=err),
         -jsp.stats.norm.logpdf(psf, loc=data, scale=err),
     )
+
+
+def nan_edges(im, edge_mask):
+    im = im.at[:edge_mask].set(np.nan)
+    im = im.at[-edge_mask:].set(np.nan)
+    im = im.at[:, :edge_mask].set(np.nan)
+    im = im.at[:, -edge_mask:].set(np.nan)
+    return im
