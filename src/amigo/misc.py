@@ -159,9 +159,9 @@ def get_likelihoods(psf, data, err):
     )
 
 
-def nan_edges(im, edge_mask):
-    im = im.at[:edge_mask].set(np.nan)
-    im = im.at[-edge_mask:].set(np.nan)
-    im = im.at[:, :edge_mask].set(np.nan)
-    im = im.at[:, -edge_mask:].set(np.nan)
+def nan_edges(im, npix):
+    im = im.at[:npix].set(np.nan)
+    im = im.at[-npix:].set(np.nan)
+    im = im.at[:, :npix].set(np.nan)
+    im = im.at[:, -npix:].set(np.nan)
     return im

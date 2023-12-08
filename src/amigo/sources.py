@@ -6,28 +6,62 @@ import dLux.utils as dlu
 import equinox as eqx
 
 
+# def planck(wav, T):
+#     h = 6.626e-34
+#     c = 3.0e8
+#     k = 1.38e-23
+#     a = 2.0 * h * c**2
+#     b = h * c / (wav * k * T)
+#     intensity = a / ((wav**5) * (np.exp(b) - 1.0))
+#     return intensity
+
+
 def planck(wav, T):
-    h = 6.626e-34
-    c = 3.0e8
-    k = 1.38e-23
-    a = 2.0 * h * c**2
-    b = h * c / (wav * k * T)
-    intensity = a / ((wav**5) * (np.exp(b) - 1.0))
-    return intensity
+    """
+    Planck's Law:
+    I(W, T) = (2hc^2 / W^5) * (1 / (exp{hc/WkT} - 1))
+    where
+    h = Planck's constant
+    c = speed of light
+    k = Boltzmann's constant
+
+    W = wavelength array
+    T = effective temperature
+
+    Here A is the first fraction and B is the second fraction.
+    The calculation is (sort of) performed in log space.
+    """
+    logW = np.log10(wav)  # wavelength array
+    logT = np.log10(T)  # effective temperature
+
+    # -15.92... is [log2 + logh + 2*logc]
+    logA = -15.92347606 - 5 * logW
+    logB = -np.log10(
+        np.exp(
+            # -1.84...is logh + logc - logk
+            np.power(10, -1.8415064 - logT - logW)
+        )
+        - 1.0
+    )
+
+    return np.power(10, logA + logB)
 
 
-# class PlanckSpectrum(dl.sources.BaseSpectrum):
-#     wavelengths: jax.Array
-#     Teff: float
+class PlanckSpectrum(dl.spectra.BaseSpectrum):
+    wavelengths: jax.Array
+    Teff: float
 
-#     def __init__(self, wavelengths, Teff):
-#         self.wavelengths = np.asarray(wavelengths, float)
-#         self.Teff = float(Teff)
+    def __init__(self, wavelengths, Teff):
+        self.wavelengths = np.asarray(wavelengths, float)
+        self.Teff = float(Teff)
 
-#     @property
-#     def weights(self):
-#         weights = planck(self.wavelengths, self.Teff)
-#         return weights / weights.sum()
+    def normalise(self):
+        return self
+
+    @property
+    def weights(self):
+        weights = planck(self.wavelengths, self.Teff)
+        return weights / weights.sum()
 
 
 class PlanckSource(dl.BaseSource):
@@ -55,6 +89,17 @@ class PlanckSource(dl.BaseSource):
         wls = self.wavelengths * 1e-6
         pos = dlu.arcsec2rad(self.position)
         return optics.propagate(wls, pos, weights, return_wf, return_psf)
+
+
+class PointSource(dl.PointSource):
+    def __init__(self, position, flux, spectrum):
+        self.position = position
+        self.flux = flux
+        self.spectrum = spectrum
+
+    def model(self, optics, return_wf=False, return_psf=False):
+        self = self.set("position", dlu.arcsec2rad(self.position))
+        return super(type(self), self).model(optics, return_wf, return_psf)
 
 
 class UVSource(dl.BaseSource):

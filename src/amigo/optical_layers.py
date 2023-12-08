@@ -51,12 +51,14 @@ class DynamicAMI(dl.layers.optical_layers.OpticalLayer):
     holes: jax.Array
     f2f: jax.Array
     transformation: dl.CoordTransform
+    normalise: bool
 
-    def __init__(self, f2f=0.82):
+    def __init__(self, f2f=0.82, normalise=False):
         self.f2f = np.asarray(f2f, float)
         self.transformation = dl.CoordTransform((0.0, 0.0), 0.0, (1.0, 1.0), (0.0, 0.0))
         holes = mask_definitions.jwst_g7s6c()[1]
         self.holes = np.roll(holes, 1, -1)
+        self.normalise = normalise
 
     def gen_AMI(self, npix, diameter):
         rmax = self.f2f / np.sqrt(3)
@@ -67,16 +69,19 @@ class DynamicAMI(dl.layers.optical_layers.OpticalLayer):
         sx = +21 * (diameter / npix)
         sy = -13 * (diameter / npix)
         coords = dlu.translate_coords(coords, np.array([sx, sy]))
-        coords = self.transformation.apply(coords)
 
         def hole_fn(hole):
             coords_in = dlu.translate_coords(coords, hole)
+            coords_in = self.transformation.apply(coords_in)
             return dlu.soft_reg_polygon(coords_in, rmax, 6, pscale)
 
         return jax.vmap(hole_fn)(self.holes).sum(0)
 
     def apply(self, wavefront):
-        return wavefront * self.gen_AMI(wavefront.npixels, wavefront.diameter)
+        wavefront = wavefront * self.gen_AMI(wavefront.npixels, wavefront.diameter)
+        if self.normalise:
+            return wavefront.normalise()
+        return wavefront()
 
     def __getattr__(self, key):
         if hasattr(self.transformation, key):

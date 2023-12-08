@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as np
 import dLux as dl
+from jax import vmap
 
 
 class AmplifierNoise(dl.layers.detector_layers.DetectorLayer):
@@ -20,3 +21,31 @@ class AmplifierNoise(dl.layers.detector_layers.DetectorLayer):
 
     def apply(self, PSF):
         return PSF.add("data", self.build(PSF.data))
+
+
+class AmplifierNoiseRamp(dl.layers.detector_layers.DetectorLayer):
+    """This class has been 'un-generalised' a bit to make working with ramps easier"""
+
+    coeffs: jax.Array
+    axis: int
+
+    def __init__(self, ngroups, npix=80, order=1, axis=0):
+        self.coeffs = np.zeros((ngroups, npix, order + 1))
+        self.axis = int(axis)
+
+    @property
+    def build(self):
+        xs = np.linspace(-1, 1, self.coeffs.shape[1])
+
+        # Evaluation function
+        eval_fn = lambda coeffs: np.polyval(coeffs, xs)
+
+        # Vectorise over columns and groups in the data
+        vals = vmap(vmap(eval_fn, 0), 0)(self.coeffs)
+
+        if self.axis == 0:
+            return vmap(np.rot90, 0)(vals)
+        return vals
+
+    def apply(self, PSF):
+        return PSF.add("data", self.build)

@@ -100,43 +100,20 @@ def get_webb_osys_fits(file, load_wss=True):
     return inst, psf_fits
 
 
-def initialise_for_data(tel, file=None, im=None, err=None):
-    if file is not None:
-        im, err = image_from_file(file)
-        psf_npix, pos, flux = get_intial_values(tel, im, err)
-    else:
-        if im is None or err is None:
-            raise ValueError("Must provide either file or im and err")
-        psf_npix, pos, flux = get_intial_values(tel, im, err)
-    return tel.set(["psf_npixels", "position", "flux"], [psf_npix, pos, flux])
-
-
 from scipy.ndimage import center_of_mass
 
 
-def image_from_file(file, scale_to_counts=True):
-    counts_per_sec = file[1].data
-    err_per_sec = np.array(file[2].data).astype(float)
-
-    if scale_to_counts:
-        int_time = file[0].header["EFFINTTM"]
-        counts = counts_per_sec * int_time
-        err = err_per_sec * int_time
-        return np.array(counts).astype(float), err
-
-    return np.array(counts_per_sec).astype(float), err_per_sec
-
-
-def get_intial_values(tel, im, err):
+def get_intial_values(tel, im):
     # Enforce correct npix
     im = im.at[np.where(np.isnan(im))].set(0.0)
 
     # Get naive model
-    tel = tel.set("psf_npixels", im.shape[0])
+    tel = tel.set("psf_npixels", im.shape[-1])
     tel = tel.set("position", np.zeros(2))
     tel = tel.set("flux", im.sum())
     # tel = tel.set("flux", 1.0)
-    psf = tel.model()
+    # psf = tel.model()
+    psf = tel.model()[0][-1]  # psf, last group
 
     # Get correct pixel scale
     if not isinstance(tel.optics, (dl.AngularOpticalSystem, dl.CartesianOpticalSystem)):
@@ -163,20 +140,8 @@ def get_intial_values(tel, im, err):
     com_small = np.array(center_of_mass(onp.array(conv_small)))
     max_idx += com_small - k
 
-    # parax_pos = max_idx - im.shape[0] // 2
-    # print(parax_pos)
-
-    # shift = (im.shape[-1] - 1) / 2
-    # parax_pos = max_idx - shift
-    # print(parax_pos)
-
-    # parax_pos *= pscale
-    # pos = np.roll(parax_pos, 1)  # (i, j) -> (x, y)
-    # print(pos)
-
     parax_pix_pos = max_idx - im.shape[0] // 2
     pos = np.roll(pscale * parax_pix_pos, 1)
-    # print(pos)
 
     # Y-flip to match model
     pos *= np.array([1, -1])

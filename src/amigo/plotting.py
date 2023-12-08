@@ -2,13 +2,14 @@ import jax.numpy as np
 import jax.scipy as jsp
 import dLux.utils as dlu
 import matplotlib.pyplot as plt
-from matplotlib import colormaps
+
 import matplotlib.pyplot as plt
 
 # from .lib import get_likelihoods, pairwise_vectors, osamp_freqs
 from misc import get_likelihoods
 from interferometry import pairwise_vectors, osamp_freqs
 
+from matplotlib import colormaps, colors
 inferno = colormaps["inferno"]
 seismic = colormaps["seismic"]
 
@@ -141,18 +142,14 @@ def plot_radial_residual(model, psf, im, support_mask, rmin=0, rmax=3, n=12):
     plt.show()
 
 
-import matplotlib.colors as colors
-
-
-def visualise_residual(psf, im, err, k=0.5):
+def visualise_residual(psf, data, log_likeli, k=0.5, pow=0.25):
     # from lib import get_likelihoods
 
-    res = im - psf
-    likeli, neg_loglikeli = get_likelihoods(psf, im, err)
+    res = data - psf
+    # likeli, neg_loglikeli = get_likelihoods(psf, im, err)
 
-    pow = 0.25
-    vmax = np.maximum(np.nanmax(np.abs(im)), np.nanmax(np.abs(psf)))
-    vmin = np.minimum(np.nanmin(np.abs(im)), np.nanmin(np.abs(psf)))
+    vmax = np.maximum(np.nanmax(np.abs(data)), np.nanmax(np.abs(psf)))
+    vmin = np.minimum(np.nanmin(np.abs(data)), np.nanmin(np.abs(psf)))
     norm = colors.PowerNorm(gamma=pow, vmin=-vmin, vmax=vmax)
 
     inferno.set_bad("k", k)
@@ -161,7 +158,7 @@ def visualise_residual(psf, im, err, k=0.5):
     plt.figure(figsize=(15, 8))
     plt.subplot(2, 3, 1)
     plt.title(r"Data $^{}$".format(pow))
-    plt.imshow(im, cmap=inferno, norm=norm)
+    plt.imshow(data, cmap=inferno, norm=norm)
     plt.colorbar()
 
     plt.subplot(2, 3, 2)
@@ -188,59 +185,60 @@ def visualise_residual(psf, im, err, k=0.5):
 
     plt.subplot(2, 3, 4)
     plt.title("Pixel neg log likelihood")
-    plt.imshow(neg_loglikeli, cmap=inferno)
+    plt.imshow(-log_likeli, cmap=inferno)
     plt.colorbar()
 
-    res = (im - psf) / err
-    x = np.nanmax(np.abs(res))
+    # norm_res = (data - psf) / err
+    norm_res = (data - psf) / 1  # Not sure how to get 'err' equiv right now
+    x = np.nanmax(np.abs(norm_res))
     xs = np.linspace(-x, x, 200)
     ys = jsp.stats.norm.pdf(xs)
 
     ax = plt.subplot(2, 3, 5)
     ax.set_title("Noise normalised residual hist")
-    ax.hist(res.flatten(), bins=50, density=True)
+    ax.hist(norm_res.flatten(), bins=50, density=True)
 
     ax2 = ax.twinx()
     ax2.plot(xs, ys, c="k")
     ax2.set_ylim(0)
 
-    v = np.nanmax(np.abs(res))
+    v = np.nanmax(np.abs(norm_res))
     plt.subplot(2, 3, 6)
     plt.title("Noise normalised Residual")
-    plt.imshow(res, vmin=-v, vmax=v, cmap=seismic)
+    plt.imshow(norm_res, vmin=-v, vmax=v, cmap=seismic)
     plt.colorbar()
 
     plt.tight_layout()
     plt.show()
 
 
-def plot_extra(model):
-    # Get the AMI mask and applied mask
-    applied_mask = model.pupil_mask.gen_AMI(model.wf_npixels, model.diameter)
+# def plot_extra(model):
+#     # Get the AMI mask and applied mask
+#     applied_mask = model.pupil_mask.gen_AMI(model.wf_npixels, model.diameter)
 
-    # Get the applied opds in nm and flip to match the mask
-    mirror_opd = np.flipud(model.pupil.opd + model.basis_opd) * 1e9
-    mirror_opd = mirror_opd.at[np.where(~(applied_mask > 1e-6))].set(np.nan)
+#     # Get the applied opds in nm and flip to match the mask
+#     mirror_opd = np.flipud(model.pupil.opd + model.basis_opd) * 1e9
+#     mirror_opd = mirror_opd.at[np.where(~(applied_mask > 1e-6))].set(np.nan)
 
-    plt.figure(figsize=(15, 8))
+#     plt.figure(figsize=(15, 8))
 
-    v = np.nanmax(np.abs(mirror_opd))
-    plt.subplot(2, 3, 1)
-    plt.title("Applied Mask")
-    plt.imshow(mirror_opd, cmap=seismic, vmin=-v, vmax=v)
-    plt.colorbar()
+#     v = np.nanmax(np.abs(mirror_opd))
+#     plt.subplot(2, 3, 1)
+#     plt.title("Applied Mask")
+#     plt.imshow(mirror_opd, cmap=seismic, vmin=-v, vmax=v)
+#     plt.colorbar()
 
-    plt.subplot(2, 3, 2)
-    plt.title(f"Spectral Weights")
-    plt.plot(model.wavelengths, model.weights, marker="x")
+#     plt.subplot(2, 3, 2)
+#     plt.title(f"Spectral Weights")
+#     plt.plot(model.wavelengths, model.weights, marker="x")
 
-    plt.subplot(2, 3, 3)
-    # plt.title(r"$\sqrt{\text{IPC Kernel}}$")
-    # plt.imshow(model.IPC.kernel**0.5, cmap=inferno)
-    # plt.colorbar()
+#     plt.subplot(2, 3, 3)
+#     # plt.title(r"$\sqrt{\text{IPC Kernel}}$")
+#     # plt.imshow(model.IPC.kernel**0.5, cmap=inferno)
+#     # plt.colorbar()
 
-    plt.tight_layout()
-    plt.show()
+#     plt.tight_layout()
+#     plt.show()
 
 
 # def show_likelihoods(model, file, show_res=True, n_mask=1, order=1, k=0.5):
