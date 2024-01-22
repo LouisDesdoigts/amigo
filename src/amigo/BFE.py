@@ -155,9 +155,12 @@ class PolyBFE(dl.layers.detector_layers.DetectorLayer):
         Is = np.arange(array.shape[0]) + 1
         return vmap2d_ij(mean_fn)(Is, Is)
 
-    def apply(self, PSF):
+    def apply_array(self, array):
         # Pad the input to avoid edge artifacts
         pad = 1 + self.k
-        array = np.pad(PSF.data, (pad, pad))
+        array = np.pad(array, (pad, pad))
         BFEd = self.apply_BFE(array)
-        return PSF.set("data", BFEd[pad:-pad, pad:-pad])
+        return BFEd[pad + 1 : -pad + 1, pad + 1 : -pad + 1]
+
+    def apply(self, PSF):
+        return self.set("data", self.apply_array(PSF.data))

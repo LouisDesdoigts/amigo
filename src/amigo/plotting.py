@@ -10,6 +10,7 @@ from misc import get_likelihoods
 from interferometry import pairwise_vectors, osamp_freqs
 
 from matplotlib import colormaps, colors
+
 inferno = colormaps["inferno"]
 seismic = colormaps["seismic"]
 
@@ -142,74 +143,78 @@ def plot_radial_residual(model, psf, im, support_mask, rmin=0, rmax=3, n=12):
     plt.show()
 
 
-def visualise_residual(psf, data, log_likeli, k=0.5, pow=0.25):
-    # from lib import get_likelihoods
+# # def visualise_residual(psf, data, log_likeli, k=0.5, pow=0.25):
+# def visualise_residual(psf_ramp, data, err, log_likeli, k=0.5, pow=0.25):
+#     # from lib import get_likelihoods
 
-    res = data - psf
-    # likeli, neg_loglikeli = get_likelihoods(psf, im, err)
+#     # likeli, neg_loglikeli = get_likelihoods(psf, im, err)
 
-    vmax = np.maximum(np.nanmax(np.abs(data)), np.nanmax(np.abs(psf)))
-    vmin = np.minimum(np.nanmin(np.abs(data)), np.nanmin(np.abs(psf)))
-    norm = colors.PowerNorm(gamma=pow, vmin=-vmin, vmax=vmax)
+    # vmax = np.maximum(np.nanmax(np.abs(data)), np.nanmax(np.abs(psf_ramp)))
+    # vmin = np.minimum(np.nanmin(np.abs(data)), np.nanmin(np.abs(psf_ramp)))
+    # norm = colors.PowerNorm(gamma=pow, vmin=-vmin, vmax=vmax)
 
-    inferno.set_bad("k", k)
-    seismic.set_bad("k", k)
+    # inferno.set_bad("k", k)
+    # seismic.set_bad("k", k)
 
-    plt.figure(figsize=(15, 8))
-    plt.subplot(2, 3, 1)
-    plt.title(r"Data $^{}$".format(pow))
-    plt.imshow(data, cmap=inferno, norm=norm)
-    plt.colorbar()
-
-    plt.subplot(2, 3, 2)
-    plt.title(f"Model $^{pow}$")
-    plt.imshow(psf, cmap=inferno, norm=norm)
-    plt.colorbar()
-
-    v = np.nanmax(np.abs(res))
-    plt.subplot(2, 3, 3)
-    plt.title("Residual")
-    plt.imshow(res, cmap=seismic, vmin=-v, vmax=v)
-    plt.colorbar()
-
-    # plt.subplot(2, 3, 4)
-    # plt.title("Pixel likelihood")
-    # plt.imshow(likeli, cmap=inferno)
+    # plt.figure(figsize=(15, 8))
+    # plt.subplot(2, 3, 1)
+    # plt.title(r"Data $^{}$".format(pow))
+    # plt.imshow(data.mean(0), cmap=inferno, norm=norm)
     # plt.colorbar()
 
-    # v = 1.0
-    # plt.subplot(2, 3, 4)
-    # plt.title("Fractional Residual")
-    # plt.imshow(res / im, vmin=-v, vmax=v, cmap=seismic)
+    # plt.subplot(2, 3, 2)
+    # plt.title(f"Model $^{pow}$")
+    # plt.imshow(psf_ramp.mean(0), cmap=inferno, norm=norm)
     # plt.colorbar()
 
-    plt.subplot(2, 3, 4)
-    plt.title("Pixel neg log likelihood")
-    plt.imshow(-log_likeli, cmap=inferno)
-    plt.colorbar()
+    # res = data - psf_ramp
+    # v = np.nanmax(np.abs(res))
+    # plt.subplot(2, 3, 3)
+    # plt.title("Residual")
+    # plt.imshow(res.mean(0), cmap=seismic, vmin=-v, vmax=v)
+    # plt.colorbar()
 
-    # norm_res = (data - psf) / err
-    norm_res = (data - psf) / 1  # Not sure how to get 'err' equiv right now
-    x = np.nanmax(np.abs(norm_res))
-    xs = np.linspace(-x, x, 200)
-    ys = jsp.stats.norm.pdf(xs)
+    # # plt.subplot(2, 3, 4)
+    # # plt.title("Pixel likelihood")
+    # # plt.imshow(likeli, cmap=inferno)
+    # # plt.colorbar()
 
-    ax = plt.subplot(2, 3, 5)
-    ax.set_title("Noise normalised residual hist")
-    ax.hist(norm_res.flatten(), bins=50, density=True)
+    # # v = 1.0
+    # # plt.subplot(2, 3, 4)
+    # # plt.title("Fractional Residual")
+    # # plt.imshow(res / im, vmin=-v, vmax=v, cmap=seismic)
+    # # plt.colorbar()
 
-    ax2 = ax.twinx()
-    ax2.plot(xs, ys, c="k")
-    ax2.set_ylim(0)
+    # plt.subplot(2, 3, 4)
+    # plt.title("Pixel neg log likelihood")
+    # plt.imshow(-log_likeli, cmap=inferno)
+    # plt.colorbar()
 
-    v = np.nanmax(np.abs(norm_res))
-    plt.subplot(2, 3, 6)
-    plt.title("Noise normalised Residual")
-    plt.imshow(norm_res, vmin=-v, vmax=v, cmap=seismic)
-    plt.colorbar()
+    # # err = (photon_ramp + read_noise[None, ...] ** 2) ** 0.5
+    # norm_res = (data - psf_ramp) / err
+    # x = np.nanmax(np.abs(norm_res))
+    # xs = np.linspace(-x, x, 200)
+    # ys = jsp.stats.norm.pdf(xs)
 
-    plt.tight_layout()
-    plt.show()
+    # ax = plt.subplot(2, 3, 5)
+    # ax.set_title("Noise normalised residual hist")
+    # ax.hist(norm_res.flatten(), bins=50, density=True)
+
+    # ax2 = ax.twinx()
+    # ax2.plot(xs, ys, c="k")
+    # ax2.set_ylim(0)
+
+    # ax.set(xlim=(-10, 10))
+    # ax2.set(xlim=(-10, 10))
+
+    # v = np.nanmax(np.abs(norm_res))
+    # plt.subplot(2, 3, 6)
+    # plt.title("Noise normalised Residual")
+    # plt.imshow(norm_res.mean(0), vmin=-v, vmax=v, cmap=seismic)
+    # plt.colorbar()
+
+    # plt.tight_layout()
+    # plt.show()
 
 
 # def plot_extra(model):

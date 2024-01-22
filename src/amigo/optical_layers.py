@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as np
+from jax import vmap
 import dLux as dl
 import dLux.utils as dlu
 
@@ -70,12 +71,15 @@ class DynamicAMI(dl.layers.optical_layers.OpticalLayer):
         sy = -13 * (diameter / npix)
         coords = dlu.translate_coords(coords, np.array([sx, sy]))
 
-        def hole_fn(hole):
-            coords_in = dlu.translate_coords(coords, hole)
-            coords_in = self.transformation.apply(coords_in)
-            return dlu.soft_reg_polygon(coords_in, rmax, 6, pscale)
+        # Shift the coordinates for each hole
+        shifted_coords = vmap(dlu.translate_coords, (None, 0))(coords, self.holes)
 
-        return jax.vmap(hole_fn)(self.holes).sum(0)
+        # Rotate, shear and compress coordinates
+        transformed_coords = vmap(self.transformation.apply)(shifted_coords)
+
+        # Generate the hexagons
+        hex_fn = lambda coords: dlu.soft_reg_polygon(coords, rmax, 6, pscale)
+        return vmap(hex_fn)(transformed_coords).sum(0)
 
     def apply(self, wavefront):
         wavefront = wavefront * self.gen_AMI(wavefront.npixels, wavefront.diameter)

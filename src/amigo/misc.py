@@ -6,70 +6,70 @@ import dLux as dl
 import tqdm.notebook as tqdm
 
 
-def fit_image(
-    model,
-    data,
-    err,
-    loss_fn,
-    grad_fn,
-    norm_fn,
-    epochs,
-    config,
-    loss_scale=1e-4,
-    verbose=True,
-    print_grads=False,
-):
-    params = list(config.keys())
-    optimisers = [config[param]["optim"] for param in params]
+# def fit_image(
+#     model,
+#     data,
+#     err,
+#     loss_fn,
+#     grad_fn,
+#     norm_fn,
+#     epochs,
+#     config,
+#     loss_scale=1e-4,
+#     verbose=True,
+#     print_grads=False,
+# ):
+#     params = list(config.keys())
+#     optimisers = [config[param]["optim"] for param in params]
 
-    model = zdx.set_array(model, params)
-    optim, opt_state = zdx.get_optimiser(model, params, optimisers)
+#     model = zdx.set_array(model, params)
+#     optim, opt_state = zdx.get_optimiser(model, params, optimisers)
 
-    if verbose:
-        print("Compiling...")
-    loss, grads = loss_fn(model, data, err)
-    if print_grads:
-        for param in params:
-            print(f"{param}: {grads.get(param)}")
-    losses, models_out = [], [model]
+#     if verbose:
+#         print("Compiling...")
+#     loss, grads = loss_fn(model, data, err)
+#     if print_grads:
+#         for param in params:
+#             print(f"{param}: {grads.get(param)}")
+#     losses, models_out = [], [model]
 
-    if verbose:
-        looper = tqdm(range(epochs), desc="Loss %.2f" % (loss * loss_scale))
-    else:
-        looper = range(epochs)
+#     if verbose:
+#         looper = tqdm(range(epochs), desc="Loss %.2f" % (loss * loss_scale))
+#     else:
+#         looper = range(epochs)
 
-    for i in looper:
-        # calculate the loss and gradient
-        new_loss, grads = loss_fn(model, data, err)
+#     for i in looper:
+#         # calculate the loss and gradient
+#         new_loss, grads = loss_fn(model, data, err)
 
-        if new_loss > loss:
-            print(
-                f"Loss increased from {loss * loss_scale:.2f} to "
-                f"{new_loss * loss_scale:.2f} on {i} th epoch"
-            )
-        loss = new_loss
-        if np.isnan(loss):
-            print(f"Loss is NaN on {i} th epoch")
-            return losses, models_out
+#         if new_loss > loss:
+#             print(
+#                 f"Loss increased from {loss * loss_scale:.2f} to "
+#                 f"{new_loss * loss_scale:.2f} on {i} th epoch"
+#             )
+#         loss = new_loss
+#         if np.isnan(loss):
+#             print(f"Loss is NaN on {i} th epoch")
+#             return losses, models_out
 
-        # Apply any processing to the gradients
-        grads = grad_fn(grads, config, i)
+#         # Apply any processing to the gradients
+#         grads = grad_fn(grads, config, i)
 
-        # apply the update
-        updates, opt_state = optim.update(grads, opt_state)
-        model = zdx.apply_updates(model, updates)
+#         # apply the update
+#         updates, opt_state = optim.update(grads, opt_state)
+#         model = zdx.apply_updates(model, updates)
 
-        # Apply normalisation
-        model = norm_fn(model)
+#         # Apply normalisation
+#         model = norm_fn(model)
 
-        # save results
-        models_out.append(model)
-        losses.append(loss)
+#         # save results
+#         models_out.append(model)
+#         losses.append(loss)
 
-        if verbose:
-            looper.set_description("Loss %.2f" % (loss * loss_scale))
+#         if verbose:
+#             looper.set_description("Loss %.2f" % (loss * loss_scale))
 
-    return losses, models_out
+#     return losses, models_out
 
 
 from typing import List, Any
@@ -165,3 +165,14 @@ def nan_edges(im, npix):
     im = im.at[:, :npix].set(np.nan)
     im = im.at[:, -npix:].set(np.nan)
     return im
+
+
+def full_to_SUB80(full_arr):
+    """This is taken from the JWST pipeline, so its probably correct"""
+    xstart = 1045
+    ystart = 1
+    xsize = 80
+    ysize = 80
+    xstop = xstart + xsize - 1
+    ystop = ystart + ysize - 1
+    return full_arr[ystart - 1 : ystop, xstart - 1 : xstop]
