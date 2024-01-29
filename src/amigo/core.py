@@ -13,6 +13,8 @@ from optical_layers import DynamicAMI
 from jax import vmap
 import zodiax as zdx
 from jax.scipy.stats import multivariate_normal as mvn
+import jax.scipy as jsp
+import jax.tree_util as jtu
 
 
 def get_read_cov(read_noise, ngroups):
@@ -27,19 +29,40 @@ def get_read_cov(read_noise, ngroups):
     return read_fn(pix_idx, pix_idx)
 
 
+# # Two version of this function, one that takes the minimum of the _index_ and on that
+# # takes the minimum of the _value_ (ie the electron count). The other is below.
+# def build_covariance_matrix(electrons):
+#     Is = np.arange(len(electrons))
+#     IJs = np.array(np.meshgrid(Is, Is))
+#     inds = np.min(IJs, (0))
+#     cov = vmap(vmap(lambda ind: electrons[ind], 0), 1)(inds)
+#     return cov
+
+
 def build_covariance_matrix(electrons):
-    # Can this jut be done by using this as an index?
     Is = np.arange(len(electrons))
     IJs = np.array(np.meshgrid(Is, Is))
-    inds = np.min(IJs, (0))
-    cov = vmap(vmap(lambda ind: electrons[ind], 0), 1)(inds)
+    vals = vmap(vmap(vmap(lambda ind: electrons[ind], 0), 1), 0)(IJs)
+    cov = np.min(vals, (0))
     return cov
 
 
 def get_covariance_matrix(data_ramp, bias, one_on_fs, read_noise):
     total_bias = bias[None, ...] + vmap(model_amplifier)(one_on_fs)
-    # cov_mat_inds = build_covariance_matrix_inds(len(data_ramp))
-    electron_cov = build_covariance_matrix(data_ramp - total_bias)
+
+    # So there are some NaN issues arising from the likelihood function, which is fed
+    # the covariance matrices generated here. In order for a matrix to be a valid
+    # covariance matrix it must have two properties: Symmetric and Positive
+    # Semi-definite. While the former is always true by construction (the indices that
+    # are used to build it are symmetric about the diagonal), the validity of the
+    # latter property is subject to change throughout the optimisation process as we
+    # optimise over both the bias and amplifier noise values. Consequently this can
+    # lead to invalid covariance matrices being fed to the likelihood function, which
+    # in turn leads to NaNs that propagate though to the gradients, despite nan-valued
+    # likelihoods being masked via the nanmean function.
+
+    electron_ramp = data_ramp - total_bias
+    electron_cov = build_covariance_matrix(electron_ramp)
     read_cov = get_read_cov(read_noise, len(data_ramp))
     return electron_cov + read_cov
 
@@ -63,6 +86,9 @@ def get_loglike_im(psf_ramp, data, bias, one_on_fs, read_noise, support, nints):
     )
     return (np.nan * np.ones((80, 80))).at[support].set(loglike_vec)
 
+
+
+
 def exposure_covariance(tel, exposure, read_noise):
     return get_covariance_matrix(
         exposure.data,
@@ -70,6 +96,7 @@ def exposure_covariance(tel, exposure, read_noise):
         tel.OneOnFs[exposure.key],
         read_noise,
     )
+
 
 def exposure_loglike_vec(tel, exposure, read_noise):
     return get_loglike_vec(
@@ -81,6 +108,7 @@ def exposure_loglike_vec(tel, exposure, read_noise):
         exposure.support,
         exposure.nints,
     )
+
 
 def exposure_loglike_im(tel, exposure, read_noise):
     return get_loglike_im(
@@ -324,7 +352,11 @@ class Modeller(dl.Telescope):
         key = exposure.key
         pos = dlu.arcsec2rad(self.positions[key])
         optics = self.optics.set("coefficients", self.aberrations[key])
+        
+        # This should be the place to add the visibility fitting
+        # Maybe this can be automated by type-checking the Star object?
         PSF = optics.propagate(wavels, pos, weights, return_psf=True)
+
         PSF = PSF.multiply("data", self.fluxes[key])
 
         # Apply ramp detector
@@ -334,33 +366,3 @@ class Modeller(dl.Telescope):
         )
         # return detector.ramp_model(PSF)
         return detector.model(PSF, return_electrons=return_electrons)
-
-    # def exposure_covariance(self, exposure, read_noise):
-    #     return get_covariance_matrix(
-    #         exposure.data,
-    #         self.biases[exposure.key],
-    #         self.OneOnFs[exposure.key],
-    #         read_noise,
-    #     )
-
-    # def exposure_loglike_vec(self, exposure, read_noise):
-    #     return get_loglike_vec(
-    #         self.model_exposure(exposure),
-    #         exposure.data,
-    #         self.biases[exposure.key],
-    #         self.OneOnFs[exposure.key],
-    #         read_noise,
-    #         exposure.support,
-    #         exposure.nints,
-    #     )
-
-    # def exposure_loglike_im(self, exposure, read_noise):
-    #     return get_loglike_im(
-    #         self.model_exposure(exposure),
-    #         exposure.data,
-    #         self.biases[exposure.key],
-    #         self.OneOnFs[exposure.key],
-    #         read_noise,
-    #         exposure.support,
-    #         exposure.nints,
-    #     )

@@ -265,14 +265,23 @@ def get_filter(filter_name: str, filter_dir: str, n_wavels: int = 9):
     return wavels, weights
 
 
-def initialise_model(files, key_fn, read_noise, nwavels=11, BFE_model=None, Teffs={}):
+def initialise_model(files, key_fn, nwavels=11, BFE_model=None):
     print("Constructing model")
 
     # key = key_fn(files[0])
+    read_noise_file = fits.open(
+        "/Users/louis/Data/JWST/jwst_niriss_readnoise_0005.fits"
+    )
+    read_noise = full_to_SUB80(np.array(read_noise_file[1].data))
 
     # Get webbpsf optical system
     inst = webbpsf.NIRISS()
     inst.load_wss_opd_by_date(files[0][0].header["DATE-BEG"], verbose=False)
+    # TODO: Be more clever here and use hte webbpsf functions to check the before and
+    # after WFS measurements and check if all data is within those bounds. Can use a
+    # dictionary of the times to check for pre-loaded ones and possibly interpolate
+    # between them to the correct time. This may be easier than just loading directly
+    # from CRDS.
 
     # Load the FF
     ff_file = fits.open("/Users/louis/Data/JWST/jwst_niriss_flat_0277.fits")
@@ -303,6 +312,7 @@ def initialise_model(files, key_fn, read_noise, nwavels=11, BFE_model=None, Teff
         filters[filter] = np.array(get_filter(filter, path, nwavels))
 
     # Get the stars:
+    Teffs = {"HD-36805": 4814}
     stars = {}
     for file in files:
         star_name = file[0].header["TARGPROP"]
@@ -324,9 +334,10 @@ def initialise_model(files, key_fn, read_noise, nwavels=11, BFE_model=None, Teff
         star = file[0].header["TARGPROP"]
 
         data = np.asarray(file[1].data, float)
-        data = data.at[:, :4].set(np.nan)
-        data = data.at[:, :, -1].set(np.nan)
-        data = data.at[:, :, 0].set(np.nan)
+        data = data.at[:, :4].set(np.nan)  # Bottom 4 rows are bad
+        data = data.at[:, -1].set(np.nan)  # Top row is bad
+        data = data.at[:, :, -2:].set(np.nan)  # Right 2 columns are bad
+        data = data.at[:, :, 0].set(np.nan)  # Left column is bad
 
         # read_cov = get_read_cov(read_noise, ngroups)
         # # cov_mat_inds = build_covariance_matrix_inds(ngroups)
@@ -369,10 +380,11 @@ def initialise_model(files, key_fn, read_noise, nwavels=11, BFE_model=None, Teff
         im = estimate_ramp(exposure.data)[-1]
         origin = np.array(determine_origin(im, verbose=False))
         origin -= (np.array(im.shape) - 1) / 2
+
         pos = origin * optics.psf_pixel_scale * np.array([1, -1])
 
         positions[key] = pos
-        fluxes[key] = 1.05 * estimate_ramp(exposure.data)[-1].sum()
+        fluxes[key] = 1.075 * estimate_ramp(exposure.data)[-1].sum()
         aberrations[key] = coeffs
         OneOnFs[key] = np.zeros((exposure.ngroups, 80, 2))
         biases[key] = estimate_bias(exposure.data)
@@ -391,3 +403,5 @@ def initialise_model(files, key_fn, read_noise, nwavels=11, BFE_model=None, Teff
     )
 
     return model, exposures
+
+

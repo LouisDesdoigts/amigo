@@ -160,7 +160,7 @@ class PolyBFE(dl.layers.detector_layers.DetectorLayer):
         pad = 1 + self.k
         array = np.pad(array, (pad, pad))
         BFEd = self.apply_BFE(array)
-        return BFEd[pad + 1 : -pad + 1, pad + 1 : -pad + 1]
+        return BFEd[pad:-pad, pad:-pad]
 
     def apply(self, PSF):
         return self.set("data", self.apply_array(PSF.data))
