@@ -1,13 +1,8 @@
-"""This probably ends up as a zodiax function"""
-
 from tqdm.notebook import tqdm
 import zodiax as zdx
 import jax.numpy as np
-
-
-from tqdm.notebook import tqdm
-import zodiax as zdx
-import jax.numpy as np
+import equinox as eqx
+import jax
 import optax
 import jax.tree_util as jtu
 
@@ -43,10 +38,6 @@ def get_optimiser(pytree, parameters, optimisers):
 
     # Return
     return (optim, opt_state)
-
-
-import equinox as eqx
-import jax
 
 
 def optimise(
