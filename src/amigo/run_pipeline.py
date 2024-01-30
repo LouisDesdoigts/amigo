@@ -10,7 +10,7 @@ Create a new directory; say, e.g. `./COMM1093/`
 with a subdirectory called stage0 (e.g. `./COMM1093/stage0`).
 Place all uncal files in the stage0 directory and run the script.
 This will create a stage1 and stage2 directory within the ./COMM1093/
-for example. The stage1 directory will contain the ramp files and the
+directory. The stage1 directory will contain the ramp files and the
 stage2 directory will contain the calgrps files.
 
 If you're unsure what the CRDS path is, see the jwst docs:
