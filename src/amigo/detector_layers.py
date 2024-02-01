@@ -31,28 +31,31 @@ def model_ramp(psf, ngroups):
     return psf[None, ...] * lin_ramp[..., None, None]
 
 
-class ApplyPRF(dl.layers.detector_layers.DetectorLayer):
+class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
     """
     Note! Applies the downsample
     """
 
     FF: jax.Array
-    PRF: jax.Array
+    SRF: jax.Array
+    downsample: bool
 
-    def __init__(self, FF, PRF):
+    def __init__(self, FF, SRF, downsample=True):
         self.FF = FF
-        self.PRF = PRF
+        self.SRF = SRF
+        self.downsample = bool(downsample)
+
+    @property
+    def sensitivity_map(self):
+        oversample = self.SRF.shape[0]
+        npix = self.FF.shape[1]
+        bc_sens_map = self.SRF[None, :, None, :] * self.FF[:, None, :, None]
+        return bc_sens_map.reshape((npix * oversample, npix * oversample))
 
     def apply(self, PSF):
-        # Get shapes and reshape data
-        osamp = self.PRF.shape[0]
-        npix = PSF.data.shape[0] // osamp
-        bc_psf = PSF.data.reshape((npix, osamp, npix, osamp))
-
-        # Apply intra and inter-pixel sensitivities
-        psf = (bc_psf * self.PRF[None, :, None, :]).reshape(PSF.data.shape)
-        psf = self.FF * dlu.downsample(psf, osamp, mean=False)
-        return PSF.set("data", psf)
+        if self.downsample:
+            return (PSF * self.sensitivity_map).downsample(self.SRF.shape[0])
+        return PSF * self.sensitivity_map
 
 
 class Rotate(dl.layers.detector_layers.DetectorLayer):

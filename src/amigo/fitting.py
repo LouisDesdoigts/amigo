@@ -59,7 +59,6 @@ def optimise(
     optimisers = list(config.values())
 
     model = zdx.set_array(model, params)
-    # optim, opt_state = zdx.get_optimiser(model, params, optimisers)
     optim, opt_state = get_optimiser(model, params, optimisers)
     val_grad_fn = zdx.filter_value_and_grad(params)(loss_fn)
 
@@ -159,7 +158,6 @@ def optimise(
     # TODO: Add a delta loss parameter too?
     looper = range(1, epochs)
     if verbose:
-        # looper = tqdm(looper, desc=f"Loss: {loss:.2f}")
         looper = tqdm(looper, desc=f"Loss: {loss:,.2f}")
 
     losses = [loss]
@@ -176,7 +174,6 @@ def optimise(
         params = configure_params(model, params)
 
         if verbose:
-            # looper.set_description("Loss: %.2f" % (loss))
             looper.set_description(f"Loss: {loss:,.2f}")
 
     print(f"Final Loss: {loss:,.2f}")

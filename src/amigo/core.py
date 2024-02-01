@@ -8,7 +8,7 @@ import dLux.utils as dlu
 import dLux as dl
 from optical_layers import DynamicAMI
 from jax.scipy.stats import multivariate_normal as mvn
-from detector_layers import Rotate, ApplyPRF
+from detector_layers import Rotate, ApplySensitivities
 from stats import get_covariance_matrix
 
 
@@ -59,11 +59,12 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         pupil_mask=None,
         opd=None,
         normalise=False,
+        oversample=3,
     ):
         self.wf_npixels = 1024
         self.diameter = 6.603464
         self.psf_npixels = 80
-        self.oversample = 4
+        self.oversample = oversample
         self.psf_pixel_scale = 0.065524085
 
         # Get the primary mirror
@@ -98,13 +99,14 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
     def __init__(
         self,
         angle=-0.56126717,
-        PRF=np.ones((4, 4)),
+        SRF=np.ones((4, 4)),
         FF=np.ones((80, 80)),
+        downsample=True,
     ):
         self.layers = dlu.list2dictionary(
             [
                 ("rotate", Rotate(angle)),
-                ("PRF", ApplyPRF(FF, PRF)),
+                ("sensitivity", ApplySensitivities(FF, SRF, downsample=downsample)),
             ],
             ordered=False,
         )
