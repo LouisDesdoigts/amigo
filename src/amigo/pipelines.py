@@ -6,7 +6,6 @@ from astropy.io import fits
 import astropy
 
 from tqdm.auto import tqdm
-from matplotlib import pyplot as plt
 
 from jwst.pipeline import Image2Pipeline
 
@@ -93,8 +92,6 @@ class Detector1Pipeline(Pipeline):
         # propagate output_dir to steps that might need it
         self.dark_current.output_dir = self.output_dir
         self.ramp_fit.output_dir = self.output_dir
-
-        instrument = input.meta.instrument.name
 
         # process Near-IR exposures
         log.debug("Processing a Near-IR exposure")
@@ -256,7 +253,8 @@ def generate_calgrps(
 
     # number of groups
     ngroups = cube_t.shape[1]
-    npix = 80
+    npix = cube_t.shape[-1]
+    # npix = 80
 
     out_cube_data = np.zeros(shape=(ngroups, npix, npix))
 
