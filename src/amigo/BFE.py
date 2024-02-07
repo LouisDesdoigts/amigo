@@ -3,6 +3,8 @@ import itertools
 import jax.numpy as np
 from jax import vmap
 from jax.lax import dynamic_slice
+import jax.tree_util as jtu
+import equinox as eqx
 
 
 def triu_indices(N, order=2):
@@ -41,54 +43,6 @@ vmap2d_im = lambda fn: vmap(vmap(fn, (0,)), (1,))
 vmap2d_inds = lambda fn: vmap(vmap(fn, (0, None)), (None, 0))
 
 
-def coeffs_to_vec(coeffs, order):
-    """
-    Turns the coefficient dictionary into a vector that can be applied to the basis.
-    Assumes the coeffs input is a dictionary of arrays.
-    """
-    # Note we use list-comp rather than tree-map to ensure the order is correct
-    return np.concatenate([coeffs[str(i)] for i in range(order + 1)], axis=1)
-
-
-def kernel_basis(kernel, order):
-    """
-    Builds the set of 'basis vectors' of the polynomial,
-    The basis vectors are the independent variables of the polynomial ie for equation:
-    f(x) = a + bx + cx^2 + ..., this returns as a vector [1, x, x^2, ...], where x is
-    the values of each individual pixel in the kernel.
-    """
-    # Get the data vector
-    vals = kernel.flatten()
-
-    # The zeroth order basis is just a constant
-    basis = [np.ones_like(vals)]
-
-    # Iterate over orders and append the components
-    for i in range(1, order + 1):
-        inds = triu_indices(len(vals), i)
-        prods = np.prod(np.array([vals[ind] for ind in inds]), axis=0)
-        basis.append(prods)
-    return np.concatenate(basis)
-
-
-def get_kernel(arr, i, j, ksize):
-    """
-    Dynamically returns a kernel of size (ksize, ksize) centred on the pixel (i,j).
-    ksize is kernel size, and must be odd.
-    """
-    k = ksize // 2
-    return dynamic_slice(arr, (i - k, j - k), (ksize, ksize))
-
-
-def kernel_bleeding(basis, coeffs, ksize):
-    """
-    Calculate the bleeding of each pixel kernel, returning the kernel in its
-    'original' shape.
-    """
-    bleed_vec = vmap(lambda c: np.dot(basis, c))(coeffs).reshape(ksize, ksize)
-    return bleed_vec - bleed_vec.mean()  # Subtract the mean to conserve charge
-
-
 def base_inds(ksize, oversample):
     """
     We need a way to index the bleeding kernels in a way that it spatially coherent,
@@ -116,34 +70,6 @@ def shift_inds(inds, i, j):
     return inds + np.array([i, j, 0, 0])[None, :]
 
 
-def build_bleed_kernels(array, coeffs, ksize, order, oversample):
-    """
-    Builds the individual 'bleeding' kernels for each pixel, describing how the
-    charge migrates between each pixel. Output is 4 dimensional, with shape
-    (npix, npix, ksize * oversample, ksize * oversample).
-    """
-    # Array is oversampled
-    npix = array.shape[0] // oversample
-
-    # Build the bleeding kernels
-    oksize = ksize * oversample
-    k = (oksize - 1) // 2
-    kern_fn = lambda i, j: get_kernel(np.pad(array, (k, k)), i, j, oksize)
-    Is = oversample * np.arange(npix) + k
-    kernels = vmap2d_inds(kern_fn)(Is, Is)
-    # kernels should now have shape (npix, npix, oksize, oksize)
-
-    # Build the polynomial basis
-    basis = vmap2d_im(lambda kernel: kernel_basis(kernel, order))(kernels)
-    # basis should now have shape (npix, npix, nbasis)
-
-    # Calculate the bleeding
-    bleed_fn = lambda basis: kernel_bleeding(basis, coeffs, oksize)
-    bleeding = vmap2d_im(bleed_fn)(basis)
-    # bleeding should now have shape (npix, npix, oksize, oksize)
-    return bleeding
-
-
 def build_pixel(kernels, inds, i, j, oversample):
     """
     Builds the final value of an oversampled pixel located at (i, j) by summing the
@@ -155,11 +81,85 @@ def build_pixel(kernels, inds, i, j, oversample):
     return vmap(slice_fn, (None, 0))(kernels, shift_inds(inds, i, j)).sum(0)
 
 
+def get_basis_inds(ksize, order):
+    """
+    Builds the of pixel basis vectors of a specific order
+    """
+    if order == 0:
+        return np.ones(ksize**2).astype(int)
+    return triu_indices(ksize**2, order)
+
+
+def kernel_basis(pixel_kernel, inds):
+    vals = np.array([pixel_kernel[ind] for ind in inds])
+    if inds.ndim == 1:
+        # No need to multiply for 1d coefficients, its just indexing
+        return vals
+    return np.prod(vals, axis=0)
+
+
+def kernel_bleeding(basis, coeffs):
+    if coeffs.ndim == 1:
+        # No basis dot here here since zeroth order term basis is just ones
+        bleed_vec = coeffs
+    else:
+        bleed_vec = vmap(lambda c: np.dot(basis, c))(coeffs)
+
+    # Subtract the mean to conserve charge
+    return bleed_vec - bleed_vec.mean()
+
+
+def build_bleed_kernels(pixel_kernels, coeffs, inds):
+    """ """
+    # Build the basis, shape (npix, npix, nbasis)
+    basis_fn = lambda kern: kernel_basis(kern, inds)
+    basis = vmap2d_im(basis_fn)(pixel_kernels)
+
+    # Calculate bleeding, shape (npix, npix, nbasis)
+    bleed_fn = lambda basis: kernel_bleeding(basis, coeffs)
+    return vmap2d_im(bleed_fn)(basis)
+
+
+def calc_bleeding(bleed_kernels, npix, ksize, oversample):
+    # Build the indexes and function to calculate final pixel values
+    inds = base_inds(ksize, oversample)
+    pixel_fn = lambda i, j: build_pixel(bleed_kernels, inds, i, j, oversample)
+
+    # Build the final pixel values
+    # I still dont _fully_ understand why this needs the -1. Without it the output
+    # is shifted by one pixel.
+    bleeding = vmap2d_inds(pixel_fn)(*2 * (np.arange(npix) - 1,))
+
+    # Oversample == 1 is a special case and does not need to be transposed/reshaped
+    if oversample != 1:
+        # Thank you Chat-GPT for this transpose trick, don't ask me why it works
+        bleeding = bleeding.transpose(0, 2, 1, 3).reshape(2 * (npix * oversample))
+
+    return bleeding
+
+
+def get_pixel_kernel(arr, i, j, ksize):
+    """
+    Dynamically returns a kernel of size (ksize, ksize) centred on the pixel (i,j).
+    ksize is kernel size, and must be odd.
+    """
+    k = ksize // 2
+    return dynamic_slice(arr, (i - k, j - k), (ksize, ksize))
+
+
+def build_pixel_kernels(image, npix, k, oksize, oversample):
+    # Build the pixels kernels
+    padded_im = np.pad(image, (k, k))
+    kern_fn = lambda i, j: get_pixel_kernel(padded_im, i, j, oksize)
+    return vmap2d_inds(kern_fn)(*2 * (oversample * np.arange(npix) + k,))
+    # kernels should now have shape (npix, npix, oksize, oksize)
+
+
 def apply_BFE(
     image,
     coeffs,
     ksize,
-    order,
+    inds,
     oversample,
     return_bleed_kernels=False,
     return_bleed=False,
@@ -188,48 +188,63 @@ def apply_BFE(
     if oversample % 2 != 1:
         raise ValueError("oversample must be odd")
 
-    # Get the coefficients in a vectors
-    coeffs_vec = coeffs_to_vec(coeffs, order)
+    # Shapes and sizes
+    npix = image.shape[0] // oversample
+    oksize = ksize * oversample
+    k = (oksize - 1) // 2
 
-    # Build the bleeding kernels
-    bleed_kernels = build_bleed_kernels(image, coeffs_vec, ksize, order, oversample)
+    # Build the pixel kernels, shape (npix, npix, nbasis)
+    pixel_kernels = build_pixel_kernels(image, npix, k, oksize, oversample)
+    pixel_kernels = pixel_kernels.reshape(npix, npix, oksize**2)
 
-    # Return the bleeding kernels if requested
+    # Build the bleeding kernels, shape (npix, npix, nbasis)
+    bleed_fn = lambda coeffs, inds: build_bleed_kernels(pixel_kernels, coeffs, inds)
+    bleed_kernels = jtu.tree_map(bleed_fn, coeffs, inds)
+
+    # Reshape from (npix, npix, nbasis) to (npix, npix, oksize, oksize)
+    reshape_fn = lambda kern: kern.reshape(npix, npix, oksize, oksize)
+    bleed_kernels = jtu.tree_map(reshape_fn, bleed_kernels)
+
+    # Return the bleeding kernels if requested (as a dict)
     if return_bleed_kernels:
         return bleed_kernels
 
-    # Build the indexes and function to calculate final pixel values
-    inds = base_inds(ksize, oversample)
-    pixel_fn = lambda i, j: build_pixel(bleed_kernels, inds, i, j, oversample)
+    # Calculate final pixel bleeding values
+    image_bleed_fn = lambda kern: calc_bleeding(kern, npix, ksize, oversample)
+    bleeding = jtu.tree_map(image_bleed_fn, bleed_kernels)
 
-    # Build the final pixel values
-    # I still dont _fully_ understand why this needs the -1. Without it the output
-    # is shifted by one pixel.
-    Is = np.arange(image.shape[0] // oversample) - 1
-    bleeding = vmap2d_inds(pixel_fn)(Is, Is)
-
-    # Oversample == 1 is a special case and does not need to be transposed/reshaped
-    if oversample != 1:
-        # Thank you Chat-GPT for this transpose trick, don't ask me why it works
-        bleeding = bleeding.transpose(0, 2, 1, 3).reshape(image.shape)
-
-    # Return just the bleeding if requested
+    # Return just the bleeding if requested (as a dict)
     if return_bleed:
         return bleeding
 
-    # Calculate the final bleed image
-    return image + bleeding
+    # Calculate the final bled image (as an array)
+    return image + np.array(jtu.tree_leaves(bleeding)).sum(0)
+
+
+def map_to_str(order):
+    if order < 0 or order > 5:
+        raise ValueError("Order must be between 0 and 5")
+    order_dict = {
+        0: "constant",
+        1: "linear",
+        2: "quadratic",
+        3: "cubic",
+        4: "quartic",
+        5: "quintic",
+        # Add more if needed
+    }
+    return order_dict.get(order, "unknown")
 
 
 class PolyBFE(dl.detector_layers.DetectorLayer):
-    order: int
     ksize: int
     oversample: int
+    inds: dict[int] = eqx.field(static=True)
     coeffs: dict
 
-    def __init__(self, ksize, oversample, order):
+    def __init__(self, ksize, oversample, orders):
         self.ksize = int(ksize)
-        self.order = int(order)
+        # self.orders = list(orders)
         self.oversample = int(oversample)
 
         # Check inputs
@@ -239,22 +254,29 @@ class PolyBFE(dl.detector_layers.DetectorLayer):
         if self.oversample % 2 != 1:
             raise ValueError("oversample must be odd")
 
-        # Doing the BFE
+        # Set up coefficients
         oksize = self.ksize * self.oversample
-
         N = oksize**2
-        coeffs = {"0": np.zeros((N, oksize**2))}
-        for i in range(1, order + 1):
-            N_coeffs = triu_indices(oksize**2, i).shape[1]
-            coeffs[str(i)] = np.zeros((N, N_coeffs))
 
+        coeffs = {}
+        for order in orders:
+            if order == 0:
+                coeffs = {map_to_str(0): np.zeros((oksize**2))}
+            else:
+                N_coeffs = triu_indices(oksize**2, order).shape[1]
+                coeffs[map_to_str(order)] = np.zeros((N, N_coeffs))
         self.coeffs = coeffs
+
+        # Pre calculate the basis indexes
+        self.inds = {
+            map_to_str(order): get_basis_inds(oksize, order) for order in orders
+        }
 
     def apply(self, PSF):
         new_data = apply_BFE(
-            PSF.data, self.coeffs, self.ksize, self.order, self.oversample
+            PSF.data, self.coeffs, self.ksize, self.inds, self.oversample
         )
         return PSF.set("data", new_data)
 
     def apply_array(self, image):
-        return apply_BFE(image, self.coeffs, self.ksize, self.order, self.oversample)
+        return apply_BFE(image, self.coeffs, self.ksize, self.inds, self.oversample)
