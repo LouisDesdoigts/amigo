@@ -271,6 +271,11 @@ class PolyBFE(dl.detector_layers.DetectorLayer):
         self.inds = {
             map_to_str(order): get_basis_inds(oksize, order) for order in orders
         }
+    
+    def __getattr__(self, key):
+        if key in self.coeffs:
+            return self.coeffs[key]
+        raise AttributeError(f"Attribute {key} not found")
 
     def apply(self, PSF):
         new_data = apply_BFE(
