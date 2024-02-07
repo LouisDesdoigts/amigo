@@ -17,12 +17,7 @@ def estimate_bias(data):
 
 
 def summarise_files(files, extra_keys=[]):
-    main_keys = [
-        "TARGPROP",
-        "FILTER",
-        "OBSERVTN",
-        "PATTTYPE",
-    ]
+    main_keys = []
 
     main_keys += extra_keys
     for key in main_keys:
