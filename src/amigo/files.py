@@ -26,7 +26,7 @@ def summarise_files(files, extra_keys=[]):
         print(f"  {key}: {vals_str}")
 
 
-def get_files(dir_or_files, ext, is_dir=True, **kwargs):
+def get_files(paths, ext, **kwargs):
     """
 
     data_path: Path to the data files
@@ -35,37 +35,34 @@ def get_files(dir_or_files, ext, is_dir=True, **kwargs):
     import os
     from astropy.io import fits
 
-    if is_dir:
-        file_names = os.listdir(dir_or_files)
-    else:
-        file_names = dir_or_files
+    if isinstance(paths, str):
+        paths = [paths]
 
     files = []
-    checked = False
-    for name in file_names:
-        if name.endswith(f"{ext}.fits"):
-            if is_dir:
-                file = fits.open(dir_or_files + name)
-            else:
-                file = fits.open(name)
-            h = file[0].header
+    for path in paths:
+        file_names = os.listdir(path)
 
-            if not checked:
-                if not all([key in h.keys() for key in kwargs.keys()]):
-                    raise KeyError(
-                        f"Header keys {kwargs.keys()} not found in file {name}"
-                    )
+        checked = False
+        for name in file_names:
+            if name.endswith(f"{ext}.fits"):
+                file = fits.open(path + name)
+                h = file[0].header
+                if not checked:
+                    if not all([key in h.keys() for key in kwargs.keys()]):
+                        raise KeyError(
+                            f"Header keys {kwargs.keys()} not found in file {name}"
+                        )
 
-            match = True
-            for key, val in kwargs.items():
-                if isinstance(val, list):
-                    if h[key] not in val:
+                match = True
+                for key, val in kwargs.items():
+                    if isinstance(val, list):
+                        if h[key] not in val:
+                            match = False
+                    elif h[key] != val:
                         match = False
-                elif h[key] != val:
-                    match = False
 
-            if match:
-                files.append(file)
+                if match:
+                    files.append(file)
     return files
 
 

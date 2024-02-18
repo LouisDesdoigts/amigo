@@ -19,11 +19,24 @@ def get_optimiser(pytree, parameters, optimisers):
     # Construct groups and get param_spec
     groups = [str(i) for i in range(len(optimisers))]
     param_spec = jtu.tree_map(lambda _: "null", pytree)
+
+    # Does this need to be tree_mapped with an 'isinstance' to only map optimisers
+    # t0 array likes ?
     param_spec = param_spec.set(parameters, groups)
+    # for param, group in zip(parameters, groups):
+    #     sub_tree = pytree.get(param)
+    #     sub_param_spec = param_spec.get(param)
+    #     if not isinstance(sub_tree, Array):
+    #         param_spec_leaf = jtu.tree_map(lambda _: group, sub_param_spec)
+    #     else:
+    #         param_spec_leaf = group
+    #     param_spec = param_spec.set(param, param_spec_leaf)
+    #     # param_spec = param_spec.set(param, group)
+    # # print(param_spec)
 
     # Generate optimiser dictionary and Assign the null group
     opt_dict = dict([(groups[i], optimisers[i]) for i in range(len(groups))])
-    opt_dict["null"] = optax.adam(0.0)
+    opt_dict["null"] = optax.sgd(0.0)
 
     # Get optimiser object and filtered optimiser
     optim = optax.multi_transform(opt_dict, param_spec)
@@ -34,10 +47,64 @@ def get_optimiser(pytree, parameters, optimisers):
     # 'opt_state' will change when passed through a 'step function', forcing a
     # recompile of the JIT'd function.
     none_tree = jtu.tree_map(lambda _: None, pytree)
-    opt_state = optim.init(none_tree.set(parameters, pytree.get(parameters)))
+    # print(none_tree)
+    # for param in parameter:
+    #     sub_tree = pytree.get(param)
+    #     if not isinstance(sub_tree, Array):
+
+    #     none_tree = none_tree.set(param, pytree.get(param))
+    opt_tree = none_tree.set(parameters, pytree.get(parameters))
+    # print(opt_tree)
+    opt_state = optim.init(eqx.filter(opt_tree, eqx.is_inexact_array))
+    # opt_state = optim.init(opt_tree)
 
     # Return
     return (optim, opt_state)
+
+
+from typing import Any
+from jax import Array
+
+
+# Array
+def _to_array(leaf: Any):
+    if not isinstance(leaf, Array):
+
+        # Try except here allows for leaves to be _pytrees_ and not just arrays.
+        # This should probably recursively tree_map the _to_array function in this case.
+        # For now, they already all are arrays so this is fine.
+        try:
+            return np.asarray(leaf, dtype=float)
+        except TypeError:
+            return leaf
+    else:
+        return leaf
+
+
+# def set_array(pytree: Base(), parameters: Params) -> Base():
+def set_array(pytree, parameters):
+    """
+    Converts all leaves specified by parameters in the pytree to arrays to
+    ensure they have a .shape property for static dimensionality and size
+    checks. This allows for 'dynamicly generated' array shapes from the path
+    based `parameters` input. This is used for dynamically generating the
+    latent X parameter that we need to generate in order to calculate the
+    hessian.
+
+    Parameters
+    ----------
+    pytree : Base()
+        The pytree to be converted.
+    parameters : Params
+        The leaves to be converted to arrays.
+
+    Returns
+    -------
+    pytree : Base()
+        The pytree with the specified leaves converted to arrays.
+    """
+    new_leaves = jtu.tree_map(_to_array, pytree.get(parameters))
+    return pytree.set(parameters, new_leaves)
 
 
 def optimise(
@@ -45,8 +112,8 @@ def optimise(
     args,
     loss_fn,
     epochs,
-    config,
-    grad_fn=lambda grads, args, config: grads,
+    optimisers,
+    grad_fn=lambda grads, args, optimisers: grads,
     norm_fn=lambda model, args: model,
     update_fn=lambda updates, args: updates,
     print_grads=False,
@@ -55,11 +122,12 @@ def optimise(
     nan_method="none",
 ):
     """nan_method: str, either 'debug' or 'zero', 'none'"""
-    params = list(config.keys())
-    optimisers = list(config.values())
+    params = list(optimisers.keys())
+    opts = list(optimisers.values())
 
-    model = zdx.set_array(model, params)
-    optim, opt_state = get_optimiser(model, params, optimisers)
+    # model = zdx.set_array(model, params)
+    model = set_array(model, params)
+    optim, opt_state = get_optimiser(model, params, opts)
     val_grad_fn = zdx.filter_value_and_grad(params)(loss_fn)
 
     if print_grads:
@@ -100,7 +168,7 @@ def optimise(
         # Calculate the loss and gradient
         loss, grads = val_grad_fn(model, args)
 
-        grads = grad_fn(grads, args, config)
+        grads = grad_fn(grads, args, optimisers)
         grads = nan_check(grads)
 
         # Apply the update
@@ -113,9 +181,10 @@ def optimise(
 
     # Get the params from each model
     from copy import deepcopy
+    from CNN import ConvBFE
 
     params = {}
-    for param in config.keys():
+    for param in optimisers.keys():
         leaf = deepcopy(model.get(param))  # Mother fucker is mutable
         # Store dict as list and append along entries
         if isinstance(leaf, dict):
@@ -123,17 +192,39 @@ def optimise(
                 leaf[p] = [leaf[p]]
             params[param] = leaf
 
+        # Same with CNN model
+        elif isinstance(leaf, ConvBFE):
+            weights = []
+            biases = []
+            for layer in leaf.layers:
+                if isinstance(layer, eqx.nn.Conv):
+                    weights.append(layer.weight)
+                    biases.append(layer.bias)
+
+            params["BFE.weights"] = weights
+            params["BFE.biases"] = biases
+
         else:
             # Else is array, store as list
             params[param] = [leaf]
 
     def configure_params(model, params):
+        print(params)
         for key, value in params.items():
             # If entry is list, we must append along the entries
             if isinstance(value, dict):
                 for p in value.keys():
                     value[p].append(model.get(key)[p])
-
+            # If entry is
+            elif isinstance(value, ConvBFE):
+                weights = []
+                biases = []
+                for layer in model.layers:
+                    if isinstance(layer, eqx.nn.Conv):
+                        weights.append(layer.weight)
+                        biases.append(layer.bias)
+                params["BFE.weights"].append(weights)
+                params["BFE.biases"].append(biases)
             else:
                 # Else is array, append to list
                 params[key].append(model.get(key))

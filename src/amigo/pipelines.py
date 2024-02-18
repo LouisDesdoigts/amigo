@@ -108,7 +108,6 @@ class Detector1Pipeline(Pipeline):
             input = self.superbias(input)
             input = self.refpix(input)
             input = self.linearity(input)
-
             input = self.dark_current(input)
 
             # apply the charge_migration step
