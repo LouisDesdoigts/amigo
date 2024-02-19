@@ -1,9 +1,10 @@
+import pkg_resources
 import jax
 import jax.numpy as np
 from jax import vmap
 import dLux as dl
 import dLux.utils as dlu
-from nrm_analysis.misctools import mask_definitions
+# from nrm_analysis.misctools import mask_definitions
 
 
 class DynamicAMI(dl.layers.optical_layers.OpticalLayer):
@@ -13,10 +14,10 @@ class DynamicAMI(dl.layers.optical_layers.OpticalLayer):
     normalise: bool
 
     def __init__(self, f2f=0.82, normalise=False):
+        file_path = pkg_resources.resource_filename(__name__, 'data/AMI_holes.npy')
+        self.holes = np.load(file_path)
         self.f2f = np.asarray(f2f, float)
         self.transformation = dl.CoordTransform((0.0, 0.0), 0.0, (1.0, 1.0), (0.0, 0.0))
-        holes = mask_definitions.jwst_g7s6c()[1]
-        self.holes = np.roll(holes, 1, -1)
         self.normalise = normalise
 
     def gen_AMI(self, npix, diameter):

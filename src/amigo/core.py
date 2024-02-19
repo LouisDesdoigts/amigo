@@ -1,4 +1,5 @@
 import os
+import pkg_resources
 import equinox as eqx
 import dLuxWebbpsf as dlw
 from jax import Array
@@ -67,16 +68,8 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         self.psf_pixel_scale = 0.065524085
 
         # Get the primary mirror
-
-        import pkg_resources
-
-        # data = pkg_resources.resource_string(__name__, 'static/primary.npy')
-        file_path = pkg_resources.resource_filename(__name__, 'src/amigo/data/primary.npy')
+        file_path = pkg_resources.resource_filename(__name__, 'data/primary.npy')
         transmission = np.load(file_path)
-        # Construct the path to the file you want to load
-        # primary_path = os.path.join(current_dir, 'relative/path/to/your/file')
-        # primary_path = os.path.join(current_dir, "src/amigo/files/static/primary.npy")
-        # transmission = np.load(primary_path)
         primary = dlw.JWSTAberratedPrimary(
             transmission,
             opd=np.zeros_like(transmission),
