@@ -78,14 +78,14 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             AMI=True,
         )
 
-        # Get the SUB80 field dependent aberrations
+        # Load the values into the primary
         file_path = pkg_resources.resource_filename(__name__, 'data/FDA_coeffs.npy')
-        primary = primary.set("coefficients", np.load(file_path))
 
         if opd is None:
             opd = np.zeros_like(transmission)
         primary = primary.set("opd", opd)
         primary = primary.multiply("basis", 1e-9)  # Normalise to nm
+        primary = primary.set("coefficients", np.load(file_path))
 
         if pupil_mask is None:
             pupil_mask = DynamicAMI(f2f=0.80, normalise=normalise)
