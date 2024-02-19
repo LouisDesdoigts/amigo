@@ -4,10 +4,7 @@ import dLux.utils as dlu
 from jax import vmap
 
 
-def dsamp(arr, k):
-    return arr.reshape(-1, k).mean(1)
-
-
+# Mask generation and baselines
 def osamp_freqs(n, dx, osamp):
     df = 1 / (n * dx)
     odf = df / osamp
@@ -22,22 +19,6 @@ def osamp_freqs(n, dx, osamp):
     ostart = start + (odf - df) / 2
     oend = end + (df - odf) / 2
     return np.linspace(ostart, oend, n * osamp, endpoint=True)
-
-
-# ns = [1, 2, 3, 4, 5, 6, 7]
-# dxs = [1, 2, 3, 4, 5]
-# ps = [1, 2, 3, 4, 5]
-
-# TODO: Make this a test
-# for n in ns:
-#     for dx in dxs:
-#         for p in ps:
-#             base_freqs = np.fft.fftshift(np.fft.fftfreq(n, d=dx))
-#             freqs = osamp_freqs(n, dx, p)
-#             print(n, dx, np.isclose(base_freqs, dsamp(freqs, p)))
-
-
-# import numpy as np
 
 
 def pairwise_vectors(points):
@@ -66,12 +47,13 @@ def pairwise_vectors(points):
     # Sort the pairwise vectors by length
     # TODO: Replace with an argsort?
     pairwise_vectors.sort(key=lambda x: lengths[x[1], x[2]])
-    # return pairwise_vectors
+    # return np.array(pairwise_vectors)
 
     vecs = []
     for vec in pairwise_vectors:
-        v = vec[0]
-        vecs.append([v[1], v[0]])
+        # v = vec[0]
+        # vecs.append([v[0], v[1]])
+        vecs.append(vec[0])
     return np.array(vecs)
 
 
@@ -87,12 +69,14 @@ def get_baselines(holes):
     hole_mask = np.where(~np.eye(holes.shape[0], dtype=bool))
     thisu = (holes[:, 0, None] - holes[None, :, 0]).T[hole_mask]
     thisv = (holes[:, 1, None] - holes[None, :, 1]).T[hole_mask]
-    return np.array([thisv, thisu]).T
+    # return np.array([thisv, thisu]).T
+    return np.array([thisu, thisv]).T
 
 
 def uv_hex_mask(
     holes,
     f2f,
+    tf,
     wavelength,
     psf_pscale,
     psf_npix,
@@ -117,6 +101,9 @@ def uv_hex_mask(
     dx = dlu.arcsec2rad(psf_pscale) / psf_oversample
     shifted_coords = osamp_freqs(psf_npix * uv_pad, dx, mask_pad)
     uv_coords = np.array(np.meshgrid(shifted_coords, shifted_coords))
+
+    # Apply the mask transformations
+    uv_coords = tf.apply(uv_coords)
 
     # Do this outside so we can scatter plot the baseline vectors over the psf splodges
     hbls = pairwise_vectors(holes) / wavelength
@@ -151,30 +138,49 @@ def uv_hex_mask(
     return dsampler(norm_hexes)
 
 
-def get_AMI_splodge_mask(tel, wavelengths, calc_pad=2, pad=2, verbose=True, f2f=0.82):
-    from nrm_analysis.misctools import mask_definitions
+# Visibility modelling
+def to_uv(psf):
+    return np.fft.fftshift(np.fft.fft2(np.fft.fftshift(psf)))
 
-    # Take holes from ImPlaneIA
-    holes = mask_definitions.jwst_g7s6c()[1]
 
-    # Get values from telescope
-    oversample = tel.oversample
-    psf_npix = tel.psf_npixels
-    pscale = tel.psf_pixel_scale
+def from_uv(uv):
+    return np.fft.fftshift(np.fft.ifft2(np.fft.fftshift(uv)))
 
-    if isinstance(wavelengths, float):
-        wavelengths = [wavelengths]
 
-    if verbose:
-        looper = tqdm(wavelengths)
-    else:
-        looper = wavelengths
+def splodge_mask(mask, vis):
+    coeffs = np.ones(2 * len(vis) + 1, complex)
+    coeffs = coeffs.at[1:].set(np.concatenate([vis, vis.conj()]))
+    return dlu.eval_basis(mask, coeffs)
 
-    # Now we calculate the masks
-    masks = []
-    for wl in looper:
-        masks.append(
-            uv_hex_mask(holes, f2f, wl, pscale, psf_npix, oversample, pad, calc_pad)
-        )
 
-    return np.squeeze(np.array(masks))
+def apply_visibilities(psf, mask, vis):
+    # Get splodge mask and inverse
+    splodges = splodge_mask(mask, vis)
+    inv_splodge_support = np.abs(1 - mask.sum(0))
+
+    # We dont use np.where here because we have soft edges on the boundary of the mask
+    return from_uv(to_uv(psf) * (splodges + inv_splodge_support))
+
+
+def visibilities(amplitudes, phases):
+    return amplitudes * np.exp(1j * phases)
+
+
+def uv_model(vis, psfs, mask, cplx=False):
+    # Get the sizes
+    npix = psfs.shape[-1]
+    npix_pad = mask.shape[-1]
+
+    # Pad, apply the splodges, and cut
+    psfs_pad = vmap(lambda x: dlu.resize(x, npix_pad))(psfs)
+    cplx_psfs_pad = vmap(apply_visibilities, (0, 0, None))(psfs_pad, mask, vis)
+    cplx_psfs = vmap(lambda x: dlu.resize(x, npix))(cplx_psfs_pad)
+
+    # Return complex or magnitude
+    if cplx:
+        return cplx_psfs
+    return np.abs(cplx_psfs)
+
+
+def applied_splodges(masks, vis):
+    return vmap(splodge_mask, (0, None))(masks, vis)

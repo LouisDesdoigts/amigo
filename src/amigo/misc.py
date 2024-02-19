@@ -1,158 +1,102 @@
-import jax
-import zodiax as zdx
 import jax.numpy as np
+from jax import vmap
+import numpy as onp
 import jax.scipy as jsp
-import dLux as dl
-import tqdm.notebook as tqdm
-
-def fit_image(
-    model,
-    data,
-    err,
-    loss_fn,
-    grad_fn,
-    norm_fn,
-    epochs,
-    config,
-    loss_scale=1e-4,
-    verbose=True,
-    print_grads=False,
-):
-    params = list(config.keys())
-    optimisers = [config[param]["optim"] for param in params]
-
-    model = zdx.set_array(model, params)
-    optim, opt_state = zdx.get_optimiser(model, params, optimisers)
-
-    if verbose:
-        print("Compiling...")
-    loss, grads = loss_fn(model, data, err)
-    if print_grads:
-        for param in params:
-            print(f"{param}: {grads.get(param)}")
-    losses, models_out = [], [model]
-
-    if verbose:
-        looper = tqdm(range(epochs), desc="Loss %.2f" % (loss * loss_scale))
-    else:
-        looper = range(epochs)
-
-    for i in looper:
-        # calculate the loss and gradient
-        new_loss, grads = loss_fn(model, data, err)
-
-        if new_loss > loss:
-            print(
-                f"Loss increased from {loss * loss_scale:.2f} to "
-                f"{new_loss * loss_scale:.2f} on {i} th epoch"
-            )
-        loss = new_loss
-        if np.isnan(loss):
-            print(f"Loss is NaN on {i} th epoch")
-            return losses, models_out
-
-        # Apply any processing to the gradients
-        grads = grad_fn(grads, config, i)
-
-        # apply the update
-        updates, opt_state = optim.update(grads, opt_state)
-        model = zdx.apply_updates(model, updates)
-
-        # Apply normalisation
-        model = norm_fn(model)
-
-        # save results
-        models_out.append(model)
-        losses.append(loss)
-
-        if verbose:
-            looper.set_description("Loss %.2f" % (loss * loss_scale))
-
-    return losses, models_out
 
 
-from typing import List, Any
-
-
-class FresnelOptics(dl.CartesianOpticalSystem):
+def planck(wav, T):
     """
-    fl = pixel_scale_m / pixel_scale_rad -> NIRISS pixel scales are 18um  and
-    0.0656 arcsec respectively, so fl ~= 56.6m
+    Planck's Law:
+    I(W, T) = (2hc^2 / W^5) * (1 / (exp{hc/WkT} - 1))
+    where
+    h = Planck's constant
+    c = speed of light
+    k = Boltzmann's constant
+
+    W = wavelength array
+    T = effective temperature
+
+    Here A is the first fraction and B is the second fraction.
+    The calculation is (sort of) performed in log space.
     """
+    logW = np.log10(wav)  # wavelength array
+    logT = np.log10(T)  # effective temperature
 
-    defocus: jax.Array  # metres, is this actually um??
-
-    def __init__(self, *args, **kwargs):
-        self.defocus = np.array(0.0)
-        super().__init__(*args, **kwargs)
-
-    def propagate_mono(
-        self: dl.optical_systems.OpticalSystem,
-        wavelength: jax.Array,
-        offset: jax.Array = np.zeros(2),
-        return_wf: bool = False,
-    ) -> jax.Array:
-        """
-        Propagates a monochromatic point source through the optical layers.
-
-        Parameters
-        ----------
-        wavelength : float, metres
-            The wavelength of the wavefront to propagate through the optical layers.
-        offset : Array, radians = np.zeros(2)
-            The (x, y) offset from the optical axis of the source.
-        return_wf: bool = False
-            Should the Wavefront object be returned instead of the psf Array?
-
-        Returns
-        -------
-        object : Array, Wavefront
-            if `return_wf` is False, returns the psf Array.
-            if `return_wf` is True, returns the Wavefront object.
-        """
-        # Unintuitive syntax here, this is saying call the _parent class_ of
-        # CartesianOpticalSystem, ie LayeredOpticalSystem, which is what we want.
-        wf = super(dl.optical_systems.CartesianOpticalSystem, self).propagate_mono(
-            wavelength, offset, return_wf=True
+    # -15.92... is [log2 + logh + 2*logc]
+    logA = -15.92347606 - 5 * logW
+    logB = -np.log10(
+        np.exp(
+            # -1.84...is logh + logc - logk
+            np.power(10, -1.8415064 - logT - logW)
         )
-
-        # Propagate
-        true_pixel_scale = self.psf_pixel_scale / self.oversample
-        pixel_scale = 1e-6 * true_pixel_scale
-        psf_npixels = self.psf_npixels * self.oversample
-
-        wf = wf.propagate_fresnel(
-            psf_npixels,
-            pixel_scale,
-            self.focal_length,
-            focal_shift=self.defocus,
-        )
-
-        # Return PSF or Wavefront
-        if return_wf:
-            return wf
-        return wf.psf
-
-
-# def gettr(im, support):
-#     return im[support[0], support[1]]
-
-
-# def like_fn(model, data, sigma, sup):
-#     return jsp.stats.norm.pdf(
-#         gettr(model.model(), sup), loc=gettr(data, sup), scale=gettr(sigma, sup)
-#     )
-
-
-# def loglike_fn(model, data, sigma, sup):
-#     return jsp.stats.norm.logpdf(
-#         gettr(model.model(), sup), loc=gettr(data, sup), scale=gettr(sigma, sup)
-#     )
-#     # return jsp.stats.norm.logpdf(model.model(), loc=data, scale=sigma)
-
-
-def get_likelihoods(psf, data, err):
-    return (
-        jsp.stats.norm.pdf(psf, loc=data, scale=err),
-        -jsp.stats.norm.logpdf(psf, loc=data, scale=err),
+        - 1.0
     )
+
+    return np.power(10, logA + logB)
+
+
+def full_to_SUB80(full_arr):
+    """This is taken from the JWST pipeline, so its probably correct"""
+    xstart = 1045
+    ystart = 1
+    xsize = 80
+    ysize = 80
+    xstop = xstart + xsize - 1
+    ystop = ystart + ysize - 1
+    return full_arr[ystart - 1 : ystop, xstart - 1 : xstop]
+
+
+def least_sq(x, y):
+    A = np.vstack([x, np.ones(len(x))]).T
+    m, b = np.linalg.lstsq(A, y, rcond=None)[0]
+    return m, b
+
+def fit_slope(y):
+    return least_sq(np.arange(len(y)) + 1, y)
+
+def slope_im(im):
+    ms, bs = vmap(fit_slope)(im.reshape(len(im), -1).T)
+    return ms.reshape(im.shape[1:]), bs.reshape(im.shape[1:])
+
+def convert_adjacent_to_true(bool_array):
+    trues = np.array(np.where(bool_array))
+    trues = np.swapaxes(trues, 0, 1)
+    for i in range(len(trues)):
+        y, x = trues[i]
+        bool_array = bool_array.at[y, x + 1].set(True)
+        bool_array = bool_array.at[y, x - 1].set(True)
+        bool_array = bool_array.at[y + 1, x].set(True)
+        bool_array = bool_array.at[y - 1, x].set(True)
+    return bool_array
+
+
+def estimate_psf_and_bias(data):
+    ngroups = len(data)
+    ramp_bottom = data[:2]
+    ramp_bottom = np.where(np.isnan(ramp_bottom), 0, ramp_bottom)
+    psf, bias = slope_im(ramp_bottom) # Estimate from the bottom of the ramp
+    return psf * ngroups, bias
+
+def get_filter(filter_name: str, filter_dir: str, n_wavels: int = 9):
+    if filter_name not in ["F380M", "F430M", "F480M", "F277W"]:
+        raise ValueError("Supported filters are F380M, F430M, F480M, F277W.")
+
+    wl_array, throughput_array = np.array(
+        onp.loadtxt(filter_dir + "JWST_NIRISS." + filter_name + ".dat", unpack=True)
+    )
+
+    edges = np.linspace(wl_array.min(), wl_array.max(), n_wavels + 1)
+    wavels = np.linspace(wl_array.min(), wl_array.max(), 2 * n_wavels + 1)[1::2]
+
+    areas = []
+    for i in range(n_wavels):
+        cond1 = edges[i] < wl_array
+        cond2 = wl_array < edges[i + 1]
+        throughput = np.where(cond1 & cond2, throughput_array, 0)
+        areas.append(jsp.integrate.trapezoid(y=throughput, x=wl_array))
+
+    areas = np.array(areas)
+    weights = areas / areas.sum()
+
+    wavels *= 1e-10
+    return wavels, weights

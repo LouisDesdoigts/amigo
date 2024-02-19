@@ -1,0 +1,9 @@
+.gitignore
+src/amigo/files/
+src/amigo_notebooks/
+src/amigo.egg-info/
+**/__pycache__/
+**/.ipynb_checkpoints/
+**.DS_Store
+dist/
+build/

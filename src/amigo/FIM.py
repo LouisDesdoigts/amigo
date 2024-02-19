@@ -1,3 +1,5 @@
+"""ALL of this will be put into Zodiax down the line"""
+
 import jax
 import zodiax as zdx
 import jax.numpy as np
@@ -11,7 +13,7 @@ def hvp(f, primals, tangents):
 
 def hessian(f, x):
     _, hvp = linearize(grad(f), x)
-    # Jit the sub-function here since it is called many timesc
+    # Jit the sub-function here since it is called many times
     # TODO: Test effect on speed
     hvp = jit(hvp)
     basis = np.eye(np.prod(np.array(x.shape))).reshape(-1, *x.shape)
@@ -33,7 +35,6 @@ def FIM(
     X = np.zeros(zdx.bayes._lengths_to_N(lengths))
 
     # Build function to calculate FIM and calculate
-    # @jax.hessian
     def calc_fim(X):
         parametric_pytree = _perturb(X, pytree, parameters, shapes, lengths)
         return loglike_fn(parametric_pytree, *loglike_args, **loglike_kwargs)
