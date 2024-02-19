@@ -4,7 +4,6 @@ import jax.numpy as np
 from jax import vmap
 import dLux as dl
 import dLux.utils as dlu
-# from nrm_analysis.misctools import mask_definitions
 
 
 class DynamicAMI(dl.layers.optical_layers.OpticalLayer):

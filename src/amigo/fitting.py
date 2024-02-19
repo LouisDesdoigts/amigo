@@ -25,7 +25,7 @@ def get_optimiser(pytree, parameters, optimisers):
     param_spec = jtu.tree_map(lambda _: "null", pytree)
 
     # Does this need to be tree_mapped with an 'isinstance' to only map optimisers
-    # t0 array likes ?
+    # to array likes ?
     param_spec = param_spec.set(parameters, groups)
 
     # Generate optimiser dictionary and Assign the null group
@@ -55,6 +55,7 @@ def _to_array(leaf: Any):
         try:
             return np.asarray(leaf, dtype=float)
         except TypeError:
+            # TODO: Try recursive tree map here?
             return leaf
     else:
         return leaf
@@ -215,7 +216,7 @@ def optimise(
 
     looper = range(1, epochs)
     if verbose:
-        looper = tqdm(looper, desc=f"Loss: {loss:,.2f}, $\delta$Loss: {0.}")
+        looper = tqdm(looper, desc=f"Loss: {loss:,.2f}, Change: {0.}")
 
     losses = [loss]
     for i in looper:
@@ -229,7 +230,7 @@ def optimise(
         
         if verbose:
             delta_loss = _loss - loss
-            looper.set_description(f"Loss: {loss:,.2f}, $\delta$Loss: {delta_loss:,.3}")
+            looper.set_description(f"Loss: {loss:,.2f}, Change: {delta_loss:,.2f}")
         
         loss = _loss
         losses.append(loss)
