@@ -149,11 +149,11 @@ def process_stage1(directory, output_dir='calgrps/', refpix_correction=0):
         # Fill the masked values with nans
         cleaned_ramp = np.ma.filled(masked_clipped, fill_value=np.nan)
 
-        # TODO: Mean or median?
         # TODO: Fit gaussian to the ramp value? - Better mean and error?
         # Get the ramp and error 
-        # ramp = np.nanmean(cleaned_ramp, axis=0)
-        ramp = np.nanmedian(cleaned_ramp, axis=0)
+        # Mean after sigma clipping - 'Robust mean'
+        # This is quantised data, so mean is better than median
+        ramp = np.nanmean(cleaned_ramp, axis=0)
         err = np.nanstd(cleaned_ramp, axis=0)
 
         # Reference pixel correction 2
