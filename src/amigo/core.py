@@ -1,3 +1,4 @@
+import os
 import equinox as eqx
 import dLuxWebbpsf as dlw
 from jax import Array
@@ -6,10 +7,12 @@ import jax.numpy as np
 from jax import vmap
 import dLux.utils as dlu
 import dLux as dl
-from optical_layers import DynamicAMI
 from jax.scipy.stats import multivariate_normal as mvn
-from detector_layers import Rotate, ApplySensitivities
+from .detector_layers import Rotate, ApplySensitivities
+from .optical_layers import DynamicAMI
 
+# Get the directory of the current script for relative imports
+current_dir = os.path.dirname(os.path.realpath(__file__))
 
 class Exposure(zdx.Base):
     data: Array
@@ -64,7 +67,16 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         self.psf_pixel_scale = 0.065524085
 
         # Get the primary mirror
-        transmission = np.load("files/static/primary.npy")
+
+        import pkg_resources
+
+        # data = pkg_resources.resource_string(__name__, 'static/primary.npy')
+        file_path = pkg_resources.resource_filename(__name__, 'src/amigo/data/primary.npy')
+        transmission = np.load(file_path)
+        # Construct the path to the file you want to load
+        # primary_path = os.path.join(current_dir, 'relative/path/to/your/file')
+        # primary_path = os.path.join(current_dir, "src/amigo/files/static/primary.npy")
+        # transmission = np.load(primary_path)
         primary = dlw.JWSTAberratedPrimary(
             transmission,
             opd=np.zeros_like(transmission),

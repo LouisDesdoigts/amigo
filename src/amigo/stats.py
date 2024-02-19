@@ -1,6 +1,6 @@
 import jax.numpy as np
 from jax import vmap, lax
-from detector_layers import model_amplifier
+from .detector_layers import model_amplifier
 
 
 def total_read_noise(bias, one_on_fs):
