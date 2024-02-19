@@ -9,22 +9,22 @@ import dLux as dl
 from optical_layers import DynamicAMI
 from jax.scipy.stats import multivariate_normal as mvn
 from detector_layers import Rotate, ApplySensitivities
-from stats import get_covariance_matrix
 
 
 class Exposure(zdx.Base):
     data: Array
+    covariance: Array
     support: Array = eqx.field(static=True)  # Make this explicit as an indexer
-    read_noise: Array
     nints: int
     filter: str
     star: str
     key: str
+    # TODO: Store per data set WFS measurements?
 
-    def __init__(self, data, support, read_noise, nints, filter, star, key):
+    def __init__(self, data, covariance, support, nints, filter, star, key):
         self.data = data
+        self.covariance = covariance
         self.support = support
-        self.read_noise = read_noise
         self.nints = nints
         self.filter = filter
         self.star = star
@@ -37,18 +37,14 @@ class Exposure(zdx.Base):
     def to_vec(self, image):
         return image[..., *self.support]
 
-    def covariance(self, total_bias):
-        # This works on _image ramps_ and outputs _image ramped shaped cov mats_
-        return get_covariance_matrix(self.data, total_bias, self.read_noise)
-
-    def loglike_vec(self, ramp, total_bias):
-        cov = self.nints * self.to_vec(self.covariance(total_bias))
+    def loglike_vec(self, ramp):
         ramp_vec = self.nints * self.to_vec(ramp)
         data_vec = self.nints * self.to_vec(self.data)
-        return vmap(mvn.logpdf, (-1, -1, -1))(ramp_vec, data_vec, cov)
+        cov_vec = self.nints * self.to_vec(self.covariance)
+        return vmap(mvn.logpdf, (-1, -1, -1))(ramp_vec, data_vec, cov_vec)
 
-    def loglike_im(self, ramp, total_bias):
-        loglike_vec = self.loglike_vec(ramp, total_bias)
+    def loglike_im(self, ramp):
+        loglike_vec = self.loglike_vec(ramp)
         return (np.nan * np.ones_like(ramp[0])).at[self.support].set(loglike_vec)
 
 

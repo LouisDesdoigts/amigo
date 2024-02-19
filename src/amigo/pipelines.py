@@ -161,7 +161,7 @@ def process_stage1(directory, output_dir='calgrps/', refpix_correction=0):
             refpix = electrons[:, :, 4:5, :]
             refpix_clipped = astropy.stats.sigma_clip(refpix, axis=0, sigma=3)
             cleaned_refpix = np.ma.filled(refpix_clipped, fill_value=np.nan)
-            ramp -= np.nanmedian(cleaned_refpix, axis=0)
+            ramp += np.nanmedian(cleaned_refpix, axis=0)
 
         # Write to file
         file["SCI"].data = ramp

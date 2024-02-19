@@ -5,7 +5,11 @@ import equinox as eqx
 import jax
 import optax
 import jax.tree_util as jtu
-
+import time
+from datetime import timedelta
+from copy import deepcopy
+from typing import Any
+from jax import Array
 
 def get_optimiser(pytree, parameters, optimisers):
     # Pre-wrap single inputs into a list since optimisers have a length of 2
@@ -23,16 +27,6 @@ def get_optimiser(pytree, parameters, optimisers):
     # Does this need to be tree_mapped with an 'isinstance' to only map optimisers
     # t0 array likes ?
     param_spec = param_spec.set(parameters, groups)
-    # for param, group in zip(parameters, groups):
-    #     sub_tree = pytree.get(param)
-    #     sub_param_spec = param_spec.get(param)
-    #     if not isinstance(sub_tree, Array):
-    #         param_spec_leaf = jtu.tree_map(lambda _: group, sub_param_spec)
-    #     else:
-    #         param_spec_leaf = group
-    #     param_spec = param_spec.set(param, param_spec_leaf)
-    #     # param_spec = param_spec.set(param, group)
-    # # print(param_spec)
 
     # Generate optimiser dictionary and Assign the null group
     opt_dict = dict([(groups[i], optimisers[i]) for i in range(len(groups))])
@@ -47,32 +41,17 @@ def get_optimiser(pytree, parameters, optimisers):
     # 'opt_state' will change when passed through a 'step function', forcing a
     # recompile of the JIT'd function.
     none_tree = jtu.tree_map(lambda _: None, pytree)
-    # print(none_tree)
-    # for param in parameter:
-    #     sub_tree = pytree.get(param)
-    #     if not isinstance(sub_tree, Array):
-
-    #     none_tree = none_tree.set(param, pytree.get(param))
     opt_tree = none_tree.set(parameters, pytree.get(parameters))
-    # print(opt_tree)
     opt_state = optim.init(eqx.filter(opt_tree, eqx.is_inexact_array))
-    # opt_state = optim.init(opt_tree)
 
     # Return
     return (optim, opt_state)
 
 
-from typing import Any
-from jax import Array
-
 
 # Array
 def _to_array(leaf: Any):
     if not isinstance(leaf, Array):
-
-        # Try except here allows for leaves to be _pytrees_ and not just arrays.
-        # This should probably recursively tree_map the _to_array function in this case.
-        # For now, they already all are arrays so this is fine.
         try:
             return np.asarray(leaf, dtype=float)
         except TypeError:
@@ -125,7 +104,6 @@ def optimise(
     params = list(optimisers.keys())
     opts = list(optimisers.values())
 
-    # model = zdx.set_array(model, params)
     model = set_array(model, params)
     optim, opt_state = get_optimiser(model, params, opts)
     val_grad_fn = zdx.filter_value_and_grad(params)(loss_fn)
@@ -180,8 +158,7 @@ def optimise(
         return model, loss, opt_state
 
     # Get the params from each model
-    from copy import deepcopy
-    from CNN import ConvBFE
+    # from CNN import ConvBFE
 
     params = {}
     for param in optimisers.keys():
@@ -192,47 +169,37 @@ def optimise(
                 leaf[p] = [leaf[p]]
             params[param] = leaf
 
-        # Same with CNN model
-        elif isinstance(leaf, ConvBFE):
-            weights = []
-            biases = []
-            for layer in leaf.layers:
-                if isinstance(layer, eqx.nn.Conv):
-                    weights.append(layer.weight)
-                    biases.append(layer.bias)
-
-            params["BFE.weights"] = weights
-            params["BFE.biases"] = biases
+        
+        elif isinstance(leaf, eqx.Module):
+            continue
+            filtered = eqx.filter(leaf, eqx.is_array)
+            flattened = jtu.tree_map(lambda x: x.flatten(), filtered)
+            values = np.concatenate(jtu.tree_leaves(flattened))
+            params[param] = [values]
 
         else:
             # Else is array, store as list
             params[param] = [leaf]
 
     def configure_params(model, params):
-        print(params)
         for key, value in params.items():
             # If entry is list, we must append along the entries
             if isinstance(value, dict):
                 for p in value.keys():
                     value[p].append(model.get(key)[p])
-            # If entry is
-            elif isinstance(value, ConvBFE):
-                weights = []
-                biases = []
-                for layer in model.layers:
-                    if isinstance(layer, eqx.nn.Conv):
-                        weights.append(layer.weight)
-                        biases.append(layer.bias)
-                params["BFE.weights"].append(weights)
-                params["BFE.biases"].append(biases)
+            # If entry is _class_ we filter out non-arrays and flatten everything
+            elif isinstance(model.get(key), eqx.Module):
+                continue
+                filtered = eqx.filter(value, eqx.is_array)
+                flattened = jtu.tree_map(lambda x: x.flatten(), filtered)
+                values = np.concatenate(jtu.tree_leaves(flattened))
+                params[key].append(values)
             else:
                 # Else is array, append to list
                 params[key].append(model.get(key))
 
         return params
 
-    import time
-    from datetime import timedelta
 
     # Compile call
     t0 = time.time()
@@ -246,10 +213,9 @@ def optimise(
     print(f"Compile Time: {formatted_time}")
     print(f"Initial Loss: {loss:,.2f}")
 
-    # TODO: Add a delta loss parameter too?
     looper = range(1, epochs)
     if verbose:
-        looper = tqdm(looper, desc=f"Loss: {loss:,.2f}")
+        looper = tqdm(looper, desc=f"Loss: {loss:,.2f}, $\delta$Loss: {0.}")
 
     losses = [loss]
     for i in looper:
@@ -259,16 +225,23 @@ def optimise(
                 return model, losses, params, opt_state
             return model, losses, params
 
-        model, loss, opt_state = step_fn(model, opt_state, args)
-
+        model, _loss, opt_state = step_fn(model, opt_state, args)
+        
+        if verbose:
+            delta_loss = _loss - loss
+            looper.set_description(f"Loss: {loss:,.2f}, $\delta$Loss: {delta_loss:,.3}")
+        
+        loss = _loss
         losses.append(loss)
         params = configure_params(model, params)
 
-        if verbose:
-            looper.set_description(f"Loss: {loss:,.2f}")
 
+    # Final execution time
+    elapsed_time = time.time() - t0
+    formatted_time = str(timedelta(seconds=int(elapsed_time)))
+
+    print(f"Compile Time: {formatted_time}")
     print(f"Final Loss: {loss:,.2f}")
-    # TODO: Add a "Full execution time" print statement
 
     if return_state:
         return model, losses, params, opt_state

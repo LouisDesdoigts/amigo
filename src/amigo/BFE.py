@@ -1,4 +1,5 @@
 import dLux as dl
+import dLux.utils as dlu
 import itertools
 import jax.numpy as np
 from jax import vmap
@@ -284,4 +285,5 @@ class PolyBFE(dl.detector_layers.DetectorLayer):
         return PSF.set("data", new_data)
 
     def apply_array(self, image):
+        image = dlu.downsample(image, self.oversample, mean=False)
         return apply_BFE(image, self.coeffs, self.ksize, self.inds, self.oversample)
