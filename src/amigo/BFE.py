@@ -285,5 +285,6 @@ class PolyBFE(dl.detector_layers.DetectorLayer):
         return PSF.set("data", new_data)
 
     def apply_array(self, image):
-        image = dlu.downsample(image, self.oversample, mean=False)
+        # NOTE: the 4x downsample is a temporary hard-code to match the ConvBFE class
+        image = dlu.downsample(image, 4, mean=False)
         return apply_BFE(image, self.coeffs, self.ksize, self.inds, self.oversample)
