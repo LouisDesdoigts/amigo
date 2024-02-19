@@ -12,4 +12,6 @@ The amgio pipeline requires _custom file processing_, which is covered by the pi
 
 To see example usage of the pipeline, see the [amigo_notebooks](https://github.com/LouisDesdoigts/amigo_notebooks) repo. It is currently private, so just message me for access.
 
+Note for model initialisation (not in the package presently, but done in th notebooks) you will need to clone and install [xara](https://github.com/fmartinache/xara) locally.
+
 And never forget, AMI go brrrrrrrr
