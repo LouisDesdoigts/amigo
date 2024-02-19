@@ -1,0 +1,39 @@
+[project]
+name = "amigo"
+version = "0.0.1"
+description = "A pipeline for interferometric fitting of AMI data from JWST"
+readme = "README.md"
+requires-python =">=3.8"
+license = {file = "LICENSE.md"}
+authors = [
+  {name = "Louis Desdoigts", email = "louis.desdoigts@sydney.edu.au"},
+]
+keywords = []
+urls = {repository = "https://github.com/LouisDesdoigts/amigo"}
+dependencies = ["jax", "jaxlib", "zodiax>=0.4.1"]
+classifiers=[
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[build-system]
+requires = [
+    "setuptools>=60",
+    "setuptools-scm>=8.0",
+    "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+
+[tool.black]
+line-length = 99
+
+[tool.ruff]
+line-length = 99
+select = ["E", "F"]
+ignore = ["E402", "E721", "E731", "E741", "F722"]
+ignore-init-module-imports = true
+
+[tool.ruff.isort]
+combine-as-imports = true
+lines-after-imports = 2
