@@ -67,15 +67,20 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         self.oversample = oversample
         self.psf_pixel_scale = 0.065524085
 
-        # Get the primary mirror
+        # Get the primary mirror transmission
         file_path = pkg_resources.resource_filename(__name__, 'data/primary.npy')
         transmission = np.load(file_path)
+        # Create the primary
         primary = dlw.JWSTAberratedPrimary(
             transmission,
             opd=np.zeros_like(transmission),
             radial_orders=radial_orders,
             AMI=True,
         )
+
+        # Get the SUB80 field dependent aberrations
+        file_path = pkg_resources.resource_filename(__name__, 'data/FDA_coeffs.npy')
+        primary = primary.set("coefficients", np.load(file_path))
 
         if opd is None:
             opd = np.zeros_like(transmission)
