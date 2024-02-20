@@ -8,6 +8,7 @@ from jax import vmap
 from .stats import check_symmetric, check_positive_semi_definite, build_covariance_matrix
 from .misc import convert_adjacent_to_true, fit_slope, slope_im
 from webbpsf import mast_wss
+from xara.core import determine_origin
 import amigo
 
 
@@ -66,17 +67,6 @@ def get_simbad_spectral_type(source_id):
     return table["SP_TYPE"].tolist()[0], table["SP_QUAL"].tolist()[0]
 
 
-teff_keys = [
-    "teff_gspphot",
-    "teff_gspspec",
-    "teff_msc1",
-    "teff_msc2",
-    "teff_esphs",
-    "teff_espucd",
-    "teff_val",
-]
-
-
 def get_gaia_Teff(source_id, data_dr="dr3"):
     """Returns the Teff from Gaia for a given source ID."""
     result_table = Simbad.query_objectids(source_id)
@@ -85,6 +75,17 @@ def get_gaia_Teff(source_id, data_dr="dr3"):
         if f"gaia {data_dr}" in x["ID"].lower():
             ids.append(x["ID"].split(" ")[-1])
 
+    # All the potential keys with a Teff
+    teff_keys = [
+        "teff_gspphot",
+        "teff_gspspec",
+        "teff_msc1",
+        "teff_msc2",
+        "teff_esphs",
+        "teff_espucd",
+        "teff_val",
+    ]
+    
     Teffs_out = []
     for obj_id in ids:
         data = pyia.GaiaData.from_source_id(obj_id, source_id_dr="dr3", data_dr=data_dr)
@@ -241,7 +242,32 @@ def get_Teffs(files, default=4500):
 
     return Teffs
 
-from xara.core import determine_origin
+def get_amplitudes(files):
+    amplitudes = {}
+    for file in files:
+        prop_name = file[0].header["TARGPROP"]
+        filt = file[0].header["FILTER"]
+        if prop_name in amplitudes:
+            if filt in amplitudes[prop_name].keys():
+                continue
+            else:
+                amplitudes[prop_name][filt] = np.ones(21)
+        amplitudes[prop_name] = {filt: np.ones(21)}
+    return amplitudes
+
+
+def get_phases(files):
+    phases = {}
+    for file in files:
+        prop_name = file[0].header["TARGPROP"]
+        filt = file[0].header["FILTER"]
+        if prop_name in phases:
+            if filt in phases[prop_name].keys():
+                continue
+            else:
+                phases[prop_name][filt] = np.zeros(21)
+        phases[prop_name] = {filt: np.zeros(21)}
+    return phases
 
 
 def find_position(psf, pixel_scale):

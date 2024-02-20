@@ -2,8 +2,6 @@
 
 Aperture Masking Interferometry Generative Observations for JWST.
 
----
-
 This repo is currently under development and subject to change.
 
 Much of the code is eventually be split into either dLux (ie the interferometry.py file) or Zodiax (most of the fitting.py and FIM.py files).
@@ -41,7 +39,7 @@ Core:
 - [Zodiax](https://github.com/LouisDesdoigts/zodiax)
 - [dLux](https://github.com/LouisDesdoigts/dLux)
 
-- Pipeline:
+Pipeline:
 
 - [astroquery](https://github.com/astropy/astroquery) for initialisation of the source Teffs.
 - [jwst](https://jwst-pipeline.readthedocs.io/en/latest/getting_started/install.html) for the pipeline module.
@@ -49,8 +47,27 @@ Core:
 Other:
 
 - [pyia](https://github.com/adrn/pyia) for initialisation of the source Teffs.
-- [xara](https://github.com/fmartinache/xara) (Requires local install) for initialisation of the source position.
 - [Webbpsf](https://github.com/spacetelescope/webbpsf) for initialisation of the measured WFE at closes observation time.
-- [dLuxWebbPSF](https://github.com/itroitskaya/dLuxWebbpsf) (Requires local install) For the JWST primary mirror aberration model + cubic spline interpolation for detector rotation. If running on the latest jax you may need to use [this branch](https://github.com/itroitskaya/dLuxWebbpsf/pull/24)
+
+Requires local install:
+
+- [xara](https://github.com/fmartinache/xara) for initialisation of the source position.
+
+```
+conda activate amigo
+git clone https://github.com/fmartinache/xara.git
+cd xara
+pip install .
+```
+
+- [dLuxWebbPSF](https://github.com/itroitskaya/dLuxWebbpsf) (**Requires local install**) For the JWST primary mirror aberration model + cubic spline interpolation for detector rotation. If running on the latest jax you may need to use [this branch](https://github.com/itroitskaya/dLuxWebbpsf/pull/24)
+
+```
+conda activate amigo
+git clone https://github.com/itroitskaya/dLuxWebbpsf.git
+cd dLuxWebbpsf
+git branch import_fix
+pip install .
+```
 
 And never forget, AMI go brrrrrrrr
