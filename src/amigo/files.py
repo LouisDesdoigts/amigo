@@ -223,7 +223,7 @@ def get_wss_ops(files):
     return opd_files
 
 
-def get_Teffs(files):
+def get_Teffs(files, default=4500):
     Teffs = {}
     for file in files:
         prop_name = file[0].header["TARGPROP"]
@@ -235,7 +235,7 @@ def get_Teffs(files):
 
         if Teff == -1:
             print(f"No Teff found for {prop_name}, defaulting to 4500K")
-            Teffs[prop_name] = 4500
+            Teffs[prop_name] = default
         else:
             Teffs[prop_name] = Teff
 
