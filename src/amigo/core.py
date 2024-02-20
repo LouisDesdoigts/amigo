@@ -28,7 +28,6 @@ class Exposure(zdx.Base):
     star: str = eqx.field(static=True)
     key: str = eqx.field(static=True)
 
-    # def __init__(self, data, covariance, support, file):
     def __init__(self, file, read_noise=None, opd=None, key_fn=None):
 
         if key_fn is None:
