@@ -16,12 +16,12 @@ To see example usage of the pipeline, see the [amigo_notebooks](https://github.c
 
 **Python version**
 
-Development is being done in 3.12 and takes advantage of its new syntax, so amigo should be run in 3.12. However the pipeline module uses [jwst](https://jwst-pipeline.readthedocs.io/en/latest/getting_started/install.html), which can only be run on python 3.9 - 3.11. Because of this, it is not listed as a dependency, and the pipeline should be run for a different environment with python <= 3.11, with the jwst package installed.
+Amigo requires either python 3.10 or 3.11. This is because the core package takes advantage of some new syntax added in python 3.10, and the jwst package (used in the pipeline) does not run on 3.12.
 
-To create a fresh environment for the pipeline, run:
+To run amigo is it recommended to create a fresh environment. To do so using conda, run:
 
 ```
-conda create -n amigo python=3.xx
+conda create -n amigo python=3.11
 conda activate amigo
 ```
 
@@ -37,17 +37,20 @@ pip install .
 Core:
 
 - [Jax](https://github.com/google/jax)
-- [Equinox]
-- [Zodiax]
-- [dLux]
+- [Equinox](https://github.com/patrick-kidger/equinox)
+- [Zodiax](https://github.com/LouisDesdoigts/zodiax)
+- [dLux](https://github.com/LouisDesdoigts/dLux)
+
+- Pipeline:
+
+- [astroquery](https://github.com/astropy/astroquery) for initialisation of the source Teffs.
+- [jwst](https://jwst-pipeline.readthedocs.io/en/latest/getting_started/install.html) for the pipeline module.
 
 Other:
 
-- [xara](https://github.com/fmartinache/xara) for initialisation of the source position.
 - [pyia](https://github.com/adrn/pyia) for initialisation of the source Teffs.
-- [astroquery](https://github.com/astropy/astroquery) for initialisation of the source Teffs.
+- [xara](https://github.com/fmartinache/xara) for initialisation of the source position.
 - [Webbpsf](https://github.com/spacetelescope/webbpsf) for initialisation of the measured WFE at closes observation time.
 - [dLuxWebbPSF](https://github.com/itroitskaya/dLuxWebbpsf) For the JWST primary mirror aberration model + cubic spline interpolation for detector rotation. If running on the latest jax you may need to use [this branch](https://github.com/itroitskaya/dLuxWebbpsf/pull/24)
-- [jwst](https://jwst-pipeline.readthedocs.io/en/latest/getting_started/install.html) for the pipeline module -> **Read the note above about python version**
 
 And never forget, AMI go brrrrrrrr

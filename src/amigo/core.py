@@ -38,7 +38,7 @@ class Exposure(zdx.Base):
             opd = get_wss_ops([file])[0]
 
         if read_noise is None:
-            file_path = pkg.resource_filename(__name__, "data/SUB80_readnoise.py")
+            file_path = pkg.resource_filename(__name__, "data/SUB80_readnoise.npy")
             read_noise = np.load(file_path)
         data, covariance, support = prep_data(file, read_noise=read_noise)
 
@@ -144,13 +144,11 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
     ):
         # Load the FF
         if FF is None:
-            file_path = pkg.resource_filename(__name__, "data/SUB80_flatfield.fits")
+            file_path = pkg.resource_filename(__name__, "data/SUB80_flatfield.npy")
             FF = np.load(file_path)
             if npixels_in != 80:
                 pad = (npixels_in - 80) // 2
-                SUB80 = np.pad(FF, pad, constant_values=1)
-            return SUB80
-            # FF = full_to_SUB80(full_FF, npix_out=npixels_in, fill=1.)
+                FF = np.pad(FF, pad, constant_values=1)
         
         if SRF is None:
             SRF = np.ones((oversample, oversample))
