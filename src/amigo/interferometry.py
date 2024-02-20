@@ -23,14 +23,16 @@ def osamp_freqs(n, dx, osamp):
 
 def pairwise_vectors(points):
     """
-    Generates a non-redundant list of the pairwise vectors connecting each point in an array of (x,y) points,
-    ordered ascendingly by the length of the vector.
+    Generates a non-redundant list of the pairwise vectors connecting each point in an
+    array of (x,y) points, ordered ascendingly by the length of the vector.
 
     Args:
-        points (ndarray): An array of shape (n, 2) containing the (x,y) coordinates of the points.
+        points (ndarray): An array of shape (n, 2) containing the (x,y) coordinates
+        of the points.
 
     Returns:
-        list: A list of tuples containing the pairwise vectors connecting each point, ordered ascendingly by the length of the vector.
+        list: A list of tuples containing the pairwise vectors connecting each point,
+        ordered ascendingly by the length of the vector.
     """
     # Compute the pairwise vectors between each point
     vectors = points[:, np.newaxis] - points
