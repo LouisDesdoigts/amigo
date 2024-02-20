@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-=======
-import pkg_resources
->>>>>>> 0bb49b827597d30514134394c09f4b356c03b780
 import equinox as eqx
 import dLuxWebbpsf as dlw
 from jax import Array
@@ -14,13 +10,7 @@ from jax.scipy.stats import multivariate_normal as mvn
 from .detector_layers import Rotate, ApplySensitivities
 from .optical_layers import DynamicAMI
 from .files import prep_data, get_wss_ops
-<<<<<<< HEAD
-from astropy.io import fits
 import pkg_resources as pkg
-from .files import full_to_SUB80
-=======
-
->>>>>>> 0bb49b827597d30514134394c09f4b356c03b780
 
 class Exposure(zdx.Base):
     """
@@ -48,15 +38,8 @@ class Exposure(zdx.Base):
             opd = get_wss_ops([file])[0]
 
         if read_noise is None:
-<<<<<<< HEAD
             file_path = pkg.resource_filename(__name__, "data/SUB80_readnoise.py")
             read_noise = np.load(file_path)
-=======
-            read_noise_path = "data/jwst_niriss_readnoise_0005.fits"
-            file_path = pkg.resource_filename(__name__, read_noise_path)
-            read_noise = full_to_SUB80(np.asarray(fits.open(file_path)[1].data, float))
->>>>>>> 0bb49b827597d30514134394c09f4b356c03b780
-        
         data, covariance, support = prep_data(file, read_noise=read_noise)
 
         self.nints = file[0].header["NINTS"]
@@ -146,9 +129,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             ordered=True,
         )
 
-from astropy.io import fits
-import pkg_resources as pkg
-from .files import full_to_SUB80
+
 
 class SUB80Ramp(dl.detectors.LayeredDetector):
     def __init__(
@@ -163,7 +144,6 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
     ):
         # Load the FF
         if FF is None:
-<<<<<<< HEAD
             file_path = pkg.resource_filename(__name__, "data/SUB80_flatfield.fits")
             FF = np.load(file_path)
             if npixels_in != 80:
@@ -171,11 +151,6 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
                 SUB80 = np.pad(FF, pad, constant_values=1)
             return SUB80
             # FF = full_to_SUB80(full_FF, npix_out=npixels_in, fill=1.)
-=======
-            file_path = pkg.resource_filename(__name__, "data/jwst_niriss_flat_0277.fits")
-            full_FF = np.asarray(fits.open(file_path)[1].data, float)
-            FF = full_to_SUB80(full_FF, npix_out=npixels_in, fill=1.)
->>>>>>> 0bb49b827597d30514134394c09f4b356c03b780
         
         if SRF is None:
             SRF = np.ones((oversample, oversample))

@@ -269,19 +269,15 @@ class PolyBFE(dl.detector_layers.DetectorLayer):
         self.coeffs = coeffs
 
         # Pre calculate the basis indexes
-        self.inds = {
-            map_to_str(order): get_basis_inds(oksize, order) for order in orders
-        }
-    
+        self.inds = {map_to_str(order): get_basis_inds(oksize, order) for order in orders}
+
     def __getattr__(self, key):
         if key in self.coeffs:
             return self.coeffs[key]
         raise AttributeError(f"Attribute {key} not found")
 
     def apply(self, PSF):
-        new_data = apply_BFE(
-            PSF.data, self.coeffs, self.ksize, self.inds, self.oversample
-        )
+        new_data = apply_BFE(PSF.data, self.coeffs, self.ksize, self.inds, self.oversample)
         return PSF.set("data", new_data)
 
     def apply_array(self, image):
