@@ -1,4 +1,4 @@
-import pkg_resources
+import pkg_resources as pkg
 import jax
 import jax.numpy as np
 from jax import vmap
@@ -13,7 +13,7 @@ class DynamicAMI(dl.layers.optical_layers.OpticalLayer):
     normalise: bool
 
     def __init__(self, f2f=0.82, normalise=False):
-        file_path = pkg_resources.resource_filename(__name__, 'data/AMI_holes.npy')
+        file_path = pkg.resource_filename(__name__, "data/AMI_holes.npy")
         self.holes = np.load(file_path)
         self.f2f = np.asarray(f2f, float)
         self.transformation = dl.CoordTransform((0.0, 0.0), 0.0, (1.0, 1.0), (0.0, 0.0))

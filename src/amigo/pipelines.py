@@ -3,16 +3,15 @@ import numpy as np
 import astropy
 from astropy.io import fits
 from jwst.pipeline import Detector1Pipeline
-import matplotlib.pyplot as plt
 
 
-def process_stage0(directory, output_dir='stage1/'):
+def process_stage0(directory, output_dir="stage1/"):
     # string manip to make sure we have the right format
     if directory[-1] != "/":
         directory += "/"
     if output_dir[-1] != "/":
         output_dir += "/"
-    
+
     # Get the files
     files = [directory + f for f in os.listdir(directory) if f.endswith("_uncal.fits")]
 
@@ -22,8 +21,8 @@ def process_stage0(directory, output_dir='stage1/'):
         return
 
     # Get the file paths
-    paths = files[0].split('/')
-    base_path = '/'.join(paths[:-2]) + '/'
+    paths = files[0].split("/")
+    base_path = "/".join(paths[:-2]) + "/"
     output_path = base_path + output_dir
 
     # Check whether the specified output directory exists
@@ -32,8 +31,8 @@ def process_stage0(directory, output_dir='stage1/'):
 
     print("Running stage 1...")
     for file_path in files:
-        file_name = file_path.split('/')[-1]
-        file_root = '_'.join(file_name.split('_')[:-2])
+        file_name = file_path.split("/")[-1]
+        file_root = "_".join(file_name.split("_")[:-2])
 
         # # Check whether the specified output directory exists, and get output path
         # output_path, file_root = check_directories(file_path, output_dir)
@@ -49,12 +48,12 @@ def process_stage0(directory, output_dir='stage1/'):
         if file[0].header["EXP_TYPE"] != "NIS_AMI":
             print("Not a NIS_AMI file, skipping...")
             continue
-        
+
         # Run stage 1
         pl1 = Detector1Pipeline()
         pl1.output_dir = str(output_path)
-        
-        pl1.save_results = True # what does this do?
+
+        pl1.save_results = True  # what does this do?
         pl1.save_calibrated_ramp = True  # save the output
 
         # These are all the ones that are run at present, in order
@@ -71,19 +70,20 @@ def process_stage0(directory, output_dir='stage1/'):
         pl1.ramp_fit.skip = True
 
         pl1.run(str(file_path))  # run pipeline from uncal file
-    
+
     print("Done\n")
 
     return output_path
 
-def process_stage1(directory, output_dir='calgrps/', refpix_correction=0):
+
+def process_stage1(directory, output_dir="calgrps/", refpix_correction=0):
     """
     ref_pix_correction: int
         What reference pixel correction to apply. 0 for none, 1 for first, 2 for second.
-        'first' subtracts off the reference pixel value for _each group and 
-        integration_, which is then masked and sigma clipped. 'second' performs the 
+        'first' subtracts off the reference pixel value for _each group and
+        integration_, which is then masked and sigma clipped. 'second' performs the
         masking and sigma clipping on both the data and reference pixel first, and then
-        subtracts the single reference pixel value for each group and column from the 
+        subtracts the single reference pixel value for each group and column from the
         cleaned data.
     """
     if refpix_correction not in [0, 1, 2]:
@@ -93,7 +93,7 @@ def process_stage1(directory, output_dir='calgrps/', refpix_correction=0):
         directory += "/"
     if output_dir[-1] != "/":
         output_dir += "/"
-    
+
     # Get the files
     files = [directory + f for f in os.listdir(directory) if f.endswith("_ramp.fits")]
 
@@ -101,10 +101,10 @@ def process_stage1(directory, output_dir='calgrps/', refpix_correction=0):
     if len(files) == 0:
         print("No _ramp.fits files found, no processing done.")
         return
-    
+
     # Get the file paths
-    paths = files[0].split('/')
-    base_path = '/'.join(paths[:-2]) + '/'
+    paths = files[0].split("/")
+    base_path = "/".join(paths[:-2]) + "/"
     output_path = base_path + output_dir
 
     # Check whether the specified output directory exists
@@ -114,8 +114,8 @@ def process_stage1(directory, output_dir='calgrps/', refpix_correction=0):
     # Iterate over files
     print("Running calgrps processing...")
     for file_path in files:
-        file_name = file_path.split('/')[-1]
-        file_root = '_'.join(file_name.split('_')[:-2])
+        file_name = file_path.split("/")[-1]
+        file_root = "_".join(file_name.split("_")[:-2])
 
         # Check if the file is a NIS_AMI file
         final_output_path = output_path + file_root + "_nis_calgrps.fits"
@@ -130,9 +130,9 @@ def process_stage1(directory, output_dir='calgrps/', refpix_correction=0):
             continue
 
         # Get the bits
-        dq = np.array(file['PIXELDQ'].data) > 0
-        group_dq = np.array(file['GROUPDQ'].data) > 0
-        electrons = np.array(file['SCI'].data) # * file[0].header["TFRAME"]
+        dq = np.array(file["PIXELDQ"].data) > 0
+        group_dq = np.array(file["GROUPDQ"].data) > 0
+        electrons = np.array(file["SCI"].data)  # * file[0].header["TFRAME"]
 
         # Reference pixel correction 1
         if refpix_correction == 1:
@@ -150,7 +150,7 @@ def process_stage1(directory, output_dir='calgrps/', refpix_correction=0):
         cleaned_ramp = np.ma.filled(masked_clipped, fill_value=np.nan)
 
         # TODO: Fit gaussian to the ramp value? - Better mean and error?
-        # Get the ramp and error 
+        # Get the ramp and error
         # Mean after sigma clipping - 'Robust mean'
         # This is quantised data, so mean is better than median
         ramp = np.nanmean(cleaned_ramp, axis=0)

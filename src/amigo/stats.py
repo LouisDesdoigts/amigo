@@ -24,15 +24,15 @@ def build_covariance_matrix(std, read_noise=None, min_value=True):
     The off-diagonal covariance terms cov(i, j), can be the minimum value of:
         1. The value: min(var(i), var(j))
         2. The index: var(min(i, j))
-    
-    if min_value is True (default), then the minimum value is chosen, otherwise the 
+
+    if min_value is True (default), then the minimum value is chosen, otherwise the
     minimum index is chosen. Testing show min index results in some data sets being
-    majority nan, as the resulting covariance matrix is non symmetric or positive 
+    majority nan, as the resulting covariance matrix is non symmetric or positive
     semi-definite.
-    
+
     Read noise can optional be added to the diagonal terms.
     """
-    var = std ** 2
+    var = std**2
     Is = np.arange(len(var))
     IJs = np.array(np.meshgrid(Is, Is))
 
@@ -46,12 +46,14 @@ def build_covariance_matrix(std, read_noise=None, min_value=True):
 
     if read_noise is not None:
         cov += get_read_cov(read_noise, len(std))
-    
+
     return cov
+
 
 def check_symmetric(mat):
     """Checks if a matrix is symmetric"""
     return np.allclose(mat, mat.T)
+
 
 def check_positive_semi_definite(mat):
     """Checks if a matrix is positive semi-definite"""

@@ -32,18 +32,17 @@ def model_ramp(psf, ngroups):
 
 
 class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
-    """
-    Note! Applies the downsample
-    """
 
     FF: jax.Array
     SRF: jax.Array
-    downsample: bool
 
-    def __init__(self, FF, SRF, downsample=True):
+    def __init__(
+        self,
+        FF,
+        SRF,
+    ):
         self.FF = FF
         self.SRF = SRF
-        self.downsample = bool(downsample)
 
     @property
     def sensitivity_map(self):
@@ -53,8 +52,6 @@ class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
         return bc_sens_map.reshape((npix * oversample, npix * oversample))
 
     def apply(self, PSF):
-        if self.downsample:
-            return (PSF * self.sensitivity_map).downsample(self.SRF.shape[0])
         return PSF * self.sensitivity_map
 
 
