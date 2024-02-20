@@ -49,8 +49,8 @@ Core:
 Other:
 
 - [pyia](https://github.com/adrn/pyia) for initialisation of the source Teffs.
-- [xara](https://github.com/fmartinache/xara) for initialisation of the source position.
+- [xara](https://github.com/fmartinache/xara) (Requires local install) for initialisation of the source position.
 - [Webbpsf](https://github.com/spacetelescope/webbpsf) for initialisation of the measured WFE at closes observation time.
-- [dLuxWebbPSF](https://github.com/itroitskaya/dLuxWebbpsf) For the JWST primary mirror aberration model + cubic spline interpolation for detector rotation. If running on the latest jax you may need to use [this branch](https://github.com/itroitskaya/dLuxWebbpsf/pull/24)
+- [dLuxWebbPSF](https://github.com/itroitskaya/dLuxWebbpsf) (Requires local install) For the JWST primary mirror aberration model + cubic spline interpolation for detector rotation. If running on the latest jax you may need to use [this branch](https://github.com/itroitskaya/dLuxWebbpsf/pull/24)
 
 And never forget, AMI go brrrrrrrr
