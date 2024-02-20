@@ -182,6 +182,7 @@ def optimise(
             # Else is array, store as list
             params[param] = [leaf]
 
+    # TODO: Build this into the core BaseModeller / zodiax params class
     def configure_params(model, params):
         for key, value in params.items():
             # If entry is list, we must append along the entries

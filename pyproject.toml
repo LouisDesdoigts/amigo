@@ -10,7 +10,16 @@ authors = [
 ]
 keywords = []
 urls = {repository = "https://github.com/LouisDesdoigts/amigo"}
-dependencies = ["jax", "jaxlib", "zodiax>=0.4.1"]
+dependencies = [
+  "jax", 
+  "jaxlib", 
+  "zodiax>=0.4.1",
+  "dLux",
+  "astroquery",
+  "jwst",
+  "pyia",
+  "webbpsf"
+]
 classifiers=[
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",

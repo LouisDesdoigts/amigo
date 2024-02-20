@@ -50,10 +50,6 @@ class SpatialCurvature(eqx.Module):
 
     def __call__(self, image):
         return jax.vmap(self.image_to_grads)(image)
-        # ygrads, xgrads = jax.vmap(np.gradient)(image)
-        # yygrads = np.gradient(ygrads)[0]
-        # xxgrads = np.gradient(xgrads)[1]
-        # return yygrads + xxgrads
 
 class Downsample(eqx.Module):
     oversample: int = eqx.field(static=True)
@@ -63,6 +59,7 @@ class Downsample(eqx.Module):
 
     def __call__(self, x):
         return dlu.downsample(x, self.oversample, mean=False)
+
 
 class ConvBFE(eqx.Module):
     """
@@ -83,20 +80,18 @@ class ConvBFE(eqx.Module):
     def __init__(self, convs, oversample, pad, key):
         subkeys = jr.split(key, len(convs) + 1)
 
-        layers = [
-            Expand(),
-            # eqx.nn.Conv2d(
-            #     in_channels=1, out_channels=1, kernel_size=11, padding=5, key=subkeys[0],
-            # ),
-            # SpatialCurvature(),
-        ]
+        layers = []
 
         for conv, subkey in zip(convs, subkeys[1:]):
-            layers.append(conv(subkey))
+            try:
+                layers.append(conv(subkey))
+            # TODO: Remove naked except
+            except:
+                layers.append(conv)
             layers.append(jax.nn.relu)
         layers[-1] = lambda x: x
         layers.append(Squeeze())
-        layers.append(Downsample(oversample))
+        # layers.append(Downsample(oversample))
 
         self.layers = layers
         self.oversample = oversample
@@ -110,19 +105,20 @@ class ConvBFE(eqx.Module):
         ygrads, xgrads = np.gradient(image)
         yygrads = np.gradient(ygrads)[0]
         xxgrads = np.gradient(xgrads)[1]
-        return yygrads + xxgrads
+        output = np.array([xgrads, ygrads, xxgrads, yygrads])
+        return output / np.array([1e2, 1e2, 1e2, 1e2])[:, None, None]
 
     def __call__(self, image):
-
-        
         # Re add back to the original image
         initial_charge = dlu.downsample(image, self.oversample, mean=False)
+        # return initial_charge
 
-        x = 1e-1 * self.image_to_grads(image)
+        x = self.image_to_grads(image)
         for layer in self.layers:
             x = layer(x)
-        # bleeding = 1e3 * np.squeeze(x)
-        bleeding = 1e3 * x
+        # bleeding = np.squeeze(x) * 5e4
+        bleeding = np.squeeze(x) * 1e3
+
         k = self.pad
 
         cent_bleed = bleeding[k:-k, k:-k]
