@@ -154,7 +154,11 @@ def process_stage1(directory, output_dir="calgrps/", refpix_correction=0):
         # Mean after sigma clipping - 'Robust mean'
         # This is quantised data, so mean is better than median
         ramp = np.nanmean(cleaned_ramp, axis=0)
-        err = np.nanstd(cleaned_ramp, axis=0)
+
+        # We dont want the error of the mean, we want the _STANDARD ERROR OF THE MEAN_,
+        # ie scaled by the sqrt of the number of samples
+        # err = np.nanstd(cleaned_ramp, axis=0)
+        err = np.nanstd(cleaned_ramp, axis=0) / np.sqrt(cleaned_ramp.shape[0])
 
         # Reference pixel correction 2
         if refpix_correction == 2:
