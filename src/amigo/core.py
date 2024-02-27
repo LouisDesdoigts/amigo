@@ -28,7 +28,7 @@ class Exposure(zdx.Base):
     star: str = eqx.field(static=True)
     key: str = eqx.field(static=True)
 
-    def __init__(self, file, read_noise=None, opd=None, key_fn=None):
+    def __init__(self, file, read_noise=None, opd=None, ngroups=None, key_fn=None):
 
         if key_fn is None:
             key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:3])
@@ -39,10 +39,15 @@ class Exposure(zdx.Base):
         if read_noise is None:
             file_path = pkg.resource_filename(__name__, "data/SUB80_readnoise.npy")
             read_noise = np.load(file_path)
-        data, covariance, support = prep_data(file, read_noise=read_noise)
+        data, covariance, support = prep_data(file, read_noise=read_noise, ngroups=ngroups)
+
+        # handling optional max number of groups
+        if ngroups is None:
+            self.ngroups = file[0].header["NGROUPS"]
+        else:
+            self.ngroups = ngroups
 
         self.nints = file[0].header["NINTS"]
-        self.ngroups = file[0].header["NGROUPS"]
         self.filter = file[0].header["FILTER"]
         self.star = file[0].header["TARGPROP"]
         self.data = data
