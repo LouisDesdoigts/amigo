@@ -169,10 +169,16 @@ def estimate_psf_and_bias(data):
 
 
 
-def prep_data(file, read_noise, ms_thresh=0., bs_thresh=250):
+def prep_data(file, read_noise, ms_thresh=0., bs_thresh=250, ngroups=None):
     ramp = np.asarray(file["SCI"].data, float)    
     err = np.asarray(file["ERR"].data, float)
     dq = np.asarray(file["PIXELDQ"].data > 0, bool)
+
+    # only using the first ngroups
+    if ngroups is not None:
+        total_groups = ramp.shape[0]
+        ramp = ramp[:ngroups]
+        err = err[:ngroups]
 
     # Build the covariance matrix
     cov = build_covariance_matrix(err, read_noise=read_noise, min_value=True)
@@ -276,9 +282,9 @@ def find_position(psf, pixel_scale):
     position = origin * pixel_scale * np.array([1, -1])
     return position
 
-def get_exposures(files):
+def get_exposures(files, ngroups=None):
     opds = get_wss_ops(files)
-    return [amigo.core.Exposure(file, opd=opd) for file, opd in zip(files, opds)]
+    return [amigo.core.Exposure(file, opd=opd, ngroups=ngroups) for file, opd in zip(files, opds)]
 
 def initialise_params(exposures, pixel_scale=0.065524085):
     FDA_coefficients = np.load(pkg.resource_filename(__name__, "data/FDA_coeffs.npy"))
