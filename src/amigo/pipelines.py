@@ -1,5 +1,7 @@
 import os
-import numpy as np
+import jax.numpy as np
+from jax import vmap
+import numpy as onp
 import astropy
 from astropy.io import fits
 from jwst.pipeline import Detector1Pipeline
@@ -76,7 +78,106 @@ def process_stage0(directory, output_dir="stage1/"):
     return output_path
 
 
-def process_stage1(directory, output_dir="calgrps/", refpix_correction=0):
+def im2vec(im):
+    return im.reshape(len(im), -1).T
+
+
+def vec2im(vec, npix):
+    return vec.T.reshape(npix, npix)
+
+
+def least_sq(x, y):
+    A = np.vstack([x, np.ones(len(x))]).T
+    m, b = np.linalg.lstsq(A, y, rcond=None)[0]
+    return m, b
+
+
+def slope_im(im, groups):
+    npix = im.shape[-1]
+    ms, bs = vmap(least_sq, (None, 0))(groups, im2vec(im))
+    return vec2im(ms, npix), vec2im(bs, npix)
+
+
+def clean_bias(data):
+    groups = np.arange(1, 3)
+    first_groups = data[:, :2]
+    slopes, biases = vmap(slope_im, (0, None))(first_groups, groups)
+    return data - biases[:, None, :, :], biases
+
+
+def clean_slopes(bias_cleaned_data):
+    nints, ngroups, npix = bias_cleaned_data.shape[:3]
+
+    full_zero_ramp = np.zeros((nints, ngroups + 1, npix, npix))
+    full_ramp = full_zero_ramp.at[:, 1:].set(bias_cleaned_data)
+
+    cleaned_slopes = []
+    for k in range(ngroups):
+        group_vals = full_ramp[:, k : k + 2]
+        groups = np.arange(k, k + 2)
+
+        slopes, biases = vmap(slope_im, (0, None))(group_vals, groups)
+        clipped = astropy.stats.sigma_clip(slopes, axis=0, sigma=3)
+        cleaned_slopes.append(onp.ma.filled(clipped, fill_value=onp.nan))
+
+    # This output has the dimension of the groups and ints swapped
+    return np.swapaxes(np.array(cleaned_slopes), 0, 1)
+
+
+def rebuild_ramps(cleaned_slopes):
+    ngroups = cleaned_slopes.shape[1]
+
+    # dx is defined to be 1, so the slope _is the counts_
+    counts = 0
+    cleaned_counts = []
+    for k in range(ngroups):
+        counts += cleaned_slopes[:, k]
+        cleaned_counts.append(counts)
+    cleaned_counts = np.array(cleaned_counts)
+
+    # This output has the dimension of the groups and ints swapped
+    return np.swapaxes(cleaned_counts, 0, 1)
+
+
+def nan_dqd(file):
+    # Get the bits
+    dq = np.array(file["PIXELDQ"].data) > 0
+    group_dq = np.array(file["GROUPDQ"].data) > 0
+    electrons = np.array(file["SCI"].data)
+
+    # Nan the bad bits
+    full_dq = group_dq | dq[None, None, ...]
+    cleaned = np.where(full_dq, np.nan, electrons)
+
+    return cleaned
+    # # Mask the invalid values and sigma clip
+    # return onp.ma.masked_invalid(cleaned, copy=True)
+
+
+def group_fit(cleaned_ramps, lower_bound=False):
+
+    # Mask the invalid values, sigma clip, and set back to nans for jax
+    masked = onp.ma.masked_invalid(cleaned_ramps, copy=True)
+    masked_clipped = astropy.stats.sigma_clip(masked, axis=0, sigma=3)
+    cleaned = onp.ma.filled(masked_clipped, fill_value=np.nan)
+
+    # Get the support of the data - ie how many integrations contribute to the data
+    support = np.asarray(~np.isnan(cleaned), int).sum(0)
+
+    # Mean after sigma clipping - The 'robust mean', better for quantised data
+    ramp = np.nanmean(cleaned, axis=0)
+
+    # We dont want the error of the mean, we want the _STANDARD ERROR OF THE MEAN_,
+    # ie scaled by the sqrt of the number of samples
+    var = np.nanvar(cleaned, axis=0)
+    if lower_bound:
+        var = np.maximum(var, np.nanmean(cleaned, axis=0))
+    err = np.sqrt(var / support)
+
+    return ramp, err
+
+
+def process_stage1(directory, output_dir="calgrps/", refpix_correction=0, lower_bound=False):
     """
     ref_pix_correction: int
         What reference pixel correction to apply. 0 for none, 1 for first, 2 for second.
@@ -129,45 +230,30 @@ def process_stage1(directory, output_dir="calgrps/", refpix_correction=0):
             print("Not a NIS_AMI file, skipping...")
             continue
 
-        # Get the bits
-        dq = np.array(file["PIXELDQ"].data) > 0
-        group_dq = np.array(file["GROUPDQ"].data) > 0
-        electrons = np.array(file["SCI"].data)  # * file[0].header["TFRAME"]
+        # Get the data with the DQ flags nan'd
+        cleaned_data = nan_dqd(file)
 
-        # Reference pixel correction 1
-        if refpix_correction == 1:
-            electrons += electrons[:, :, 4:5, :]
+        if cleaned_data.shape[1] == 1:
+            print("Only one group, skipping...")
+            continue
 
-        # Clean and clip
-        full_dq = group_dq | dq[None, None, ...]
-        cleaned = np.where(full_dq, np.nan, electrons)
+        # Subtract the bias estimate from the data
+        # (I think this is somewhat redundant if we are only working from slopes)
+        # Actually, this affects the lower_bound flag, as the lower bound on the
+        # variance is the mean of the data
+        bias_cleaned_data, biases = clean_bias(cleaned_data)
 
-        # Mask the invalid values and sigma clip
-        masked = np.ma.masked_invalid(cleaned, copy=True)
-        masked_clipped = astropy.stats.sigma_clip(masked, axis=0, sigma=3)
+        # Sigma clip the slopes
+        cleaned_slopes = clean_slopes(bias_cleaned_data)
 
-        # Fill the masked values with nans
-        cleaned_ramp = np.ma.filled(masked_clipped, fill_value=np.nan)
+        # Rebuild the 'clean' ramps
+        cleaned_ramps = rebuild_ramps(cleaned_slopes)
 
-        # TODO: Fit gaussian to the ramp value? - Better mean and error?
-        # Get the ramp and error
-        # Mean after sigma clipping - 'Robust mean'
-        # This is quantised data, so mean is better than median
-        ramp = np.nanmean(cleaned_ramp, axis=0)
-
-        # We dont want the error of the mean, we want the _STANDARD ERROR OF THE MEAN_,
-        # ie scaled by the sqrt of the number of samples
-        # err = np.nanstd(cleaned_ramp, axis=0)
-        err = np.nanstd(cleaned_ramp, axis=0) / np.sqrt(cleaned_ramp.shape[0])
-
-        # Reference pixel correction 2
-        if refpix_correction == 2:
-            refpix = electrons[:, :, 4:5, :]
-            refpix_clipped = astropy.stats.sigma_clip(refpix, axis=0, sigma=3)
-            cleaned_refpix = np.ma.filled(refpix_clipped, fill_value=np.nan)
-            ramp += np.nanmedian(cleaned_refpix, axis=0)
+        # Estimate the ramp and error
+        ramp, err = group_fit(cleaned_ramps, lower_bound=lower_bound)
 
         # Write to file
+        # TODO: This should probably have the biases added back onto it
         file["SCI"].data = ramp
         file["ERR"].data = err
 

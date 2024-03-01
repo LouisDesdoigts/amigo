@@ -7,8 +7,10 @@ import numpy as onp
 from jax import vmap
 from .stats import check_symmetric, check_positive_semi_definite, build_covariance_matrix
 from .misc import convert_adjacent_to_true, fit_slope, slope_im
+from .interferometry import uv_hex_mask
 from webbpsf import mast_wss
 from xara.core import determine_origin
+from tqdm.notebook import tqdm
 import amigo
 
 
@@ -70,6 +72,8 @@ def get_simbad_spectral_type(source_id):
 def get_gaia_Teff(source_id, data_dr="dr3"):
     """Returns the Teff from Gaia for a given source ID."""
     result_table = Simbad.query_objectids(source_id)
+    if result_table is None:
+        return []
     ids = []
     for x in result_table:
         if f"gaia {data_dr}" in x["ID"].lower():
@@ -85,7 +89,7 @@ def get_gaia_Teff(source_id, data_dr="dr3"):
         "teff_espucd",
         "teff_val",
     ]
-    
+
     Teffs_out = []
     for obj_id in ids:
         data = pyia.GaiaData.from_source_id(obj_id, source_id_dr="dr3", data_dr=data_dr)
@@ -169,7 +173,7 @@ def estimate_psf_and_bias(data):
 
 
 
-def prep_data(file, read_noise, ms_thresh=0., bs_thresh=250):
+def prep_data(file, read_noise, subtract_bias=True, ms_thresh=0., bs_thresh=250):
     ramp = np.asarray(file["SCI"].data, float)    
     err = np.asarray(file["ERR"].data, float)
     dq = np.asarray(file["PIXELDQ"].data > 0, bool)
@@ -206,6 +210,10 @@ def prep_data(file, read_noise, ms_thresh=0., bs_thresh=250):
     support = np.where(supp_mask)
     ramp = ramp.at[:, ~supp_mask].set(np.nan)
     cov = cov.at[..., ~supp_mask].set(np.nan)
+
+    if subtract_bias:
+        psf_guess, bias = estimate_psf_and_bias(ramp)
+        ramp -= bias[None, ...]
     return ramp, cov, support
 
 def get_wss_ops(files):
@@ -219,12 +227,14 @@ def get_wss_ops(files):
         closest_fn, closest_dt = (opd1, t1) if abs(t1) < abs(t0) else (opd0, t0)
         opd_file = mast_wss.mast_retrieve_opd(closest_fn)
         if opd_file not in opds.keys():
-            opds[opd_file] = mast_wss.import_wss_opd(opd_file)[0].data
+            opd = mast_wss.import_wss_opd(opd_file)[0].data
+            opds[opd_file] = np.asarray(opd, float)
         opd_files.append(opds[opd_file])
     return opd_files
 
 
 def get_Teffs(files, default=4500):
+    print("Searching for Teffs...")
     Teffs = {}
     for file in files:
         prop_name = file[0].header["TARGPROP"]
@@ -277,10 +287,13 @@ def find_position(psf, pixel_scale):
     return position
 
 def get_exposures(files):
+    print("Prepping exposures...")
     opds = get_wss_ops(files)
+    # TODO: Load read noise here to prevent unnecessary io
     return [amigo.core.Exposure(file, opd=opd) for file, opd in zip(files, opds)]
 
 def initialise_params(exposures, pixel_scale=0.065524085):
+    print("Initialising parameters...")
     FDA_coefficients = np.load(pkg.resource_filename(__name__, "data/FDA_coeffs.npy"))
     positions = {}
     fluxes = {}
@@ -323,3 +336,46 @@ def full_to_SUB80(full_arr, npix_out=80, fill=0.):
         pad = (npix_out - 80) // 2
         SUB80 = np.pad(SUB80, pad, constant_values=fill)
     return SUB80
+
+
+
+def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=False):
+    """
+    Note caches masks to disk for faster loading. The cache is indexed _relative_ to
+    where the file is run from.
+    """
+
+    masks = {}
+    for file in files:
+        filt = file[0].header["FILTER"]
+        if filt in masks.keys():
+            continue
+        wavels = filters[filt][0]
+
+        calc_pad = 3  # 3x oversample on the mask calculation for soft edges
+        uv_pad = 2  # 2x oversample on the UV transform
+
+        _masks = []
+        looper = tqdm(wavels) if verbose else wavels
+        for wavelength in looper:
+            wl_key = f"{int(wavelength*1e9)}" # The nearest nm
+            file_key = f"{mask_cache}/{wl_key}_{optics.oversample}"
+            try:
+                mask = np.load(f"{file_key}.npy")
+            except FileNotFoundError:
+                mask = uv_hex_mask(
+                    optics.pupil_mask.holes,
+                    optics.pupil_mask.f2f,
+                    optics.pupil_mask.transformation,
+                    wavelength,
+                    optics.psf_pixel_scale,
+                    optics.psf_npixels,
+                    optics.oversample,
+                    uv_pad,
+                    calc_pad,
+                )
+                np.save(f"{file_key}.npy", mask)
+            _masks.append(mask)
+
+        masks[filt] = np.array(_masks)
+    return masks
