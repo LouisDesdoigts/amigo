@@ -51,6 +51,7 @@ class SpatialCurvature(eqx.Module):
     def __call__(self, image):
         return jax.vmap(self.image_to_grads)(image)
 
+
 class Downsample(eqx.Module):
     oversample: int = eqx.field(static=True)
 
@@ -77,21 +78,7 @@ class ConvBFE(eqx.Module):
     oversample: int = eqx.field(static=True)
     pad: int = eqx.field(static=True)
 
-    def __init__(self, convs, oversample, pad, key):
-        subkeys = jr.split(key, len(convs) + 1)
-
-        layers = []
-
-        for conv, subkey in zip(convs, subkeys[1:]):
-            try:
-                layers.append(conv(subkey))
-            # TODO: Remove naked except
-            except:
-                layers.append(conv)
-            layers.append(jax.nn.relu)
-        layers[-1] = lambda x: x
-        layers.append(Squeeze())
-        # layers.append(Downsample(oversample))
+    def __init__(self, layers, oversample, pad):
 
         self.layers = layers
         self.oversample = oversample

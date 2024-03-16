@@ -24,7 +24,7 @@ class Exposure(zdx.Base):
 
     """
     data: Array # Make this static too?
-    covariance: Array = eqx.field(static=True)
+    covariance: Array # = eqx.field(static=True)
     support: Array = eqx.field(static=True)
     opd: Array = eqx.field(static=True)
     nints: int = eqx.field(static=True)
@@ -54,7 +54,7 @@ class Exposure(zdx.Base):
         self.star = file[0].header["TARGPROP"]
         self.data = data
         self.covariance = covariance
-        self.support = support
+        self.support = np.array(support)
         self.key = key_fn(file)
         self.opd = opd
     
@@ -71,6 +71,8 @@ class Exposure(zdx.Base):
     def nims(self):
         return self.nints * self.ngroups
 
+    # TODO: This should return the leading dimension as the pixels, using np.swap_axes
+    # to make the leading dimension the pixels, and vmap loss along first dimension
     def to_vec(self, image):
         return image[..., *self.support]
 
@@ -83,7 +85,7 @@ class Exposure(zdx.Base):
 
     def loglike_im(self, ramp):
         loglike_vec = self.loglike_vec(ramp)
-        return (np.nan * np.ones_like(ramp[0])).at[self.support].set(loglike_vec)
+        return (np.nan * np.ones_like(ramp[0])).at[*self.support].set(loglike_vec)
 
     def summarise_fit(
         self,
@@ -103,7 +105,7 @@ class Exposure(zdx.Base):
         seismic = colormaps["seismic"]
 
         # for exp in exposures:
-        self.print_summary()
+        # self.print_summary()
 
         ramp = model_fn(model, self)
         data = self.data
@@ -310,7 +312,7 @@ class Exposure(zdx.Base):
 class AMIOptics(dl.optical_systems.AngularOpticalSystem):
     def __init__(
         self,
-        radial_orders=np.arange(6),
+        radial_orders=4,
         pupil_mask=None,
         opd=None,
         normalise=True,
@@ -333,18 +335,21 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         primary = dlw.JWSTAberratedPrimary(
             transmission,
             opd=np.zeros_like(transmission),
-            radial_orders=radial_orders,
+            radial_orders=np.arange(radial_orders),
             AMI=True,
         )
 
         # Load the values into the primary
+        n_fda = primary.basis.shape[1]
         file_path = pkg.resource_filename(__name__, 'data/FDA_coeffs.npy')
+        primary = primary.set("coefficients", np.load(file_path)[:, :n_fda])
 
         if opd is None:
             opd = np.zeros_like(transmission)
         primary = primary.set("opd", opd)
         primary = primary.multiply("basis", 1e-9)  # Normalise to nm
-        primary = primary.set("coefficients", np.load(file_path))
+        # primary = primary.multiply("basis", 1e-6)  # Normalise to um
+        # primary = primary.multiply("basis", 1e-3)  # Normalise to mm
 
         if pupil_mask is None:
             pupil_mask = DynamicAMI(f2f=0.80, normalise=normalise)

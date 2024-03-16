@@ -161,16 +161,12 @@ def get_filters(files, nwavels=9):
     return filters
 
 
-
-
-
 def estimate_psf_and_bias(data):
     ngroups = len(data)
     ramp_bottom = data[:2]
     ramp_bottom = np.where(np.isnan(ramp_bottom), 0, ramp_bottom)
     psf, bias = slope_im(ramp_bottom)  # Estimate from the bottom of the ramp
     return psf * ngroups, bias
-
 
 
 def prep_data(file, read_noise, subtract_bias=True, ms_thresh=0., bs_thresh=250):
@@ -280,19 +276,19 @@ def get_phases(files):
     return phases
 
 
-def find_position(psf, pixel_scale):
+def find_position(psf, pixel_scale=0.065524085):
     origin = np.array(determine_origin(psf, verbose=False))
     origin -= (np.array(psf.shape) - 1) / 2
     position = origin * pixel_scale * np.array([1, -1])
     return position
 
-def get_exposures(files):
+def get_exposures(files, add_read_noise=False):
     print("Prepping exposures...")
     opds = get_wss_ops(files)
     # TODO: Load read noise here to prevent unnecessary io
-    return [amigo.core.Exposure(file, opd=opd) for file, opd in zip(files, opds)]
+    return [amigo.core.Exposure(file, opd=opd, add_read_noise=add_read_noise) for file, opd in zip(files, opds)]
 
-def initialise_params(exposures, pixel_scale=0.065524085):
+def initialise_params(exposures, n_fda=10, pixel_scale=0.065524085):
     print("Initialising parameters...")
     FDA_coefficients = np.load(pkg.resource_filename(__name__, "data/FDA_coeffs.npy"))
     positions = {}
@@ -305,11 +301,13 @@ def initialise_params(exposures, pixel_scale=0.065524085):
         psf_guess, bias = estimate_psf_and_bias(exp.data)
         biases[exp.key] = bias
         fluxes[exp.key] = psf_guess.sum() * 1.075  # Seems to be under estimated
+        # fluxes[exp.key] = np.log10(psf_guess.sum() * 1.075)
 
         # TODO: PSF Pixel scale
         positions[exp.key] = find_position(psf_guess, pixel_scale)
         OneOnFs[exp.key] = np.zeros((exp.ngroups, 80, 2))
-        aberrations[exp.key] = FDA_coefficients
+        # aberrations[exp.key] = 1e-6 * FDA_coefficients[:, :n_fda]
+        aberrations[exp.key] = FDA_coefficients[:, :n_fda]
     return {
         "positions": positions,
         "fluxes": fluxes,

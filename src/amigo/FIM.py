@@ -16,8 +16,12 @@ def hessian(f, x):
     # Jit the sub-function here since it is called many times
     # TODO: Test effect on speed
     hvp = jit(hvp)
-    basis = np.eye(np.prod(np.array(x.shape))).reshape(-1, *x.shape)
+    # basis = np.eye(np.prod(np.array(x.shape))).reshape(-1, *x.shape)
+    basis = np.eye(x.size).reshape(-1, *x.shape)
     return np.stack([hvp(e) for e in basis]).reshape(x.shape + x.shape)
+
+
+import jax.tree_util as jtu
 
 
 def FIM(
@@ -31,8 +35,18 @@ def FIM(
 ):
     # Build X vec
     pytree = zdx.tree.set_array(pytree, parameters)
-    shapes, lengths = zdx.bayes._shapes_and_lengths(pytree, parameters, shape_dict)
-    X = np.zeros(zdx.bayes._lengths_to_N(lengths))
+    leaves = pytree.get(parameters)
+
+    # shapes = jtu.tree_map(lambda x: x.shape, leaves)
+    # lengths = jtu.tree_map(lambda x: x.size, leaves)
+
+    shapes = [leaf.shape for leaf in leaves]
+    lengths = [leaf.size for leaf in leaves]
+    N = np.array(lengths).sum()
+    X = np.zeros(N)
+
+    # shapes, lengths = zdx.bayes._shapes_and_lengths(pytree, parameters, shape_dict)
+    # X = np.zeros(zdx.bayes._lengths_to_N(lengths))
 
     # Build function to calculate FIM and calculate
     def calc_fim(X):

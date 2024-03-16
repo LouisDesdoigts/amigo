@@ -40,12 +40,11 @@ def build_covariance_matrix(std, read_noise=None, min_value=True):
         vals = vmap(vmap(vmap(lambda ind: var[ind], 0), 1), 0)(IJs)
         cov = np.min(vals, (0))
     else:
-        # inds = np.min(vmap(vmap(vmap(lambda ind: ind, 0), 1), 0)(IJs), (0))
         inds = vmap(vmap(vmap(lambda ind: ind, 0), 1), 0)(IJs)
         cov = var[np.min(inds, 0)]
 
     if read_noise is not None:
-        cov += get_read_cov(read_noise, len(std))
+        cov += get_read_cov(read_noise, len(var))
 
     return cov
 
