@@ -98,7 +98,7 @@ def slope_im(im, groups):
     return vec2im(ms, npix), vec2im(bs, npix)
 
 
-def clean_bias(data):
+def subtract_bias(data):
     groups = np.arange(1, 3)
     first_groups = data[:, :2]
     slopes, biases = vmap(slope_im, (0, None))(first_groups, groups)
@@ -122,6 +122,12 @@ def clean_slopes(bias_cleaned_data):
 
     # This output has the dimension of the groups and ints swapped
     return np.swapaxes(np.array(cleaned_slopes), 0, 1)
+
+
+# def clean_biases(biases):
+#     # Bias should have shape (nints, npix, npix)
+#     clipped = astropy.stats.sigma_clip(biases, axis=0, sigma=3)
+#     return onp.ma.filled(clipped, fill_value=onp.nan)
 
 
 def rebuild_ramps(cleaned_slopes):
@@ -154,10 +160,32 @@ def nan_dqd(file):
     # return onp.ma.masked_invalid(cleaned, copy=True)
 
 
-def group_fit(cleaned_ramps, lower_bound=False):
+# def group_fit(cleaned_ramps, lower_bound=False):
 
+#     # Mask the invalid values, sigma clip, and set back to nans for jax
+#     masked = onp.ma.masked_invalid(cleaned_ramps, copy=True)
+#     masked_clipped = astropy.stats.sigma_clip(masked, axis=0, sigma=3)
+#     cleaned = onp.ma.filled(masked_clipped, fill_value=np.nan)
+
+#     # Get the support of the data - ie how many integrations contribute to the data
+#     support = np.asarray(~np.isnan(cleaned), int).sum(0)
+
+#     # Mean after sigma clipping - The 'robust mean', better for quantised data
+#     ramp = np.nanmean(cleaned, axis=0)
+
+#     # We dont want the error of the mean, we want the _STANDARD ERROR OF THE MEAN_,
+#     # ie scaled by the sqrt of the number of samples
+#     var = np.nanvar(cleaned, axis=0)
+#     # if lower_bound:
+#     #     var = np.maximum(var, np.nanmean(cleaned, axis=0))
+#     var /= support
+
+#     return ramp, var
+
+
+def calc_mean_and_var(data):
     # Mask the invalid values, sigma clip, and set back to nans for jax
-    masked = onp.ma.masked_invalid(cleaned_ramps, copy=True)
+    masked = onp.ma.masked_invalid(data, copy=True)
     masked_clipped = astropy.stats.sigma_clip(masked, axis=0, sigma=3)
     cleaned = onp.ma.filled(masked_clipped, fill_value=np.nan)
 
@@ -165,19 +193,18 @@ def group_fit(cleaned_ramps, lower_bound=False):
     support = np.asarray(~np.isnan(cleaned), int).sum(0)
 
     # Mean after sigma clipping - The 'robust mean', better for quantised data
-    ramp = np.nanmean(cleaned, axis=0)
+    mean = np.nanmean(cleaned, axis=0)
 
     # We dont want the error of the mean, we want the _STANDARD ERROR OF THE MEAN_,
     # ie scaled by the sqrt of the number of samples
     var = np.nanvar(cleaned, axis=0)
-    if lower_bound:
-        var = np.maximum(var, np.nanmean(cleaned, axis=0))
-    err = np.sqrt(var / support)
+    var /= support
 
-    return ramp, err
+    return mean, var
 
 
-def process_stage1(directory, output_dir="calgrps/", refpix_correction=0, lower_bound=False):
+# def process_stage1(directory, output_dir="calgrps/", refpix_correction=0, lower_bound=False):
+def process_stage1(directory, output_dir="calgrps/", refpix_correction=0):
     """
     ref_pix_correction: int
         What reference pixel correction to apply. 0 for none, 1 for first, 2 for second.
@@ -223,9 +250,15 @@ def process_stage1(directory, output_dir="calgrps/", refpix_correction=0, lower_
         if os.path.exists(final_output_path):
             print("File already exists, skipping...")
             continue
+        file_calgrps = os.path.join(final_output_path)
+
+        # Create the new file
+        import shutil
+
+        shutil.copy(file_path, file_calgrps)
 
         # Check if the file is a NIS_AMI file
-        file = fits.open(file_path)
+        file = fits.open(file_calgrps, mode="update")
         if file[0].header["EXP_TYPE"] != "NIS_AMI":
             print("Not a NIS_AMI file, skipping...")
             continue
@@ -241,24 +274,42 @@ def process_stage1(directory, output_dir="calgrps/", refpix_correction=0, lower_
         # (I think this is somewhat redundant if we are only working from slopes)
         # Actually, this affects the lower_bound flag, as the lower bound on the
         # variance is the mean of the data
-        bias_cleaned_data, biases = clean_bias(cleaned_data)
+        bias_subtracted_data, biases = subtract_bias(cleaned_data)
+
+        # # Sigma clip the biases
+        # cleaned_biases = clean_biases(biases)
+
+        # Estimate the bias and error
+        biases, bias_var = calc_mean_and_var(biases)
 
         # Sigma clip the slopes
-        cleaned_slopes = clean_slopes(bias_cleaned_data)
+        cleaned_slopes = clean_slopes(bias_subtracted_data)
 
         # Rebuild the 'clean' ramps
         cleaned_ramps = rebuild_ramps(cleaned_slopes)
 
         # Estimate the ramp and error
-        ramp, err = group_fit(cleaned_ramps, lower_bound=lower_bound)
+        ramp, ramp_var = calc_mean_and_var(cleaned_ramps)
 
         # Write to file
-        # TODO: This should probably have the biases added back onto it
         file["SCI"].data = ramp
-        file["ERR"].data = err
+
+        # Save the biases as a separate extension
+        header = fits.Header()
+        header["EXTNAME"] = "SCI_VAR"
+        file.append(fits.ImageHDU(data=ramp_var, header=header))
+
+        # Save the biases as a separate extension
+        header = fits.Header()
+        header["EXTNAME"] = "BIAS"
+        file.append(fits.ImageHDU(data=biases, header=header))
+
+        # Save the bias variance as a separate extension
+        header = fits.Header()
+        header["EXTNAME"] = "BIAS_VAR"
+        file.append(fits.ImageHDU(data=bias_var, header=header))
 
         # Save as calgrp
-        file_calgrps = os.path.join(final_output_path)
         file.writeto(file_calgrps, overwrite=True)
         file.close()
 

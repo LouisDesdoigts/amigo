@@ -19,7 +19,7 @@ def get_read_cov(read_noise, ngroups):
     return read_fn(pix_idx, pix_idx)
 
 
-def build_covariance_matrix(std, read_noise=None, min_value=True):
+def build_covariance_matrix(var, read_noise=None, min_value=True):
     """
     The off-diagonal covariance terms cov(i, j), can be the minimum value of:
         1. The value: min(var(i), var(j))
@@ -32,7 +32,6 @@ def build_covariance_matrix(std, read_noise=None, min_value=True):
 
     Read noise can optional be added to the diagonal terms.
     """
-    var = std**2
     Is = np.arange(len(var))
     IJs = np.array(np.meshgrid(Is, Is))
 

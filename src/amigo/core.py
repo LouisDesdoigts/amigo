@@ -23,9 +23,12 @@ class Exposure(zdx.Base):
     modelled.
 
     """
-    data: Array # Make this static too?
-    covariance: Array # = eqx.field(static=True)
+    data: Array
+    covariance: Array
+    bias: Array
+    bias_var: Array
     support: Array = eqx.field(static=True)
+    pipeline_bias: Array = eqx.field(static=True)
     opd: Array = eqx.field(static=True)
     nints: int = eqx.field(static=True)
     ngroups: int = eqx.field(static=True)
@@ -47,6 +50,8 @@ class Exposure(zdx.Base):
         else:
             read_noise = None
         data, covariance, support = prep_data(file, read_noise=read_noise)
+        # bias = np.asarray(file['BIAS'].data, float)
+        # data += bias
 
         self.nints = file[0].header["NINTS"]
         self.ngroups = file[0].header["NGROUPS"]
@@ -54,6 +59,9 @@ class Exposure(zdx.Base):
         self.star = file[0].header["TARGPROP"]
         self.data = data
         self.covariance = covariance
+        self.bias = np.zeros(data.shape[-2:]) # Dont add bias to data, fit it relative
+        self.bias_var = np.asarray(file["BIAS_VAR"].data, float)
+        self.pipeline_bias = np.asarray(file["BIAS"].data, float)
         self.support = np.array(support)
         self.key = key_fn(file)
         self.opd = opd
@@ -67,6 +75,7 @@ class Exposure(zdx.Base):
             f"ngroups {self.ngroups}\n"
         )
 
+    # TODO: Probs dont need this anymore
     @property
     def nims(self):
         return self.nints * self.ngroups
@@ -493,7 +502,7 @@ class AmigoHistory(ModelHistory):
     TODO: Get exposure fit?
     """
 
-    def plot(self, exposures=None, key_fn=None, ignore=[]):
+    def plot(self, exposures=None, key_fn=None, ignore=[], start=0, end=-1):
 
         params = list(self.params.keys())
         params_in = [param for param in params if param not in ignore]
@@ -505,7 +514,7 @@ class AmigoHistory(ModelHistory):
 
             param = params_in[i]
             leaf = self.params[param]
-            self._plot_ax(leaf, ax, param, exposures, key_fn)
+            self._plot_ax(leaf, ax, param, exposures, key_fn, start, end)
 
             ax = plt.subplot(1, 2, 2)
             if i + 1 == len(params_in):
@@ -541,7 +550,7 @@ class AmigoHistory(ModelHistory):
             return values
         return np.concatenate(values, axis=-1)
 
-    def _plot_ax(self, leaf, ax, param, exposures=None, key_fn=lambda x: x.key):
+    def _plot_ax(self, leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, end=-1):
 
         if exposures is not None:
             keys = [exp.key for exp in exposures]

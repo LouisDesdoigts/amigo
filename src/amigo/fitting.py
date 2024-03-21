@@ -200,7 +200,7 @@ def optimise(
     elapsed_time = time.time() - t0
     formatted_time = str(timedelta(seconds=int(elapsed_time)))
 
-    print(f"Compile Time: {formatted_time}")
+    print(f"Full Time: {formatted_time}")
     print(f"Final Loss: {loss:,.2f}")
 
     if return_state:

@@ -169,25 +169,28 @@ def estimate_psf_and_bias(data):
     return psf * ngroups, bias
 
 
-def prep_data(file, read_noise, subtract_bias=True, ms_thresh=0., bs_thresh=250):
+# def prep_data(file, read_noise, subtract_bias=True, ms_thresh=0., bs_thresh=250):
+def prep_data(file, read_noise):#, ms_thresh=0., bs_thresh=250):
     ramp = np.asarray(file["SCI"].data, float)    
-    err = np.asarray(file["ERR"].data, float)
+    var = np.asarray(file["SCI_VAR"].data, float)
     dq = np.asarray(file["PIXELDQ"].data > 0, bool)
 
     # Build the covariance matrix
-    cov = build_covariance_matrix(err, read_noise=read_noise, min_value=True)
+    cov = build_covariance_matrix(var, read_noise=read_noise, min_value=True)
 
     # Check for bad pixels around dq'd pixels
     dilated_dq = convert_adjacent_to_true(dq)
-    dq_edges = dilated_dq & ~dq
-    dq_edge_inds = np.array(np.where(dq_edges))
-    dq_edge_ramps = ramp[:, *dq_edge_inds].T
-    ms, bs = vmap(fit_slope)(dq_edge_ramps)
-    for i in range(len(dq_edge_ramps)):
-        if ms[i] <= ms_thresh:
-            dq = dq.at[*dq_edge_inds[:, i]].set(True)
-        if bs[i] > bs_thresh:
-            dq = dq.at[*dq_edge_inds[:, i]].set(True)
+    dq = dq & ~dilated_dq
+    # dq_edges = dilated_dq & ~dq
+    # dq_edge_inds = np.array(np.where(dq_edges))
+    # dq_edge_ramps = ramp[:, *dq_edge_inds].T
+    # ms, bs = vmap(fit_slope)(dq_edge_ramps)
+    # for i in range(len(dq_edge_ramps)):
+    #     if ms[i] <= ms_thresh:
+    #         dq = dq.at[*dq_edge_inds[:, i]].set(True)
+    #     if bs[i] > bs_thresh:
+    #         dq = dq.at[*dq_edge_inds[:, i]].set(True)
+
 
     # Set bad rows and cols
     dq = dq.at[:4].set(True)  # Bottom 4 rows are bad
@@ -207,9 +210,9 @@ def prep_data(file, read_noise, subtract_bias=True, ms_thresh=0., bs_thresh=250)
     ramp = ramp.at[:, ~supp_mask].set(np.nan)
     cov = cov.at[..., ~supp_mask].set(np.nan)
 
-    if subtract_bias:
-        psf_guess, bias = estimate_psf_and_bias(ramp)
-        ramp -= bias[None, ...]
+    # if subtract_bias:
+    #     psf_guess, bias = estimate_psf_and_bias(ramp)
+    #     ramp -= bias[None, ...]
     return ramp, cov, support
 
 def get_wss_ops(files):
@@ -288,7 +291,9 @@ def get_exposures(files, add_read_noise=False):
     # TODO: Load read noise here to prevent unnecessary io
     return [amigo.core.Exposure(file, opd=opd, add_read_noise=add_read_noise) for file, opd in zip(files, opds)]
 
-def initialise_params(exposures, n_fda=10, pixel_scale=0.065524085):
+def initialise_params(
+    exposures, n_fda=10, pixel_scale=0.065524085, log=True, has_bias=True
+):
     print("Initialising parameters...")
     FDA_coefficients = np.load(pkg.resource_filename(__name__, "data/FDA_coeffs.npy"))
     positions = {}
@@ -298,12 +303,22 @@ def initialise_params(exposures, n_fda=10, pixel_scale=0.065524085):
     OneOnFs = {}
     aberrations = {}
     for exp in exposures:
-        psf_guess, bias = estimate_psf_and_bias(exp.data)
-        biases[exp.key] = bias
-        fluxes[exp.key] = psf_guess.sum() * 1.075  # Seems to be under estimated
-        # fluxes[exp.key] = np.log10(psf_guess.sum() * 1.075)
+        # if has_bias:
+        #     psf_guess, bias = estimate_psf_and_bias(exp.data - exp.bias)
+        #     biases[exp.key] = exp.bias
+        # else:
+        #     psf_guess, bias = estimate_psf_and_bias(exp.data)
+        #     biases[exp.key] = np.zeros_like(exp.bias)
 
-        # TODO: PSF Pixel scale
+        psf_guess, bias = estimate_psf_and_bias(exp.data)
+        biases[exp.key] = exp.bias
+
+        flux = psf_guess.sum() * 1.075  # Seems to be under estimated
+        if log:
+            fluxes[exp.key] = np.log10(flux)
+        else:
+            fluxes[exp.key] = flux
+
         positions[exp.key] = find_position(psf_guess, pixel_scale)
         OneOnFs[exp.key] = np.zeros((exp.ngroups, 80, 2))
         # aberrations[exp.key] = 1e-6 * FDA_coefficients[:, :n_fda]
@@ -334,7 +349,6 @@ def full_to_SUB80(full_arr, npix_out=80, fill=0.):
         pad = (npix_out - 80) // 2
         SUB80 = np.pad(SUB80, pad, constant_values=fill)
     return SUB80
-
 
 
 def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=False):
