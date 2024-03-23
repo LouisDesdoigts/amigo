@@ -5,7 +5,7 @@ import pyia
 import pkg_resources as pkg
 import numpy as onp
 from jax import vmap
-from .stats import check_symmetric, check_positive_semi_definite, build_covariance_matrix
+from .stats import check_symmetric, check_positive_semi_definite, build_cov
 from .misc import convert_adjacent_to_true, fit_slope, slope_im
 from .interferometry import uv_hex_mask
 from webbpsf import mast_wss
@@ -170,13 +170,15 @@ def estimate_psf_and_bias(data):
 
 
 # def prep_data(file, read_noise, subtract_bias=True, ms_thresh=0., bs_thresh=250):
-def prep_data(file, read_noise):#, ms_thresh=0., bs_thresh=250):
-    ramp = np.asarray(file["SCI"].data, float)    
+# def prep_data(file, read_noise):#, ms_thresh=0., bs_thresh=250):
+def prep_data(file, ms_thresh=None, clean_edges=False):
+    data = np.asarray(file["SCI"].data, float)
     var = np.asarray(file["SCI_VAR"].data, float)
     dq = np.asarray(file["PIXELDQ"].data > 0, bool)
 
     # Build the covariance matrix
-    cov = build_covariance_matrix(var, read_noise=read_noise, min_value=True)
+    # cov = build_covariance_matrix(var, read_noise=read_noise, min_value=True)
+    # cov = build_cov(var)
 
     # Check for bad pixels around dq'd pixels
     dilated_dq = convert_adjacent_to_true(dq)
@@ -184,45 +186,49 @@ def prep_data(file, read_noise):#, ms_thresh=0., bs_thresh=250):
     # dq_edges = dilated_dq & ~dq
     # dq_edge_inds = np.array(np.where(dq_edges))
     # dq_edge_ramps = ramp[:, *dq_edge_inds].T
-    # ms, bs = vmap(fit_slope)(dq_edge_ramps)
+
+    if ms_thresh is not None:
+        # ms, bs = slope_im(ramp)
+        # ms_mask =
+        dq = dq.at[np.mean(ramp, axis=0) <= ms_thresh].set(True)
+
     # for i in range(len(dq_edge_ramps)):
     #     if ms[i] <= ms_thresh:
     #         dq = dq.at[*dq_edge_inds[:, i]].set(True)
     #     if bs[i] > bs_thresh:
     #         dq = dq.at[*dq_edge_inds[:, i]].set(True)
 
-
     # Set bad rows and cols
-    dq = dq.at[:4].set(True)  # Bottom 4 rows are bad
-    dq = dq.at[-1].set(True)  # Top row is bad
-    dq = dq.at[:, -2:].set(True)  # Right 2 columns are bad
-    dq = dq.at[:, 0].set(True)  # Left column is bad
+    if clean_edges:
+        dq = dq.at[:4].set(True)  # Bottom 4 rows are bad
+        dq = dq.at[-1].set(True)  # Top row is bad
+        dq = dq.at[:, -2:].set(True)  # Right 2 columns are bad
+        dq = dq.at[:, 0].set(True)  # Left column is bad
 
-    # Check for symmetry and positive semi-definite
-    ngroups = ramp.shape[0]
-    flat_cov = cov.reshape(ngroups, ngroups, -1)
-    is_sym = vmap(check_symmetric, -1)(flat_cov).reshape(80, 80)
-    is_psd = vmap(check_positive_semi_definite, -1)(flat_cov).reshape(80, 80)
-    supp_mask = is_sym & is_psd & ~np.isnan(ramp.sum(0)) & ~dq
+    # # Check for symmetry and positive semi-definite
+    # ngroups = ramp.shape[0]
+    # flat_cov = cov.reshape(ngroups, ngroups, -1)
+    # is_sym = vmap(check_symmetric, -1)(flat_cov).reshape(80, 80)
+    # is_psd = vmap(check_positive_semi_definite, -1)(flat_cov).reshape(80, 80)
+    # supp_mask = is_sym & is_psd & ~np.isnan(ramp.sum(0)) & ~dq
 
     # Nan the bad pixels
     support = np.where(supp_mask)
-    ramp = ramp.at[:, ~supp_mask].set(np.nan)
-    cov = cov.at[..., ~supp_mask].set(np.nan)
+    data = data.at[:, ~supp_mask].set(np.nan)
+    var = var.at[..., ~supp_mask].set(np.nan)
 
     # if subtract_bias:
     #     psf_guess, bias = estimate_psf_and_bias(ramp)
     #     ramp -= bias[None, ...]
-    return ramp, cov, support
+    return data, var, support
+
 
 def get_wss_ops(files):
     opds = {}
     opd_files = []
     for file in files:
         date = file[0].header["DATE-BEG"]
-        opd0, opd1, t0, t1 = mast_wss.mast_wss_opds_around_date_query(
-            date, verbose=False
-        )
+        opd0, opd1, t0, t1 = mast_wss.mast_wss_opds_around_date_query(date, verbose=False)
         closest_fn, closest_dt = (opd1, t1) if abs(t1) < abs(t0) else (opd0, t0)
         opd_file = mast_wss.mast_retrieve_opd(closest_fn)
         if opd_file not in opds.keys():
@@ -250,6 +256,7 @@ def get_Teffs(files, default=4500):
             Teffs[prop_name] = Teff
 
     return Teffs
+
 
 def get_amplitudes(files):
     amplitudes = {}
@@ -285,17 +292,31 @@ def find_position(psf, pixel_scale=0.065524085):
     position = origin * pixel_scale * np.array([1, -1])
     return position
 
-def get_exposures(files, add_read_noise=False):
+
+# def get_exposures(files, add_read_noise=False):
+def get_exposures(files, ms_thresh=None):
     print("Prepping exposures...")
     opds = get_wss_ops(files)
     # TODO: Load read noise here to prevent unnecessary io
-    return [amigo.core.Exposure(file, opd=opd, add_read_noise=add_read_noise) for file, opd in zip(files, opds)]
+    return [
+        # amigo.core.Exposure(file, opd=opd, add_read_noise=add_read_noise)
+        amigo.core.Exposure(file, opd=opd, ms_thresh=ms_thresh)
+        for file, opd in zip(files, opds)
+    ]
 
+
+# def initialise_params(
+#     exposures, n_fda=10, pixel_scale=0.065524085, log=True, has_bias=True
+# ):
 def initialise_params(
-    exposures, n_fda=10, pixel_scale=0.065524085, log=True, has_bias=True
+    exposures, n_fda=10, pixel_scale=0.065524085, log=True, use_pre_calc_fda=True
 ):
     print("Initialising parameters...")
-    FDA_coefficients = np.load(pkg.resource_filename(__name__, "data/FDA_coeffs.npy"))
+
+    if use_pre_calc_fda:
+        FDA_coefficients = np.load(pkg.resource_filename(__name__, "data/FDA_coeffs.npy"))
+    else:
+        FDA_coefficients = np.zeros((7, n_fda))
     positions = {}
     fluxes = {}
     aberrations = {}
@@ -310,19 +331,28 @@ def initialise_params(
         #     psf_guess, bias = estimate_psf_and_bias(exp.data)
         #     biases[exp.key] = np.zeros_like(exp.bias)
 
-        psf_guess, bias = estimate_psf_and_bias(exp.data)
-        biases[exp.key] = exp.bias
+        # psf_guess, bias = estimate_psf_and_bias(exp.data)
 
-        flux = psf_guess.sum() * 1.075  # Seems to be under estimated
+        # flux = psf_guess.sum() * 1.075  # Seems to be under estimated
+
+        flux = np.nansum(exp.data[-1]) * (exp.ngroups + 1)
+
         if log:
             fluxes[exp.key] = np.log10(flux)
         else:
             fluxes[exp.key] = flux
 
-        positions[exp.key] = find_position(psf_guess, pixel_scale)
-        OneOnFs[exp.key] = np.zeros((exp.ngroups, 80, 2))
-        # aberrations[exp.key] = 1e-6 * FDA_coefficients[:, :n_fda]
+        im = exp.data[0]
+        im = im.at[np.where(np.isnan(im))].set(0.0)  # TODO: Interpolate?
+        pos = find_position(im, pixel_scale)
+
+        # positions[exp.key] = find_position(exp.data[0], pixel_scale)
+        positions[exp.key] = pos
         aberrations[exp.key] = FDA_coefficients[:, :n_fda]
+        # OneOnFs[exp.key] = np.zeros((exp.ngroups, 80, 2))
+        OneOnFs[exp.key] = np.zeros((exp.ngroups + 1, 80, 2))
+        biases[exp.key] = exp.bias
+
     return {
         "positions": positions,
         "fluxes": fluxes,
@@ -332,10 +362,10 @@ def initialise_params(
     }
 
 
-def full_to_SUB80(full_arr, npix_out=80, fill=0.):
+def full_to_SUB80(full_arr, npix_out=80, fill=0.0):
     """
     This is taken from the JWST pipeline, so its probably correct.
-    
+
     The padding adds zeros to the edges of the array, keeping the SUB80 array centered.
     """
     xstart = 1045
@@ -370,7 +400,7 @@ def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=Fa
         _masks = []
         looper = tqdm(wavels) if verbose else wavels
         for wavelength in looper:
-            wl_key = f"{int(wavelength*1e9)}" # The nearest nm
+            wl_key = f"{int(wavelength*1e9)}"  # The nearest nm
             file_key = f"{mask_cache}/{wl_key}_{optics.oversample}"
             try:
                 mask = np.load(f"{file_key}.npy")

@@ -24,19 +24,21 @@ class Exposure(zdx.Base):
 
     """
     data: Array
-    covariance: Array
-    bias: Array
-    bias_var: Array
+    # covariance: Array
+    variance: Array
+    # bias: Array
+    # bias_var: Array
     support: Array = eqx.field(static=True)
-    pipeline_bias: Array = eqx.field(static=True)
+    # pipeline_bias: Array = eqx.field(static=True)
     opd: Array = eqx.field(static=True)
     nints: int = eqx.field(static=True)
     ngroups: int = eqx.field(static=True)
+    nslopes: int = eqx.field(static=True)
     filter: str = eqx.field(static=True)
     star: str = eqx.field(static=True)
     key: str = eqx.field(static=True)
 
-    def __init__(self, file, add_read_noise=False, opd=None, key_fn=None):
+    def __init__(self, file, opd=None, key_fn=None, ms_thresh=-3.):
 
         if key_fn is None:
             key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:3])
@@ -44,24 +46,21 @@ class Exposure(zdx.Base):
         if opd is None:
             opd = get_wss_ops([file])[0]
 
-        if add_read_noise:
-            file_path = pkg.resource_filename(__name__, "data/SUB80_readnoise.npy")
-            read_noise = np.load(file_path)
-        else:
-            read_noise = None
-        data, covariance, support = prep_data(file, read_noise=read_noise)
-        # bias = np.asarray(file['BIAS'].data, float)
-        # data += bias
+        data, variance, support = prep_data(file, ms_thresh=ms_thresh)
+
 
         self.nints = file[0].header["NINTS"]
         self.ngroups = file[0].header["NGROUPS"]
+        # self.ngroups = len(data)
         self.filter = file[0].header["FILTER"]
         self.star = file[0].header["TARGPROP"]
         self.data = data
-        self.covariance = covariance
-        self.bias = np.zeros(data.shape[-2:]) # Dont add bias to data, fit it relative
-        self.bias_var = np.asarray(file["BIAS_VAR"].data, float)
-        self.pipeline_bias = np.asarray(file["BIAS"].data, float)
+        self.variance = variance
+        # self.bias = np.zeros(data.shape[-2:]) # Dont add bias to data, fit it relative
+        # self.bias_var = np.asarray(file["BIAS_VAR"].data, float)
+        # self.pipeline_bias = np.asarray(file["BIAS"].data, float)
+        # self.bias_var = None
+        # self.pipeline_bias = None
         self.support = np.array(support)
         self.key = key_fn(file)
         self.opd = opd
@@ -75,26 +74,42 @@ class Exposure(zdx.Base):
             f"ngroups {self.ngroups}\n"
         )
 
-    # TODO: Probs dont need this anymore
-    @property
-    def nims(self):
-        return self.nints * self.ngroups
+    # # TODO: Probs dont need this anymore
+    # @property
+    # def nims(self):
+    #     return self.nints * self.ngroups
 
-    # TODO: This should return the leading dimension as the pixels, using np.swap_axes
-    # to make the leading dimension the pixels, and vmap loss along first dimension
+    # # TODO: This should return the leading dimension as the pixels, using np.swap_axes
+    # # to make the leading dimension the pixels, and vmap loss along first dimension
+    # def to_vec(self, image):
+    #     return image[..., *self.support].T
+
+    # def loglike_vec(self, ramp):
+    #     # Error is _standard error of the mean_, so we dont need to multiply by nints
+    #     ramp_vec = self.to_vec(ramp)
+    #     data_vec = self.to_vec(self.data)
+    #     cov_vec = self.to_vec(self.covariance)
+    #     return vmap(mvn.logpdf, (-1, -1, -1))(ramp_vec, data_vec, cov_vec)
+
+    # def loglike_im(self, ramp):
+    #     loglike_vec = np.nansum(self.loglike_vec(ramp))
+    #     return (np.nan * np.ones_like(ramp[0])).at[*self.support].set(loglike_vec)
+
     def to_vec(self, image):
-        return image[..., *self.support]
+        return image[..., *self.support].T
 
-    def loglike_vec(self, ramp):
+    def loglike_vec(self, slope):
         # Error is _standard error of the mean_, so we dont need to multiply by nints
-        ramp_vec = self.to_vec(ramp)
+        ramp_vec = self.to_vec(slope)
         data_vec = self.to_vec(self.data)
-        cov_vec = self.to_vec(self.covariance)
-        return vmap(mvn.logpdf, (-1, -1, -1))(ramp_vec, data_vec, cov_vec)
+        var_vec = vmap(np.diag)(self.to_vec(self.variance))
+        return vmap(norm.logpdf, (0, 0, 0))(ramp_vec, data_vec, var_vec ** 0.5)
 
     def loglike_im(self, ramp):
-        loglike_vec = self.loglike_vec(ramp)
+        loglike_vec = np.nansum(self.loglike_vec(ramp), axis=1)
         return (np.nan * np.ones_like(ramp[0])).at[*self.support].set(loglike_vec)
+
+
 
     def summarise_fit(
         self,
