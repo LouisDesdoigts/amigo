@@ -7,6 +7,10 @@ def total_read_noise(bias, one_on_fs):
     return bias[None, ...] + vmap(model_amplifier)(one_on_fs)
 
 
+def total_amplifier_noise(one_on_fs):
+    return vmap(model_amplifier)(one_on_fs)
+
+
 # Noise modelling
 def get_read_cov(read_noise, ngroups):
     # Bind the read noise function
@@ -26,6 +30,62 @@ def build_cov(var):
     vals = vmap(vmap(vmap(lambda ind: var[ind], 0), 1), 0)(IJs)
     cov = np.min(vals, (0))
     return cov
+
+import pkg_resources as pkg
+
+
+def variance_model(model, exposure, model_fn, true_read_noise=False, read_noise=10):
+    """
+    True read noise will use the CRDS read noise array, else it will use a constant
+    value as determined by the input. true_read_noise therefore supersedes read_noise.
+    Using a flat value of 10 seems to be more accurate that the CRDS array.
+
+    That said I think the data has overly ambitious variances as a consequence of the
+    sigma clipping that is performed. We could determine the variance analytically from
+    the variance of the individual pixel values, but we will look at this later.
+    """
+
+    nan_mask = np.isnan(exposure.data)
+
+    # Estimate the photon covariance
+    psf = model_fn(model, exposure, model_fn)
+
+    psf = psf.at[np.where(nan_mask)].set(np.nan)
+    variance = psf / exposure.nints
+
+    # Read noise covariance
+    if true_read_noise:
+        rn = np.load(pkg.resource_filename(__name__, "data/SUB80_readnoise.npy"))
+        # rn = np.load("/Users/louis/PhD/Software/sandbox/amigo/src/amigo/data/SUB80_readnoise.npy")
+    else:
+        rn = read_noise
+    read_variance = (rn**2) * np.ones((80, 80)) / exposure.nints
+    variance += read_variance
+
+    return psf, variance
+
+
+import jax.numpy as np
+from jax.scipy.stats import norm
+from amigo.FIM import FIM
+
+
+# Actual posterior
+def posterior(model, exposure, model_fn, per_pix=True, zero_idx=-1, **kwargs):
+    slope = model_fn(model, exposure, zero_idx=zero_idx, **kwargs)
+    posterior_vec = exposure.loglike_vec(slope)
+    posterior = np.nansum(posterior_vec)
+    if per_pix:
+        return posterior / posterior_vec.size
+    return posterior
+
+
+# def loss_fn(model, exposures, **kwargs):
+def loss_fn(model, args, **kwargs):
+    exposures, step_mappers, model_fn = args
+    return -np.array([
+        posterior(model, exp, model_fn, **kwargs) for exp in exposures
+    ]).sum()
 
 
 # def build_covariance_matrix(var, read_noise=None, min_value=True):

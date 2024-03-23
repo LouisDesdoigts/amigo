@@ -66,6 +66,8 @@ def get_simbad_spectral_type(source_id):
     """Returns the spectral type and quality from Simbad for a given source ID."""
     Simbad.add_votable_fields("sptype", "sp_qual")
     table = Simbad.query_object(source_id)
+    if table is None:
+        return None, None
     return table["SP_TYPE"].tolist()[0], table["SP_QUAL"].tolist()[0]
 
 
@@ -114,6 +116,8 @@ def get_Teff(targ_name):
 
     # Then check Simbad -> Mamajeck?? table
     spec_type, qual = get_simbad_spectral_type(targ_name)
+    if spec_type is not None:
+        return pyia.spectral_type_to_Teff(spec_type)
     # TODO: Use `MeanStars` to get Teff from spectral type
 
     # Finally, check DR2
@@ -190,7 +194,7 @@ def prep_data(file, ms_thresh=None, clean_edges=False):
     if ms_thresh is not None:
         # ms, bs = slope_im(ramp)
         # ms_mask =
-        dq = dq.at[np.mean(ramp, axis=0) <= ms_thresh].set(True)
+        dq = dq.at[np.mean(data, axis=0) <= ms_thresh].set(True)
 
     # for i in range(len(dq_edge_ramps)):
     #     if ms[i] <= ms_thresh:
@@ -211,6 +215,7 @@ def prep_data(file, ms_thresh=None, clean_edges=False):
     # is_sym = vmap(check_symmetric, -1)(flat_cov).reshape(80, 80)
     # is_psd = vmap(check_positive_semi_definite, -1)(flat_cov).reshape(80, 80)
     # supp_mask = is_sym & is_psd & ~np.isnan(ramp.sum(0)) & ~dq
+    supp_mask = ~np.isnan(data.sum(0)) & ~dq
 
     # Nan the bad pixels
     support = np.where(supp_mask)
@@ -294,13 +299,15 @@ def find_position(psf, pixel_scale=0.065524085):
 
 
 # def get_exposures(files, add_read_noise=False):
-def get_exposures(files, ms_thresh=None):
+def get_exposures(files, optics, ms_thresh=None):
     print("Prepping exposures...")
     opds = get_wss_ops(files)
     # TODO: Load read noise here to prevent unnecessary io
     return [
         # amigo.core.Exposure(file, opd=opd, add_read_noise=add_read_noise)
-        amigo.core.Exposure(file, opd=opd, ms_thresh=ms_thresh)
+        # amigo.core.Exposure(file, opd=opd, ms_thresh=ms_thresh)
+        # for file, opd in zip(files, opds)
+        amigo.core.ExposureFit(file, optics, opd=opd, ms_thresh=ms_thresh)
         for file, opd in zip(files, opds)
     ]
 
@@ -308,57 +315,76 @@ def get_exposures(files, ms_thresh=None):
 # def initialise_params(
 #     exposures, n_fda=10, pixel_scale=0.065524085, log=True, has_bias=True
 # ):
-def initialise_params(
-    exposures, n_fda=10, pixel_scale=0.065524085, log=True, use_pre_calc_fda=True
-):
-    print("Initialising parameters...")
+# def initialise_params(
+#     exposures, n_fda=10, pixel_scale=0.065524085, log=True, use_pre_calc_fda=True
+# ):
+#     print("Initialising parameters...")
 
-    if use_pre_calc_fda:
-        FDA_coefficients = np.load(pkg.resource_filename(__name__, "data/FDA_coeffs.npy"))
-    else:
-        FDA_coefficients = np.zeros((7, n_fda))
+#     if use_pre_calc_fda:
+#         FDA_coefficients = np.load(pkg.resource_filename(__name__, "data/FDA_coeffs.npy"))
+#     else:
+#         FDA_coefficients = np.zeros((7, n_fda))
+#     positions = {}
+#     fluxes = {}
+#     aberrations = {}
+#     biases = {}
+#     OneOnFs = {}
+#     aberrations = {}
+#     for exp in exposures:
+#         # if has_bias:
+#         #     psf_guess, bias = estimate_psf_and_bias(exp.data - exp.bias)
+#         #     biases[exp.key] = exp.bias
+#         # else:
+#         #     psf_guess, bias = estimate_psf_and_bias(exp.data)
+#         #     biases[exp.key] = np.zeros_like(exp.bias)
+
+#         # psf_guess, bias = estimate_psf_and_bias(exp.data)
+
+#         # flux = psf_guess.sum() * 1.075  # Seems to be under estimated
+
+#         flux = np.nansum(exp.data[-1]) * (exp.ngroups + 1)
+
+#         if log:
+#             fluxes[exp.key] = np.log10(flux)
+#         else:
+#             fluxes[exp.key] = flux
+
+#         im = exp.data[0]
+#         im = im.at[np.where(np.isnan(im))].set(0.0)  # TODO: Interpolate?
+#         pos = find_position(im, pixel_scale)
+
+#         # positions[exp.key] = find_position(exp.data[0], pixel_scale)
+#         positions[exp.key] = pos
+#         aberrations[exp.key] = FDA_coefficients[:, :n_fda]
+#         # OneOnFs[exp.key] = np.zeros((exp.ngroups, 80, 2))
+#         OneOnFs[exp.key] = np.zeros((exp.ngroups + 1, 80, 2))
+#         biases[exp.key] = exp.bias
+
+#     return {
+#         "positions": positions,
+#         "fluxes": fluxes,
+#         "aberrations": aberrations,
+#         "biases": biases,
+#         "OneOnFs": OneOnFs,
+#     }
+
+
+def initialise_params(exposures):
     positions = {}
     fluxes = {}
     aberrations = {}
-    biases = {}
-    OneOnFs = {}
+    one_on_fs = {}
     aberrations = {}
     for exp in exposures:
-        # if has_bias:
-        #     psf_guess, bias = estimate_psf_and_bias(exp.data - exp.bias)
-        #     biases[exp.key] = exp.bias
-        # else:
-        #     psf_guess, bias = estimate_psf_and_bias(exp.data)
-        #     biases[exp.key] = np.zeros_like(exp.bias)
-
-        # psf_guess, bias = estimate_psf_and_bias(exp.data)
-
-        # flux = psf_guess.sum() * 1.075  # Seems to be under estimated
-
-        flux = np.nansum(exp.data[-1]) * (exp.ngroups + 1)
-
-        if log:
-            fluxes[exp.key] = np.log10(flux)
-        else:
-            fluxes[exp.key] = flux
-
-        im = exp.data[0]
-        im = im.at[np.where(np.isnan(im))].set(0.0)  # TODO: Interpolate?
-        pos = find_position(im, pixel_scale)
-
-        # positions[exp.key] = find_position(exp.data[0], pixel_scale)
-        positions[exp.key] = pos
-        aberrations[exp.key] = FDA_coefficients[:, :n_fda]
-        # OneOnFs[exp.key] = np.zeros((exp.ngroups, 80, 2))
-        OneOnFs[exp.key] = np.zeros((exp.ngroups + 1, 80, 2))
-        biases[exp.key] = exp.bias
-
+        positions[exp.key] = exp.position
+        aberrations[exp.key] = exp.aberrations
+        fluxes[exp.key] = exp.flux
+        one_on_fs[exp.key] = exp.one_on_fs
     return {
         "positions": positions,
         "fluxes": fluxes,
         "aberrations": aberrations,
-        "biases": biases,
-        "OneOnFs": OneOnFs,
+        "one_on_fs": one_on_fs,
     }
 
 

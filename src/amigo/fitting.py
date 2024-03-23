@@ -175,7 +175,7 @@ def optimise(
 
     looper = range(1, epochs)
     if verbose:
-        looper = tqdm(looper, desc=f"Loss: {loss:,.2f}, Change: {0.}")
+        looper = tqdm(looper, desc=f"Loss: {loss:,.2f}, Change: {0.}", initial=1, total=epochs)
 
     losses = [loss]
     for i in looper:

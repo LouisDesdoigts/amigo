@@ -7,10 +7,10 @@ import jax.tree_util as jtu
 from jax import vmap
 import dLux.utils as dlu
 import dLux as dl
-from jax.scipy.stats import multivariate_normal as mvn
+from jax.scipy.stats import multivariate_normal as mvn, norm
 from .detector_layers import Rotate, ApplySensitivities
 from .optical_layers import DynamicAMI
-from .files import prep_data, get_wss_ops
+from .files import prep_data, get_wss_ops, find_position
 import pkg_resources as pkg
 import matplotlib.pyplot as plt
 from matplotlib import colormaps, colors
@@ -51,7 +51,7 @@ class Exposure(zdx.Base):
 
         self.nints = file[0].header["NINTS"]
         self.ngroups = file[0].header["NGROUPS"]
-        # self.ngroups = len(data)
+        self.nslopes = len(data)
         self.filter = file[0].header["FILTER"]
         self.star = file[0].header["TARGPROP"]
         self.data = data
@@ -102,13 +102,12 @@ class Exposure(zdx.Base):
         # Error is _standard error of the mean_, so we dont need to multiply by nints
         ramp_vec = self.to_vec(slope)
         data_vec = self.to_vec(self.data)
-        var_vec = vmap(np.diag)(self.to_vec(self.variance))
+        var_vec = self.to_vec(self.variance)
         return vmap(norm.logpdf, (0, 0, 0))(ramp_vec, data_vec, var_vec ** 0.5)
 
     def loglike_im(self, ramp):
         loglike_vec = np.nansum(self.loglike_vec(ramp), axis=1)
         return (np.nan * np.ones_like(ramp[0])).at[*self.support].set(loglike_vec)
-
 
 
     def summarise_fit(
@@ -143,8 +142,7 @@ class Exposure(zdx.Base):
 
         final_loss = np.nansum(-loglike_im) / np.prod(np.array(data.shape[-2:]))
 
-        err = vmap(vmap(np.diag, -1, -1), -1, -1)(self.covariance) ** 0.5
-        norm_res_ramp = residual / err
+        norm_res_ramp = residual / self.variance ** 0.5
         norm_res_ramp = norm_res_ramp.at[:, *nan_mask].set(np.nan)
 
         norm_res_vec = self.to_vec(norm_res_ramp)
@@ -250,7 +248,7 @@ class Exposure(zdx.Base):
             plt.figure(figsize=(20, 16))
             plt.suptitle("Up The Ramp Residuals")
 
-            for i in range(self.ngroups):
+            for i in range(self.nslopes):
                 plt.subplot(4, 4, i + 1)
                 v = np.nanmax(np.abs(residual[i]))
                 plt.imshow(residual[i], cmap=seismic, vmin=-v, vmax=v)
@@ -259,9 +257,9 @@ class Exposure(zdx.Base):
 
         if up_the_ramp_norm:
             plt.figure(figsize=(20, 16))
-            plt.suptitle("Up The Ramp Residuals")
+            plt.suptitle("Normalised Up The Ramp Residuals")
 
-            for i in range(self.ngroups):
+            for i in range(self.nslopes):
                 plt.subplot(4, 4, i + 1)
                 v = np.nanmax(np.abs(norm_res_ramp[i]))
                 plt.imshow(norm_res_ramp[i], cmap=seismic, vmin=-v, vmax=v)
@@ -269,7 +267,7 @@ class Exposure(zdx.Base):
             plt.show()
 
         if full_bias:
-            coeffs = model.OneOnFs[self.key]
+            coeffs = model.one_on_fs[self.key]
             nan_mask = 1 + (np.nan * np.isnan(data.sum(0)))
             bias = nan_mask * model.biases[self.key]
 
@@ -332,6 +330,48 @@ class Exposure(zdx.Base):
             plt.show()
 
 
+
+class ExposureFit(Exposure):
+    position: Array
+    aberrations: Array
+    flux: Array  # Log now
+    one_on_fs: Array
+
+    def __init__(
+        self, 
+        file, 
+        optics,
+        opd=None, 
+        key_fn=None, 
+        ms_thresh=-3., 
+        # n_fda=10, 
+        use_pre_calc_fda=True):
+
+        super().__init__(file, opd=opd, key_fn=key_fn, ms_thresh=ms_thresh)
+
+        n_fda = optics.pupil.coefficients.shape[1]
+        if use_pre_calc_fda:
+            file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
+            FDA = np.load(file_path)[:, :n_fda]
+        else:
+            FDA = np.zeros_like(optics.pupil.coefficients)
+
+        # TODO: Interpolate?
+        psf = self.data[0].at[np.where(np.isnan(self.data[0]))].set(0.0)  
+        self.position = find_position(psf, optics.psf_pixel_scale)
+        self.aberrations = FDA
+        self.flux = np.log10(np.nansum(self.data[-1]) * (self.ngroups))
+        self.one_on_fs = np.zeros((self.ngroups, 80, 2))
+
+    def update_params(self, model):
+        return self.set(
+            ['position', 'aberrations', 'flux', 'one_on_fs'],
+            [
+                model.positions[self.key], 
+                model.aberrations[self.key], 
+                model.fluxes[self.key], 
+                model.one_on_fs[self.key]]
+            )
 
 class AMIOptics(dl.optical_systems.AngularOpticalSystem):
     def __init__(
@@ -529,7 +569,7 @@ class AmigoHistory(ModelHistory):
 
             param = params_in[i]
             leaf = self.params[param]
-            self._plot_ax(leaf, ax, param, exposures, key_fn, start, end)
+            self._plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end)
 
             ax = plt.subplot(1, 2, 2)
             if i + 1 == len(params_in):
@@ -539,7 +579,7 @@ class AmigoHistory(ModelHistory):
 
             param = params_in[i + 1]
             leaf = self.params[param]
-            self._plot_ax(leaf, ax, param, exposures, key_fn)
+            self._plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end)
 
             plt.tight_layout()
             plt.show()
@@ -565,7 +605,9 @@ class AmigoHistory(ModelHistory):
             return values
         return np.concatenate(values, axis=-1)
 
-    def _plot_ax(self, leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, end=-1):
+    def _plot_ax(
+        self, leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, end=-1
+    ):
 
         if exposures is not None:
             keys = [exp.key for exp in exposures]
@@ -583,16 +625,15 @@ class AmigoHistory(ModelHistory):
             colors, linestyles = self._get_styles(len(keys))
 
             for val, c, ls, label in zip(values, colors, linestyles, labels):
-                kwargs = {'c':c, 'ls':ls}
-                self._plot_param(ax, val, param, kwargs=kwargs)
+                kwargs = {"c": c, "ls": ls}
+                self._plot_param(ax, val, param, start=start, end=end, **kwargs)
                 ax.plot([], label=label, **kwargs)
 
             plt.legend()
 
         else:
             arr = self._format_leaf(leaf)
-            self._plot_param(ax, arr, param)
-
+            self._plot_param(ax, arr, param, start=start, end=end)
 
     def _get_styles(self, n):
         colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
@@ -603,43 +644,67 @@ class AmigoHistory(ModelHistory):
 
         return color_list, linestyle_list
 
-    def _plot_param(self, ax, arr, param, kwargs={}):
+    def _plot_param(self, ax, arr, param, start=0, end=-1, **kwargs):
         """This is the ugly gross function that is necessary"""
-        ax.set(xlabel="Epochs", title=param)
+        # print(start, end)
+        arr = arr[start:end]
         epochs = np.arange(len(arr))
+        ax.set(xlabel="Epochs", title=param)#, xlim=(start, epochs[end]))
 
         match param:
             case "positions":
-                ax.plot(epochs, arr - arr[0], **kwargs)
+                norm_pos = arr - arr[0]
+                # rs = np.hypot(norm_pos[:, 0], norm_pos[:, 1])
+                # ax.plot(epochs, rs, **kwargs)
+                ax.plot(epochs, norm_pos, **kwargs)
                 ax.set(ylabel="$\Delta$ Position (arcsec)")
 
             case "fluxes":
-                ax.plot(epochs, 100 * (1 - arr / arr[0]), **kwargs)
-                ax.set(ylabel="$\Delta$ Flux (%)")
+                norm_flux = arr - arr[0]
+                # norm_flux = 100 * (1 - arr / arr[0])
+                ax.plot(epochs, norm_flux, **kwargs)
+                ax.set(ylabel="$\Delta$ Flux (log)")
 
             case "aberrations":
-                ax.plot(epochs, arr - arr[0], alpha=0.4, **kwargs)
+                norm_ab = arr - arr[0]
+                ax.plot(epochs, norm_ab, alpha=0.4, **kwargs)
                 ax.set(ylabel="$\Delta$ Aberrations (nm)")
 
-            case "OneOnFs":
-                ax.plot(epochs, arr - arr[0], alpha=0.25, **kwargs)
-                ax.set(ylabel="$\Delta$ OneOnFs")
+            case "one_on_fs":
+                norm_oneonf = arr - arr[0]
+                ax.plot(epochs, norm_oneonf, alpha=0.25, **kwargs)
+                ax.set(ylabel="$\Delta$ one_on_fs")
+
+            case "BFE":
+                pass
+                # norm_bfe_lin = arr - arr[0]
+                # ax.plot(epochs, norm_bfe_lin, alpha=0.2, **kwargs)
+                # ax.set(ylabel="$\Delta$ Linear Coefficients")
 
             case "BFE.linear":
-                ax.plot(epochs, arr - arr[0], alpha=0.2, **kwargs)
+                norm_bfe_lin = arr - arr[0]
+                ax.plot(epochs, norm_bfe_lin, alpha=0.2, **kwargs)
                 ax.set(ylabel="$\Delta$ Linear Coefficients")
 
             case "BFE.quadratic":
-                ax.plot(epochs, arr - arr[0], alpha=0.1, **kwargs)
+                norm_bfe_quad = arr - arr[0]
+                ax.plot(epochs, norm_bfe_quad, alpha=0.1, **kwargs)
                 ax.set(ylabel="$\Delta$ BFE Quadratic Coefficients")
 
+            case "BFE.coeffs":
+                norm_bfe = arr - arr[0]
+                ax.plot(epochs, norm_bfe, alpha=0.5, **kwargs)
+                ax.set(ylabel="$\Delta$ Linear Coefficients")
+
             case "SRF":
-                ax.plot(epochs, arr, **kwargs)
+                srf = arr - arr[0]
+                ax.plot(epochs, srf, **kwargs)
                 ax.set(ylabel="SRF")
 
             case "pupil_mask.holes":
                 arr *= 1e3
-                ax.plot(epochs, arr - arr[0], **kwargs)
+                norm_holes = arr - arr[0]
+                ax.plot(epochs, norm_holes, **kwargs)
                 ax.set(ylabel="$\Delta$ Pupil Mask Holes (mm)")
 
             case "pupil_mask.f2f":
@@ -647,20 +712,26 @@ class AmigoHistory(ModelHistory):
                 ax.plot(epochs, arr, **kwargs)
                 ax.set(ylabel="Pupil Mask f2f (cm)")
 
-            case "bias":
-                ax.plot(epochs, arr - arr[0], alpha=0.25, **kwargs)
+            case "biases":
+                norm_bias = arr - arr[0]
+                ax.plot(epochs, norm_bias, alpha=0.25, **kwargs)
                 ax.set(ylabel="$\Delta$ Bias")
 
             case "rotation":
-                ax.plot(epochs, dlu.rad2deg(arr), **kwargs)
+                arr = dlu.rad2deg(arr)
+                norm_rot = arr
+                ax.plot(epochs, norm_rot, **kwargs)
                 ax.set(ylabel="Rotation (deg)")
 
             case "amplitudes":
-                ax.plot(epochs, arr, **kwargs)
+                norm_amplitudes = arr - arr[0]
+                ax.plot(epochs, norm_amplitudes, **kwargs)
                 ax.set(ylabel="Visibility Amplitude")
 
             case "phases":
-                ax.plot(epochs, dlu.rad2deg(arr), **kwargs)
+                arr = dlu.rad2deg(arr)
+                norm_phases = arr - arr[0]
+                ax.plot(epochs, norm_phases, **kwargs)
                 ax.set(ylabel="Visibility Phase (deg)")
 
             case _:
