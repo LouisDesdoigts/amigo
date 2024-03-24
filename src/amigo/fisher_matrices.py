@@ -322,7 +322,7 @@ def calc_visibility_fisher(
     )
 
 
-    for key_path in tqdm(key_paths[:1]):
+    for key_path in tqdm(key_paths):
         exposures_in = []
         for exp in exposures:
             if f"{exp.star}_{exp.filter}" == key_path:
