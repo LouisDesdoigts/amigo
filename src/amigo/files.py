@@ -115,10 +115,12 @@ def get_Teff(targ_name):
         return np.array(dr3_teffs).mean()
 
     # Then check Simbad -> Mamajeck?? table
-    spec_type, qual = get_simbad_spectral_type(targ_name)
-    if spec_type is not None:
-        return pyia.spectral_type_to_Teff(spec_type)
-    # TODO: Use `MeanStars` to get Teff from spectral type
+    # Skip this for now till I have time to make it work
+    if False:
+        spec_type, qual = get_simbad_spectral_type(targ_name)
+        if spec_type is not None:
+            return pyia.spectral_type_to_Teff(spec_type)
+        # TODO: Use `MeanStars` to get Teff from spectral type
 
     # Finally, check DR2
     dr2_teffs = get_gaia_Teff(targ_name, data_dr="dr2")
@@ -263,32 +265,33 @@ def get_Teffs(files, default=4500):
     return Teffs
 
 
-def get_amplitudes(files):
+def get_amplitudes(exposures):
     amplitudes = {}
-    for file in files:
-        prop_name = file[0].header["TARGPROP"]
-        filt = file[0].header["FILTER"]
-        if prop_name in amplitudes:
-            if filt in amplitudes[prop_name].keys():
-                continue
-            else:
-                amplitudes[prop_name][filt] = np.ones(21)
-        amplitudes[prop_name] = {filt: np.ones(21)}
+    for exp in exposures:
+        key = "_".join([exp.star, exp.filter])
+        if key not in amplitudes.keys():
+            amplitudes[key] = np.ones(21)
     return amplitudes
 
 
-def get_phases(files):
+def get_phases(exposures):
     phases = {}
-    for file in files:
-        prop_name = file[0].header["TARGPROP"]
-        filt = file[0].header["FILTER"]
-        if prop_name in phases:
-            if filt in phases[prop_name].keys():
-                continue
-            else:
-                phases[prop_name][filt] = np.zeros(21)
-        phases[prop_name] = {filt: np.zeros(21)}
+    for exp in exposures:
+        key = "_".join([exp.star, exp.filter])
+        if key not in phases.keys():
+            phases[key] = np.zeros(21)
     return phases
+    # phases = {}
+    # for file in files:
+    #     prop_name = file[0].header["TARGPROP"]
+    #     filt = file[0].header["FILTER"]
+    #     if prop_name in phases:
+    #         if filt in phases[prop_name].keys():
+    #             continue
+    #         else:
+    #             phases[prop_name][filt] = np.zeros(21)
+    #     phases[prop_name] = {filt: np.zeros(21)}
+    # return phases
 
 
 def find_position(psf, pixel_scale=0.065524085):

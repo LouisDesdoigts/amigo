@@ -98,6 +98,10 @@ class Exposure(zdx.Base):
     def to_vec(self, image):
         return image[..., *self.support].T
 
+    def from_vec(self, vec, fill=np.nan):
+        return fill * np.ones((80, 80)).at[*self.support].set(vec)
+
+
     def loglike_vec(self, slope):
         # Error is _standard error of the mean_, so we dont need to multiply by nints
         ramp_vec = self.to_vec(slope)
@@ -142,7 +146,7 @@ class Exposure(zdx.Base):
 
         final_loss = np.nansum(-loglike_im) / np.prod(np.array(data.shape[-2:]))
 
-        norm_res_ramp = residual / self.variance ** 0.5
+        norm_res_ramp = residual / (self.variance ** 0.5)
         norm_res_ramp = norm_res_ramp.at[:, *nan_mask].set(np.nan)
 
         norm_res_vec = self.to_vec(norm_res_ramp)
@@ -724,13 +728,13 @@ class AmigoHistory(ModelHistory):
                 ax.set(ylabel="Rotation (deg)")
 
             case "amplitudes":
-                norm_amplitudes = arr - arr[0]
+                norm_amplitudes = arr
                 ax.plot(epochs, norm_amplitudes, **kwargs)
                 ax.set(ylabel="Visibility Amplitude")
 
             case "phases":
                 arr = dlu.rad2deg(arr)
-                norm_phases = arr - arr[0]
+                norm_phases = arr
                 ax.plot(epochs, norm_phases, **kwargs)
                 ax.set(ylabel="Visibility Phase (deg)")
 

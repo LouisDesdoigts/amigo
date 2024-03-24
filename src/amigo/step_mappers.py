@@ -1,11 +1,19 @@
 import equinox as eqx
+import zodiax as zdx
 import jax
 import jax.numpy as np
-from .fisher_matrices import calc_local_fisher, calculate_mask_fisher, calculate_bfe_fisher
+from .fisher_matrices import (
+    calc_local_fisher,
+    calculate_mask_fisher,
+    calculate_bfe_fisher,
+    calc_visibility_fisher,
+)
+import jax.tree_util as jtu
 from tqdm.notebook import tqdm
 
 
-class MatrixMapper(eqx.Module):
+# class MatrixMapper(eqx.Module):
+class MatrixMapper(zdx.Base):
     """Class to map matrices to and across pytree leaves."""
 
     params: list[str] = eqx.field(static=True)
@@ -64,11 +72,11 @@ class LocalStepMapper(MatrixMapper):
         ]
 
         self.step_type = "matrix"
-        self.fisher_matrix = calc_local_fisher(model, exposure, self_fisher=True)
+        self.fisher_matrix = calc_local_fisher(model, exposure, self_fisher=True, per_pix=True)
         self.step_matrix = -np.linalg.inv(self.fisher_matrix)
 
     def recalculate(self, model, exposure):
-        fisher_matrix = calc_local_fisher(model, exposure, self_fisher=True)
+        fisher_matrix = calc_local_fisher(model, exposure, self_fisher=True, per_pix=True)
         step_matrix = -np.linalg.inv(fisher_matrix)
         return self.set(["fisher_matrix", fisher_matrix], ["step_matrix", step_matrix])
 
@@ -87,7 +95,9 @@ class MaskStepMapper(MatrixMapper):
 
         fisher_matrices = []
         for exp in tqdm(exposures):
-            fisher_matrices.append(calculate_mask_fisher(model, exp, self_fisher=True))
+            fisher_matrices.append(
+                calculate_mask_fisher(model, exp, self_fisher=True, per_pix=True)
+            )
 
         self.fisher_matrix = np.array(fisher_matrices)
         self.step_matrix = -np.linalg.inv(self.fisher_matrix.sum(0))
@@ -95,7 +105,9 @@ class MaskStepMapper(MatrixMapper):
     def recalculate(self, model, exposures):
         fisher_matrices = []
         for exp in tqdm(exposures):
-            fisher_matrices.append(calculate_mask_fisher(model, exp, self_fisher=True))
+            fisher_matrices.append(
+                calculate_mask_fisher(model, exp, self_fisher=True, per_pix=True)
+            )
 
         fisher_matrix = np.array(fisher_matrices)
         step_matrix = -np.linalg.inv(fisher_matrix.sum(0))
@@ -111,7 +123,7 @@ class BFEStepMapper(MatrixMapper):
 
         fisher_matrices = []
         for exp in tqdm(exposures):
-            fisher_diag = calculate_bfe_fisher(model, exp, self_fisher=True)
+            fisher_diag = calculate_bfe_fisher(model, exp, self_fisher=True, per_pix=True)
             fisher_diag = fisher_diag.at[np.where(np.abs(fisher_diag) < 1e-16)].set(1e-16)
             fisher_matrices.append(np.eye(fisher_diag.size) * fisher_diag[None, :])
 
@@ -121,13 +133,52 @@ class BFEStepMapper(MatrixMapper):
     def recalculate(self, model, exposures):
         fisher_matrices = []
         for exp in tqdm(exposures):
-            fisher_matrices.append(calculate_bfe_fisher(model, exp, self_fisher=True))
+            fisher_matrices.append(
+                calculate_bfe_fisher(model, exp, self_fisher=True, per_pix=True)
+            )
 
         fisher_matrix = np.array(fisher_matrices)
         step_matrix = -1 / np.diag(fisher_matrix.sum(0))
         return self.set(["fisher_matrix", fisher_matrix], ["step_matrix", step_matrix])
 
 
-# TODO: Implement this class
 class VisibilityMapper(MatrixMapper):
-    pass
+
+    def __init__(self, model, exposures, diag=False):
+
+        self.step_type = "matrix"
+
+        visibility_dict = calc_visibility_fisher(model, exposures, self_fisher=True, per_pix=True)
+        #
+        params = []
+        for key in visibility_dict.keys():
+            for subkey in visibility_dict[key].keys():
+                params.append(f"{key}.{subkey}")
+        self.params = params
+
+        self.fisher_matrix = visibility_dict
+        if diag:
+            step_matrix = jtu.tree_map(lambda x: x * np.eye(x.shape[0]), self.fisher_matrix)
+            # self.step_matrix = jtu.tree_map(lambda x: -1.0 / np.diag(x), self.fisher_matrix)
+            self.step_matrix = jtu.tree_map(lambda x: -np.linalg.inv(x), step_matrix)
+        else:
+            self.step_matrix = jtu.tree_map(lambda x: -np.linalg.inv(x), self.fisher_matrix)
+
+    def recalculate(self, model, exposures):
+
+        fisher_dict = calc_visibility_fisher(model, exposures, self_fisher=True, per_pix=True)
+        step_matrix = jtu.tree_map(lambda x: -np.linalg.inv(x), fisher_dict)
+
+        return self.set(["fisher_matrix", fisher_dict], ["step_matrix", step_matrix])
+
+    def update(self, model, vec):
+        raise NotImplementedError("This method is not implemented for VisibilityMapper")
+
+    def to_vec(self, model):
+        raise NotImplementedError("This method is not implemented for VisibilityMapper")
+
+    def apply(self, model):
+        apply_fn = lambda step_mat, vals: step_mat @ vals
+        new_ampl = jtu.tree_map(apply_fn, self.step_matrix["amplitudes"], model.amplitudes)
+        new_phases = jtu.tree_map(apply_fn, self.step_matrix["phases"], model.phases)
+        return model.set(["amplitudes", "phases"], [new_ampl, new_phases])

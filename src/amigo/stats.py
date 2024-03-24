@@ -31,10 +31,11 @@ def build_cov(var):
     cov = np.min(vals, (0))
     return cov
 
+
 import pkg_resources as pkg
 
 
-def variance_model(model, exposure, model_fn, true_read_noise=False, read_noise=10):
+def variance_model(model, exposure, true_read_noise=False, read_noise=10):
     """
     True read noise will use the CRDS read noise array, else it will use a constant
     value as determined by the input. true_read_noise therefore supersedes read_noise.
@@ -48,7 +49,7 @@ def variance_model(model, exposure, model_fn, true_read_noise=False, read_noise=
     nan_mask = np.isnan(exposure.data)
 
     # Estimate the photon covariance
-    psf = model_fn(model, exposure, model_fn)
+    psf = model_fn(model, exposure)
 
     psf = psf.at[np.where(nan_mask)].set(np.nan)
     variance = psf / exposure.nints
@@ -56,11 +57,10 @@ def variance_model(model, exposure, model_fn, true_read_noise=False, read_noise=
     # Read noise covariance
     if true_read_noise:
         rn = np.load(pkg.resource_filename(__name__, "data/SUB80_readnoise.npy"))
-        # rn = np.load("/Users/louis/PhD/Software/sandbox/amigo/src/amigo/data/SUB80_readnoise.npy")
     else:
         rn = read_noise
     read_variance = (rn**2) * np.ones((80, 80)) / exposure.nints
-    variance += read_variance
+    variance += read_variance[None, ...]
 
     return psf, variance
 
@@ -68,24 +68,69 @@ def variance_model(model, exposure, model_fn, true_read_noise=False, read_noise=
 import jax.numpy as np
 from jax.scipy.stats import norm
 from amigo.FIM import FIM
+from amigo.modelling import model_fn
+
+# # Actual posterior
+# # def posterior(model, exposure, model_fn, per_pix=True, zero_idx=-1, **kwargs):
+# def posterior(model, exposure, per_pix=True, **kwargs):
+#     slope = model_fn(model, exposure, **kwargs)
+#     posterior_vec = exposure.loglike_vec(slope)
+#     posterior = np.nansum(posterior_vec)
+#     if per_pix:
+#         return posterior / posterior_vec.size
+#     return posterior
 
 
-# Actual posterior
-def posterior(model, exposure, model_fn, per_pix=True, zero_idx=-1, **kwargs):
-    slope = model_fn(model, exposure, zero_idx=zero_idx, **kwargs)
-    posterior_vec = exposure.loglike_vec(slope)
-    posterior = np.nansum(posterior_vec)
+def log_likelihood(x, mean, var):
+    return norm.logpdf(x, mean, np.sqrt(var))
+
+
+def posterior(model, exposure, per_pix=True, photon=False, return_image=False, **kwargs):
+    to_vec = lambda x: exposure.to_vec(x)
+    slopes = to_vec(model_fn(model, exposure, **kwargs))
+    data = to_vec(exposure.data)
+    var = to_vec(exposure.variance)
+
+    var = np.abs(var)
+
+    # plt.title("Slopes")
+    # plt.imshow(slopes.sum(0))
+    # plt.colorbar()
+    # plt.show()
+
+    # plt.title("Data")
+    # plt.imshow(data.sum(0))
+    # plt.colorbar()
+    # plt.show()
+
+    # plt.title("Variance")
+    # plt.imshow(var.sum(0))
+    # plt.colorbar()
+    # plt.show()
+
+    if photon:
+        posterior = log_likelihood(slopes.sum(0), data.sum(0), var.sum(0))
+    else:
+        posterior = log_likelihood(slopes, data, var)
+
+    # plt.title("Posterior")
+    # plt.imshow(-posterior)
+    # plt.colorbar()
+    # plt.show()
+
+    if return_image:
+        return posterior
+
     if per_pix:
-        return posterior / posterior_vec.size
-    return posterior
+        return np.nanmean(posterior)
+    return np.nansum(posterior)
 
 
 # def loss_fn(model, exposures, **kwargs):
 def loss_fn(model, args, **kwargs):
-    exposures, step_mappers, model_fn = args
-    return -np.array([
-        posterior(model, exp, model_fn, **kwargs) for exp in exposures
-    ]).sum()
+    # exposures, step_mappers, model_fn = args
+    exposures, step_mappers = args
+    return -np.array([posterior(model, exp, per_pix=True, **kwargs) for exp in exposures]).sum()
 
 
 # def build_covariance_matrix(var, read_noise=None, min_value=True):

@@ -8,7 +8,6 @@ import jax.numpy as np
 import jax.tree_util as jtu
 
 
-# def model_fn(model, exposure, to_BFE=False, zero_idx=-1, noise=True):
 def model_fn(model, exposure, with_BFE=True, to_BFE=False, zero_idx=-1, noise=True):
     # Get exposure key
     key = exposure.key
@@ -31,7 +30,22 @@ def model_fn(model, exposure, with_BFE=True, to_BFE=False, zero_idx=-1, noise=Tr
 
     # Make sure this has correct position units and get wavefronts
     pos_rad = dlu.arcsec2rad(model.positions[key])
-    PSF = optics.propagate(wavels, pos_rad, weights, return_psf=True)
+    # PSF = optics.propagate(wavels, pos_rad, weights, return_psf=True)
+    wfs = optics.propagate(wavels, pos_rad, weights, return_wf=True)
+
+    from amigo.interferometry import visibilities, uv_model
+
+    if hasattr(model, "masks"):
+        # Get visibilities and final psfs
+        vis_key = "_".join([exposure.star, exposure.filter])
+        mask = model.masks[exposure.filter]
+        amplitudes = model.amplitudes[vis_key]
+        phases = model.phases[vis_key]
+        vis = visibilities(amplitudes, phases)
+        psf = uv_model(vis, wfs.psf, mask).sum(0)
+        PSF = dl.PSF(psf, wfs.pixel_scale.mean(0))
+    else:
+        PSF = dl.PSF(wfs.psf.sum(0), wfs.pixel_scale.mean(0))
 
     # Apply the detector model and turn it into a ramp
     psf = model.detector.model(PSF)

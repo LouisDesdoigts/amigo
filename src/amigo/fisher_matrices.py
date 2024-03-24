@@ -3,40 +3,56 @@ from amigo.modelling import model_fn
 from amigo.stats import variance_model, posterior
 from amigo.modelling import model_fn
 import jax.numpy as np
+from tqdm.notebook import tqdm
+
+# def get_fisher(
+#     model,
+#     exp,
+#     params=None,
+#     self_fisher=True,
+#     read_noise=10.0,
+#     diag=False,  # Return the diagonal of the FIM
+#     **kwargs,
+# ):
+
+#     if self_fisher:
+#         psf, variance = variance_model(model, exp, model_fn)
+#         exp = exp.set(["data", "variance"], [psf, variance])
+
+#     if params is not None:
+#         return FIM(model, params, posterior, exp, model_fn, diag=diag, **kwargs)
+#     return FIM(model, exp.params, posterior, exp, model_fn, diag=diag, **kwargs)
 
 
 def get_fisher(
     model,
     exp,
-    params=None,
-    self=True,
+    params,
+    self_fisher=True,
     read_noise=10.0,
-    zero_idx=-1,  # piston index to fix to zero, -1 for no fix
-    # noise=True,  # Apply the noise model (one on fs and bias)
+    true_read_noise=False,
     diag=False,  # Return the diagonal of the FIM
+    photon=False,
+    per_pix=False,
     **kwargs,
 ):
 
-    if self:
-
-        # # Estimate the photon covariance
-        # psf = model_fn(model, exp)#, noise=noise)
-
-        # var = psf / exp.nints
-        # cov = build_cov(var)
-
-        # # Read noise covariance
-        # rn = np.load("/Users/louis/PhD/Software/sandbox/amigo/src/amigo/data/SUB80_readnoise.npy")
-        # read_var = (rn ** 2) / exp.nints
-        # read_cov = read_var[None, None, :, :] * np.eye(exp.ngroups)[:, :, None, None]
-        # cov += read_cov
-
-        psf, variance = variance_model(model, exp, model_fn)
+    # Remove 1/fs for photon model
+    if photon:
+        model = model.multiply(f'one_on_fs.{exp.key}', 0.)
+        psf = model_fn(model, exp, **kwargs)
+        variance = np.abs(psf) / exp.nints
         exp = exp.set(["data", "variance"], [psf, variance])
 
-    if params is not None:
-        return FIM(model, params, posterior, exp, model_fn, zero_idx=zero_idx, diag=diag, **kwargs)
-    return FIM(model, exp.params, posterior, exp, model_fn, zero_idx=zero_idx, diag=diag, **kwargs)
+
+    # if self_fisher or photon:
+    if self_fisher:
+        psf, variance = variance_model(
+            model, exp, true_read_noise=true_read_noise, read_noise=read_noise
+        )
+        exp = exp.set(["data", "variance"], [psf, variance])
+
+    return FIM(model, params, posterior, exp, diag=diag, per_pix=per_pix, photon=photon, **kwargs)
 
 
 import jax.tree_util as jtu
@@ -76,10 +92,32 @@ def fix_diag(mat, thresh=1e-16, replace=1.):
     return mat.at[*inds].set(fixed_diag)
 
 
-def calc_local_fisher(model, exposure, self_fisher=True):
+def calc_local_fisher(
+    model,
+    exposure,
+    self_fisher=True,
+    photon=False,
+    per_pix=False,
+    read_noise=10.0,
+    true_read_noise=False,
+):
 
-    def fisher_fn(*args, **kwargs):
-        return get_fisher(model, exposure, *args, **kwargs)
+    fisher_fn = lambda *args, **kwargs: get_fisher(
+        *args, 
+        model,
+        exposure,
+        self_fisher=self_fisher, 
+        photon=photon, 
+        per_pix=per_pix,
+        read_noise=read_noise, 
+        true_read_noise=true_read_noise, 
+        **kwargs,
+    )
+    
+    # model, exposure, self_fisher=True, per_pix=True):
+
+    # def fisher_fn(*args, **kwargs):
+    #     return get_fisher(model, exposure, per_pix=per_pix, *args, **kwargs)
 
     key = exposure.key
 
@@ -97,7 +135,7 @@ def calc_local_fisher(model, exposure, self_fisher=True):
         f"aberrations.{key}",
     ]
     t0 = time.time()
-    fisher_matrix = fisher_fn(params=exp_params, self=self_fisher)
+    fisher_matrix = fisher_fn(params=exp_params)
     print(f"Main Time: {time.time() - t0:.2f}")
 
     # Position and flux
@@ -115,9 +153,7 @@ def calc_local_fisher(model, exposure, self_fisher=True):
 
     # # Noise
     t0 = time.time()
-    # bias_fisher = fisher_fn(params=[f"biases.{key}"], self=self_fisher, diag=True, with_BFE=False)
-    # one_on_f_fisher = fisher_fn(params=[f"one_on_fs.{key}"], self=self_fisher, with_BFE=False)
-    one_on_f_fisher = fisher_fn(params=[f"one_on_fs.{key}"], self=self_fisher)
+    one_on_f_fisher = fisher_fn(params=[f"one_on_fs.{key}"])
     one_on_f_fisher *= np.eye(one_on_f_fisher.shape[0])
     print(f"Noise Time: {time.time() - t0:.2f}")
 
@@ -130,12 +166,27 @@ def calc_local_fisher(model, exposure, self_fisher=True):
 
     return local_fisher
 
-def calculate_mask_fisher(model, exposure, self_fisher=True):
+def calculate_mask_fisher(
+    model,
+    exposure,
+    self_fisher=True,
+    photon=False,
+    per_pix=False,
+    read_noise=10.0,
+    true_read_noise=False,
+):
 
-    def fisher_fn(*args, **kwargs):
-        return get_fisher(model, exposure, *args, **kwargs)
-
-    """Globals"""
+    fisher_fn = lambda *args, **kwargs: get_fisher(
+        *args, 
+        model,
+        exposure,
+        self_fisher=self_fisher, 
+        photon=photon, 
+        per_pix=per_pix,
+        read_noise=read_noise, 
+        true_read_noise=true_read_noise, 
+        **kwargs,
+    )
     global_params = [
         "pupil_mask.holes",
         "pupil_mask.f2f",
@@ -147,7 +198,7 @@ def calculate_mask_fisher(model, exposure, self_fisher=True):
 
     # Holes ~1.5 minutes
     t0 = time.time()
-    fisher_mask = fisher_fn(params=global_params, self=self_fisher)
+    fisher_mask = fisher_fn(params=global_params, self_fisher=self_fisher)
     mask = np.zeros((N, N))
     mask = mask.at[:14, :14].set(np.eye(14))
     mask = mask.at[14:, 14:].set(1.0)
@@ -156,22 +207,37 @@ def calculate_mask_fisher(model, exposure, self_fisher=True):
 
     return fisher_mask
 
-def calculate_bfe_fisher(model, exposure, self_fisher=True):
+def calculate_bfe_fisher(
+    model,
+    exposure,
+    self_fisher=True,
+    photon=False,
+    per_pix=False,
+    read_noise=10.0,
+    true_read_noise=False,
+):
 
-    def fisher_fn(*args, **kwargs):
-        return get_fisher(model, exposure, *args, **kwargs)
-
-    """BFE"""
+    fisher_fn = lambda *args, **kwargs: get_fisher(
+        *args, 
+        model,
+        exposure,
+        self_fisher=self_fisher, 
+        photon=photon, 
+        per_pix=per_pix,
+        read_noise=read_noise, 
+        true_read_noise=true_read_noise, 
+        **kwargs,
+    )
 
     # BFE Linear ~10 seconds
     t0 = time.time()
-    fisher_linear = fisher_fn(params=["BFE.linear"], self=self_fisher)
+    fisher_linear = fisher_fn(params=["BFE.linear"])
     fisher_linear *= np.eye(fisher_linear.shape[0])
     print(f"BFE Time: {time.time() - t0:.2f}")
 
     # BFE Qudratic ~10 seconds
     t0 = time.time()
-    fisher_quad = fisher_fn(params=["BFE.quadratic"], self=self_fisher)
+    fisher_quad = fisher_fn(params=["BFE.quadratic"])
     fisher_quad *= np.eye(fisher_quad.shape[0])
     print(f"Quadratic BFE Time: {time.time() - t0:.2f}")
 
@@ -195,3 +261,91 @@ def create_block_diagonal(size, block_size):
         matrix = matrix.at[i:end, i:end].set(1)
 
     return matrix
+
+# def calc_visibility_fisher(model, exposures, self_fisher=True):
+
+#     key_paths = model.amplitudes.keys()
+
+#     visibility_dict = {
+#         'amplitudes': {},
+#         'phases': {}
+#     }
+
+#     from tqdm.notebook import tqdm
+#     for key_path in tqdm(key_paths):
+#         exposures_in = []
+#         for exp in exposures:
+#             if f"{exp.star}_{exp.filter}" == key_path:
+#                 exposures_in.append(exp)
+
+#         amplitudes = []
+#         phases = []
+#         for exp in exposures_in:
+#             fisher_fn = lambda *args, **kwargs: get_fisher(
+#                 model, exp, *args, self_fisher=self_fisher, **kwargs
+#             )
+#             amplitudes.append(fisher_fn(params=["amplitudes." + key_path]))
+#             phases.append(fisher_fn(params=["phases." + key_path]))
+
+#         fisher_amplitudes = np.sum(np.array(amplitudes), axis=0)
+#         fisher_phases = np.sum(np.array(phases), axis=0)
+
+#         visibility_dict['amplitudes'][key_path] = fisher_amplitudes
+#         visibility_dict['phases'][key_path] = fisher_phases
+
+#     return visibility_dict
+
+
+
+def calc_visibility_fisher(
+    model,
+    exposures,
+    self_fisher=True,
+    photon=False,
+    per_pix=False,
+    read_noise=10.0,
+    true_read_noise=False,
+):
+
+    key_paths = list(model.amplitudes.keys())
+
+    visibility_dict = {"amplitudes": {}, "phases": {}}
+
+    base_fisher_fn = lambda *args, **kwargs: get_fisher(
+        *args, 
+        self_fisher=self_fisher, 
+        photon=photon, 
+        per_pix=per_pix,
+        read_noise=read_noise, 
+        true_read_noise=true_read_noise, 
+        **kwargs,
+    )
+
+
+    for key_path in tqdm(key_paths[:1]):
+        exposures_in = []
+        for exp in exposures:
+            if f"{exp.star}_{exp.filter}" == key_path:
+                exposures_in.append(exp)
+
+        amplitudes = []
+        phases = []
+        for exp in exposures_in:
+            fisher_fn = lambda params: base_fisher_fn(model, exp, params)
+            ampl_arr = fisher_fn(params=["amplitudes." + key_path])
+
+            # print("Fisher Matrix")
+            # plt.imshow(-ampl_arr)
+            # plt.colorbar()
+            # plt.show()
+            amplitudes.append(ampl_arr)
+            phases.append(fisher_fn(params=["phases." + key_path]))
+
+        fisher_amplitudes = np.sum(np.array(amplitudes), axis=0)
+        fisher_phases = np.sum(np.array(phases), axis=0)
+
+        visibility_dict["amplitudes"][key_path] = fisher_amplitudes
+        visibility_dict["phases"][key_path] = fisher_phases
+
+    return visibility_dict
+
