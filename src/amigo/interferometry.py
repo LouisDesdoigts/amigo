@@ -105,6 +105,7 @@ def uv_hex_mask(
     uv_coords = np.array(np.meshgrid(shifted_coords, shifted_coords))
 
     # Apply the mask transformations
+    tf = tf.set('translation', np.zeros(2)) # Enforce paraxial splodges (since they are)
     uv_coords = tf.apply(uv_coords)
 
     # Do this outside so we can scatter plot the baseline vectors over the psf splodges

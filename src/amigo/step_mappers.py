@@ -9,6 +9,7 @@ from .fisher_matrices import (
     calc_visibility_fisher,
     calculate_simple_bfe_fisher,
     calculate_gradient_bfe_fisher,
+    calculate_SRF_fisher,
 )
 import jax.tree_util as jtu
 from tqdm.notebook import tqdm
@@ -293,3 +294,35 @@ class GradientBFEStepMapper(MatrixMapper):
         return self.set(
             ["fisher_matrix", "step_matrix", "step_type"], [fisher_matrix, step_matrix, step_type]
         )
+
+
+from amigo.step_mappers import MatrixMapper
+from tqdm.notebook import tqdm
+
+
+class SRFStepMapper(MatrixMapper):
+    fisher_matrix: jax.Array
+
+    def __init__(self, model, exposures):
+
+        self.step_type = "matrix"
+        self.params = ["sensitivity.SRF"]
+
+        fisher_matrices = []
+        for exp in tqdm(exposures):
+            fisher_matrices.append(
+                calculate_SRF_fisher(model, exp, self_fisher=True, per_pix=True)
+            )
+
+        self.fisher_matrix = np.array(fisher_matrices)
+        self.step_matrix = -np.linalg.inv(self.fisher_matrix.sum(0))
+
+    def recalculate(self, model, exposures):
+        fisher_matrices = []
+        for exp in tqdm(exposures):
+            fisher_matrices.append(
+                calculate_SRF_fisher(model, exp, self_fisher=True, per_pix=True)
+            )
+        fisher_matrix = np.array(fisher_matrices)
+        step_matrix = -np.linalg.inv(fisher_matrix.sum(0))
+        return self.set(["fisher_matrix", "step_matrix"], [fisher_matrix, step_matrix])

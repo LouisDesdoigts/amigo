@@ -230,7 +230,7 @@ def bias_careful_mean_and_var(data, bias):
 
 
 def process_stage1(
-    directory, output_dir="calgrps/", refpix_correction=0, lower_bound=True, sigma=5.0
+    directory, output_dir="calgrps/", refpix_correction=0, lower_bound=True, sigma=0
 ):
     # def process_stage1(directory, output_dir="calgrps/", refpix_correction=0):
     """
@@ -375,7 +375,8 @@ def process_stage1(
         # nints, ngroups, npix = data.shape[:3]
 
         slopes = np.diff(data, axis=1)
-        slopes = sigma_clip(slopes, sigma=sigma)
+        if sigma > 0:
+            slopes = sigma_clip(slopes, sigma=sigma)
         slope, slope_var = calc_mean_and_var(slopes)
 
         # full_zero_ramp = np.zeros((nints, ngroups + 1, npix, npix))

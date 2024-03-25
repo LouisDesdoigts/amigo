@@ -405,3 +405,30 @@ def calculate_gradient_bfe_fisher(
     print(f"BFE Time: {time.time() - t0:.2f}")
     return fix_diag(fisher_bfe)
 
+def calculate_SRF_fisher(
+    model,
+    exposure,
+    self_fisher=True,
+    photon=False,
+    per_pix=False,
+    read_noise=10.0,
+    true_read_noise=False,
+):
+
+    fisher_fn = lambda *args, **kwargs: get_fisher(
+        *args, 
+        model,
+        exposure,
+        self_fisher=self_fisher, 
+        photon=photon, 
+        per_pix=per_pix,
+        read_noise=read_noise, 
+        true_read_noise=true_read_noise, 
+        **kwargs,
+    )
+
+    t0 = time.time()
+    fisher_SRF = fisher_fn(params=["sensitivity.SRF"])
+    fisher_SRF = np.eye(fisher_SRF.shape[0]) * fisher_SRF
+    print(f"SRF Time: {time.time() - t0:.2f}")
+    return fisher_SRF
