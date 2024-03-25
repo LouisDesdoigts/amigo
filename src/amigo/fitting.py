@@ -101,6 +101,8 @@ def optimise(
     return_state=False,
     nan_method="none",
     no_history=[],  # List of parameters to NOT track histry for (ie NN weights)
+    args_updates=[],
+    args_fn=lambda model, args: args,
 ):
     """nan_method: str, either 'debug' or 'zero', 'none'"""
     params = list(optimisers.keys())
@@ -184,6 +186,9 @@ def optimise(
             if return_state:
                 return model, losses, model_history, opt_state
             return model, losses, model_history
+
+        if i in args_updates:
+            args = args_fn(model, args)
 
         model, _loss, opt_state = step_fn(model, opt_state, args)
 

@@ -189,19 +189,21 @@ def calculate_mask_fisher(
     )
     global_params = [
         "pupil_mask.holes",
-        "pupil_mask.f2f",
+        # "pupil_mask.f2f",
+        "compression",
         "rotation",
-        # "shear",
+        "shear",
     ]
 
     N = np.array(jtu.tree_map(lambda x: x.size, model.get(global_params))).sum()
 
     # Holes ~1.5 minutes
     t0 = time.time()
-    fisher_mask = fisher_fn(params=global_params, self_fisher=self_fisher)
-    mask = np.zeros((N, N))
+    fisher_mask = fisher_fn(params=global_params)
+    # mask = np.zeros((N, N))
+    mask = np.ones((N, N))
     mask = mask.at[:14, :14].set(np.eye(14))
-    mask = mask.at[14:, 14:].set(1.0)
+    # mask = mask.at[14:, 14:].set(1.0)
     fisher_mask *= mask
     print(f"Mask Time: {time.time() - t0:.2f}")
 
@@ -348,4 +350,58 @@ def calc_visibility_fisher(
         visibility_dict["phases"][key_path] = fisher_phases
 
     return visibility_dict
+
+
+def calculate_simple_bfe_fisher(
+    model,
+    exposure,
+    self_fisher=True,
+    photon=False,
+    per_pix=False,
+    read_noise=10.0,
+    true_read_noise=False,
+):
+
+    fisher_fn = lambda *args, **kwargs: get_fisher(
+        *args,
+        model,
+        exposure,
+        self_fisher=self_fisher,
+        photon=photon,
+        per_pix=per_pix,
+        read_noise=read_noise,
+        true_read_noise=true_read_noise,
+        **kwargs,
+    )
+    t0 = time.time()
+    fisher_bfe = fisher_fn(params=["BFE.coeffs"])
+    print(f"BFE Time: {time.time() - t0:.2f}")
+    return fix_diag(fisher_bfe)
+
+
+def calculate_gradient_bfe_fisher(
+    model,
+    exposure,
+    self_fisher=True,
+    photon=False,
+    per_pix=False,
+    read_noise=10.0,
+    true_read_noise=False,
+):
+
+    fisher_fn = lambda *args, **kwargs: get_fisher(
+        *args,
+        model,
+        exposure,
+        self_fisher=self_fisher,
+        photon=photon,
+        per_pix=per_pix,
+        read_noise=read_noise,
+        true_read_noise=true_read_noise,
+        **kwargs,
+    )
+    t0 = time.time()
+    fisher_bfe = fisher_fn(params=["BFE.coeffs"])
+    print(f"BFE Time: {time.time() - t0:.2f}")
+    return fix_diag(fisher_bfe)
 
