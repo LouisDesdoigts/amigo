@@ -361,10 +361,11 @@ class ExposureFit(Exposure):
             FDA = np.zeros_like(optics.pupil.coefficients)
 
         # TODO: Interpolate?
-        psf = self.data[0].at[np.where(np.isnan(self.data[0]))].set(0.0)  
+        psf = self.data[0].at[np.where(np.isnan(self.data[0]))].set(0.0) 
+        raw_flux = (80**2) * np.nanmean(self.data[-1]) * (self.ngroups)
         self.position = find_position(psf, optics.psf_pixel_scale)
         self.aberrations = FDA
-        self.flux = np.log10(np.nansum(self.data[-1]) * (self.ngroups))
+        self.flux = np.log10(raw_flux)
         self.one_on_fs = np.zeros((self.ngroups, 80, 2))
 
     def update_params(self, model):
