@@ -1,3 +1,4 @@
+import os
 import jax.numpy as np
 import jax.scipy as jsp
 from astroquery.simbad import Simbad
@@ -251,6 +252,10 @@ def get_Teffs(files, default=4500):
     for file in files:
         prop_name = file[0].header["TARGPROP"]
 
+        # if os.exists(f"data/Teffs/{prop_name}.npy"):
+        #     Teffs[prop_name] = np.load(f"data/{prop_name}_Teff.npy")
+        #     continue
+
         if prop_name in Teffs:
             continue
 
@@ -261,6 +266,10 @@ def get_Teffs(files, default=4500):
             Teffs[prop_name] = default
         else:
             Teffs[prop_name] = Teff
+
+    # for key, value in Teffs.items():
+    #     if not os.exists(f"data/Teffs/{key}.npy"):
+    #         np.save(f"data/Teffs/{key}.npy", value)
 
     return Teffs
 
@@ -305,7 +314,6 @@ def find_position(psf, pixel_scale=0.065524085):
 def get_exposures(files, optics, ms_thresh=None):
     print("Prepping exposures...")
     opds = get_wss_ops(files)
-    # TODO: Load read noise here to prevent unnecessary io
     return [
         # amigo.core.Exposure(file, opd=opd, add_read_noise=add_read_noise)
         # amigo.core.Exposure(file, opd=opd, ms_thresh=ms_thresh)

@@ -7,7 +7,7 @@ from astropy.io import fits
 from jwst.pipeline import Detector1Pipeline
 
 
-def process_stage0(directory, output_dir="stage1/"):
+def process_stage0(directory, output_dir="stage1/", verbose=False):
     # string manip to make sure we have the right format
     if directory[-1] != "/":
         directory += "/"
@@ -19,7 +19,8 @@ def process_stage0(directory, output_dir="stage1/"):
 
     # Check if there are any files to process
     if len(files) == 0:
-        print("No _uncal.fits files found, no processing done.")
+        if verbose:
+            print("No _uncal.fits files found, no processing done.")
         return
 
     # Get the file paths
@@ -31,7 +32,8 @@ def process_stage0(directory, output_dir="stage1/"):
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
-    print("Running stage 1...")
+    if verbose:
+        print("Running stage 1...")
     for file_path in files:
         file_name = file_path.split("/")[-1]
         file_root = "_".join(file_name.split("_")[:-2])
@@ -42,13 +44,15 @@ def process_stage0(directory, output_dir="stage1/"):
 
         # Check if the file is a NIS_AMI file
         if os.path.exists(final_output_path):
-            print("File already exists, skipping...")
+            if verbose:
+                print("File already exists, skipping...")
             continue
 
         # Check if the file is a NIS_AMI file
         file = fits.open(file_path)
         if file[0].header["EXP_TYPE"] != "NIS_AMI":
-            print("Not a NIS_AMI file, skipping...")
+            if verbose:
+                print("Not a NIS_AMI file, skipping...")
             continue
 
         # Run stage 1
@@ -73,7 +77,8 @@ def process_stage0(directory, output_dir="stage1/"):
 
         pl1.run(str(file_path))  # run pipeline from uncal file
 
-    print("Done\n")
+    if verbose:
+        print("Done\n")
 
     return output_path
 
@@ -229,9 +234,7 @@ def bias_careful_mean_and_var(data, bias):
     return mean, var
 
 
-def process_stage1(
-    directory, output_dir="calgrps/", refpix_correction=0, lower_bound=True, sigma=0
-):
+def process_stage1(directory, output_dir="calgrps/", sigma=0, method=0):
     # def process_stage1(directory, output_dir="calgrps/", refpix_correction=0):
     """
         ref_pix_correction: int
@@ -251,8 +254,8 @@ def process_stage1(
         minimum value. To correct for this, we can set a lower bound to be the minimum
         value of the mean of the data, and the theoretical minimum value.
     """
-    if refpix_correction not in [0, 1, 2]:
-        raise ValueError("ref_pix_correction must be 0, 1, or 2.")
+    # if refpix_correction not in [0, 1, 2]:
+    #     raise ValueError("ref_pix_correction must be 0, 1, or 2.")
     # string manip to make sure we have the right format
     if directory[-1] != "/":
         directory += "/"
@@ -374,10 +377,90 @@ def process_stage1(
         # def calc_slopes(data):
         # nints, ngroups, npix = data.shape[:3]
 
-        slopes = np.diff(data, axis=1)
-        if sigma > 0:
-            slopes = sigma_clip(slopes, sigma=sigma)
-        slope, slope_var = calc_mean_and_var(slopes)
+        if method == 0:
+            slopes = np.diff(data, axis=1)
+            if sigma > 0:
+                slopes = sigma_clip(slopes, sigma=sigma)
+            slope, slope_var = calc_mean_and_var(slopes)
+        elif method == 1:
+
+            slopes = np.diff(data, axis=1)
+            if sigma > 0:
+                slopes = sigma_clip(slopes, sigma=sigma)
+            n = len(slopes) // 2
+            data_first_half = slopes[:n]
+            data_second_half = slopes[n:]
+            slope1, slope1_var = calc_mean_and_var(data_first_half)
+            slope2, slope2_var = calc_mean_and_var(data_second_half)
+
+            # Slope of slope (lol)
+            from .misc import slope_im
+
+            ms, bs = slope_im(slope1)
+            xs = np.arange(len(slope1)) + 1
+            ys = ms * xs[:, None, None] + bs
+            clean_slope2 = slope2 - slope1 + ys
+
+            # Slope of slope (lol)
+            ms, bs = slope_im(slope2)
+            xs = np.arange(len(slope2)) + 1
+            ys = ms * xs[:, None, None] + bs
+            clean_slope1 = slope1 - slope2 + ys
+
+            slope = (clean_slope1 + clean_slope2) / 2
+            slope_var = (slope1_var + slope2_var) / 2
+
+            print("Slopes are cleaned")
+
+        elif method == 2:
+            from .misc import slope_im
+
+            # ngroups = data.shape[1]
+            # nslopes = ngroups - 1
+
+            # slopes = np.diff(data, axis=1)
+            # ms, bs = slope_im(slopes)
+            # if sigma > 0:
+            #     ms = sigma_clip(ms, sigma=sigma)
+            #     bs = sigma_clip(bs, sigma=sigma)
+            # m, _ = calc_mean_and_var(ms)
+            # b, _ = calc_mean_and_var(bs)
+
+            # xs = np.arange(nslopes) + 1
+            # slope = m * xs[:, None, None] + b
+            # _, slope_var = calc_mean_and_var(slopes)
+
+            nints = data.shape[0]
+            ngroups = data.shape[1]
+            nslopes = ngroups - 1
+
+            slopes = np.diff(data, axis=1)
+            if sigma > 0:
+                slopes = sigma_clip(slopes, sigma=sigma)
+            _, slope_var = calc_mean_and_var(slopes)
+
+            ms, bs = vmap(slope_im)(slopes)
+            m, _ = calc_mean_and_var(ms)
+            b, _ = calc_mean_and_var(bs)
+
+            xs = np.arange(nslopes) + 1
+            slope = m * xs[:, None, None] + b
+
+            # Slight magic numbers here
+            nan_mask = np.where(slope_var * nints > (2.0 * slope + 14**2))
+            slope = slope.at[nan_mask].set(np.nan)
+            slope_var = slope_var.at[nan_mask].set(np.nan)
+
+        elif method == 3:
+
+            clean_data = sigma_clip(data, sigma=sigma)
+            ramp, ramp_var = calc_mean_and_var(clean_data)
+            slope = np.diff(ramp, axis=0)
+
+            nslope = slope.shape[0]
+            slope_var = np.array([ramp_var[i] + ramp_var[i + 1] for i in range(nslope)])
+        else:
+            raise ValueError("Invalid method")
 
         # full_zero_ramp = np.zeros((nints, ngroups + 1, npix, npix))
         # full_ramp = full_zero_ramp.at[:, 1:].set(data)
