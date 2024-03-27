@@ -157,8 +157,10 @@ class Exposure(zdx.Base):
         xs = np.linspace(-x, x, 200)
         ys = jsp.stats.norm.pdf(xs)
 
-        vmax = np.maximum(np.nanmax(np.abs(data)), np.nanmax(np.abs(ramp)))
-        vmin = np.minimum(np.nanmin(np.abs(data)), np.nanmin(np.abs(ramp)))
+        effective_data = data.sum(0)
+        effective_psf = ramp.sum(0)
+        vmax = np.maximum(np.nanmax(np.abs(effective_data)), np.nanmax(np.abs(effective_psf)))
+        vmin = np.minimum(np.nanmin(np.abs(effective_data)), np.nanmin(np.abs(effective_psf)))
 
         skip = False
         if np.isnan(vmin) or np.isnan(vmax):
@@ -172,13 +174,13 @@ class Exposure(zdx.Base):
 
                 plt.figure(figsize=(15, 4))
                 plt.subplot(1, 3, 1)
-                plt.title(r"Mean Data Ramp $^{}$".format(pow))
-                plt.imshow(data.mean(0), cmap=inferno, norm=norm)
+                plt.title(f"Effective PSF $^{pow}$")
+                plt.imshow(effective_data, cmap=inferno, norm=norm)
                 plt.colorbar()
 
                 plt.subplot(1, 3, 2)
-                plt.title(f"Mean Model Ramp $^{pow}$")
-                plt.imshow(ramp.mean(0), cmap=inferno, norm=norm)
+                plt.title(f"Effective PSF $^{pow}$")
+                plt.imshow(effective_psf, cmap=inferno, norm=norm)
                 plt.colorbar()
 
                 plt.subplot(1, 3, 3)
@@ -434,6 +436,51 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         )
 
 
+import dLux as dl
+import dLux.utils as dlu
+from dLuxWebbpsf.utils.interpolation import _map_coordinates
+
+
+def arr2pix(coords, pscale=1):
+    n = coords.shape[-1]
+    shift = (n - 1) / 2
+    return pscale * (coords - shift)
+
+
+def pix2arr(coords, pscale=1):
+    n = coords.shape[-1]
+    shift = (n - 1) / 2
+    return (coords / pscale) + shift
+
+
+
+class PixelAnisotropy(dl.layers.detector_layers.DetectorLayer):
+    transform: dl.CoordTransform
+    order: int
+
+    def __init__(self, order=3):
+        self.transform = dl.CoordTransform(compression=np.ones(2))
+        self.order = int(order)
+    
+    def __getattr__(self, key):
+        if hasattr(self.transform, key):
+            return getattr(self.transform, key)
+        raise AttributeError(f"PixelAnisotropy has no attribute {key}")
+
+
+    def apply(self, PSF):
+        # coords = dlu.pixel_coords(PSF.data.shape[0], PSF.pixel_scale)
+        # transformed = self.transform.apply(coords)
+        # new_coords = pix2arr(transformed, PSF.pixel_scale)
+        # new_psf = _map_coordinates(PSF.data, new_coords, order=self.order, mode="constant", cval=0.0)
+        npix = PSF.data.shape[0]
+        transformed = self.transform.apply(dlu.pixel_coords(npix, npix * PSF.pixel_scale))
+        coords = np.roll(pix2arr(transformed, PSF.pixel_scale), 1, axis=0)
+        interp_fn = lambda x: _map_coordinates(
+            x, coords, order=3, mode="constant", cval=0.0
+        )
+        return PSF.set("data", interp_fn(PSF.data))
+
 
 class SUB80Ramp(dl.detectors.LayeredDetector):
     def __init__(
@@ -444,6 +491,7 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
         FF=None,
         downsample=False,
         npixels_in=80,
+        anisotropy=True,
 
     ):
         # Load the FF
@@ -457,10 +505,12 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
         if SRF is None:
             SRF = np.ones((oversample, oversample))
 
-        layers = [
-            ("rotate", Rotate(angle)),
-            ("sensitivity", ApplySensitivities(FF, SRF)),
-        ]
+        layers = [("rotate", Rotate(angle))]
+
+        if anisotropy:
+            layers.append(("anisotropy", PixelAnisotropy(order=3)))
+
+        layers.append(("sensitivity", ApplySensitivities(FF, SRF)))
 
         if downsample:
             layers.append(("downsample", dl.Downsample(oversample)))

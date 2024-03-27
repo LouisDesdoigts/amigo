@@ -398,12 +398,21 @@ from jax import vmap
 import dLux.utils as dlu
 
 
-def image_to_grads(image, scale=1e-2):
+# def image_to_grads(image, scale=1e-2):
+#     ygrads, xgrads = np.gradient(image)
+#     yygrads = np.gradient(ygrads)[0]
+#     xxgrads = np.gradient(xgrads)[1]
+#     output = np.array([xgrads, ygrads, xxgrads, yygrads])
+#     return output * scale
+
+
+def image_to_grads(image):
     ygrads, xgrads = np.gradient(image)
+    rgrads = np.hypot(xgrads, ygrads)
     yygrads = np.gradient(ygrads)[0]
     xxgrads = np.gradient(xgrads)[1]
-    output = np.array([xgrads, ygrads, xxgrads, yygrads])
-    return output * scale
+    rrgrads = np.hypot(yygrads, xxgrads)
+    return np.array([image * 2e-3, rgrads * 5e-3, rrgrads * 1e-2])
 
 
 def apply_gradient_BFE(
@@ -428,7 +437,8 @@ def apply_gradient_BFE(
 
     # assert orders == [1]
 
-    grads = image_to_grads(image, scale=1e-2)
+    # grads = image_to_grads(image, scale=1e-2)
+    grads = image_to_grads(image)
     n_ims = len(grads)
 
     kern_fn = lambda image: build_pixel_kernels(image, npix, k, oksize, oversample)
