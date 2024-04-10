@@ -151,15 +151,22 @@ def sigma_clip(array, sigma=5.0):
 #     return np.swapaxes(cleaned_counts, 0, 1)
 
 
-def nan_dqd(file):
+def nan_dqd(file, n_groups: int = None, dq_thresh: float = 0.):
     # Get the bits
-    dq = np.array(file["PIXELDQ"].data) > 0
+    dq = np.array(file["PIXELDQ"].data) > dq_thresh
     group_dq = np.array(file["GROUPDQ"].data) > 0
     electrons = np.array(file["SCI"].data)
 
     # Nan the bad bits
     full_dq = group_dq | dq[None, None, ...]
-    return np.where(full_dq, np.nan, electrons)
+
+    if n_groups is None:
+        return np.where(full_dq, np.nan, electrons)
+    
+    # for truncating the top of the ramp
+    elif isinstance(n_groups, int):
+        return np.where(full_dq[:, :n_groups], np.nan, electrons[:, :n_groups])
+
     # # Mask the invalid values and sigma clip
     # return onp.ma.masked_invalid(cleaned, copy=True)
 
@@ -230,7 +237,13 @@ def bias_careful_mean_and_var(data, bias):
 
 
 def process_stage1(
-    directory, output_dir="calgrps/", refpix_correction=0, lower_bound=True, sigma=5.0
+    directory,
+    output_dir="calgrps/",
+    refpix_correction=0,
+    lower_bound=True,
+    sigma=5.0,
+    n_groups=None,  # how many groups of the ramp to use
+    dq_thresh=0.,  # threshold value for the PIXELDQ flags
 ):
     # def process_stage1(directory, output_dir="calgrps/", refpix_correction=0):
     """
@@ -301,7 +314,7 @@ def process_stage1(
             continue
 
         # Get the data with the DQ flags nan'd
-        data = nan_dqd(file)
+        data = nan_dqd(file, dq_thresh=dq_thresh, n_groups=n_groups)
         # print(np.sum(np.isnan(raw_data)) / raw_data.size)
 
         if data.shape[1] == 1:
