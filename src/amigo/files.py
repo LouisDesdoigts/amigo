@@ -178,7 +178,7 @@ def estimate_psf_and_bias(data):
 
 # def prep_data(file, read_noise, subtract_bias=True, ms_thresh=0., bs_thresh=250):
 # def prep_data(file, read_noise):#, ms_thresh=0., bs_thresh=250):
-def prep_data(file, ms_thresh=None, clean_edges=False):
+def prep_data(file, ms_thresh=None, clean_edges=False, as_psf=False):
     data = np.asarray(file["SCI"].data, float)
     var = np.asarray(file["SCI_VAR"].data, float)
     dq = np.asarray(file["PIXELDQ"].data > 0, bool)
@@ -211,6 +211,13 @@ def prep_data(file, ms_thresh=None, clean_edges=False):
         dq = dq.at[-1].set(True)  # Top row is bad
         dq = dq.at[:, -2:].set(True)  # Right 2 columns are bad
         dq = dq.at[:, 0].set(True)  # Left column is bad
+
+    if as_psf:
+        supp_mask = ~np.isnan(data) & ~dq
+        support = np.where(supp_mask)
+        data = data.at[~supp_mask].set(np.nan)
+        var = var.at[~supp_mask].set(np.nan)
+        return data, var, support
 
     # # Check for symmetry and positive semi-definite
     # ngroups = ramp.shape[0]
@@ -274,21 +281,31 @@ def get_Teffs(files, default=4500):
     return Teffs
 
 
-def get_amplitudes(exposures):
+def get_amplitudes(exposures, dc=False):
+    """If dc is True, an extra value for the dc term is included"""
+    if dc:
+        n = 22
+    else:
+        n = 21
     amplitudes = {}
     for exp in exposures:
         key = "_".join([exp.star, exp.filter])
         if key not in amplitudes.keys():
-            amplitudes[key] = np.ones(21)
+            amplitudes[key] = np.ones(n)
     return amplitudes
 
 
-def get_phases(exposures):
+def get_phases(exposures, dc=False):
+    """If dc is True, an extra value for the dc term is included"""
+    if dc:
+        n = 22
+    else:
+        n = 21
     phases = {}
     for exp in exposures:
         key = "_".join([exp.star, exp.filter])
         if key not in phases.keys():
-            phases[key] = np.zeros(21)
+            phases[key] = np.zeros(n)
     return phases
     # phases = {}
     # for file in files:
@@ -311,7 +328,7 @@ def find_position(psf, pixel_scale=0.065524085):
 
 
 # def get_exposures(files, add_read_noise=False):
-def get_exposures(files, optics, ms_thresh=None):
+def get_exposures(files, optics, ms_thresh=None, as_psf=False):
     print("Prepping exposures...")
     opds = get_wss_ops(files)
     return [
@@ -320,6 +337,8 @@ def get_exposures(files, optics, ms_thresh=None):
         # for file, opd in zip(files, opds)
         amigo.core.ExposureFit(file, optics, opd=opd, ms_thresh=ms_thresh)
         for file, opd in zip(files, opds)
+        # amigo.core.PSFFit(file, optics, opd=opd, ms_thresh=ms_thresh)
+        # for file, opd in zip(files, opds)
     ]
 
 

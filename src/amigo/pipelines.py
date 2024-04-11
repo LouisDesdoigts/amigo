@@ -135,9 +135,9 @@ def subtract_bias(data):
     #     return np.swapaxes(np.array(cleaned_slopes), 0, 1)
 
 
-def sigma_clip(array, sigma=5.0):
+def sigma_clip(array, sigma=5.0, axis=0):
     masked = onp.ma.masked_invalid(array, copy=True)
-    clipped = astropy.stats.sigma_clip(masked, axis=0, sigma=sigma)
+    clipped = astropy.stats.sigma_clip(masked, axis=axis, sigma=sigma)
     return onp.ma.filled(clipped, fill_value=onp.nan)
 
 
@@ -459,6 +459,50 @@ def process_stage1(directory, output_dir="calgrps/", sigma=0, method=0):
 
             nslope = slope.shape[0]
             slope_var = np.array([ramp_var[i] + ramp_var[i + 1] for i in range(nslope)])
+
+        elif method == 4:
+
+            nints = data.shape[0]
+            ngroups = data.shape[1]
+            nslopes = ngroups - 1
+
+            # if sigma > 0:
+            #     data = sigma_clip(data, sigma=sigma)
+
+            slopes = np.diff(data, axis=1)
+            if sigma > 0:
+                slopes = sigma_clip(slopes, sigma=sigma)
+
+            # Re-project these variances after linearising the data
+            _, slope_var = calc_mean_and_var(slopes)
+
+            def fit_curvature(slope):
+                return least_sq(np.arange(len(slope)) + 1.5, slope)
+
+            def curvature_im(slopes):
+                ms, bs = vmap(fit_curvature)(slopes.reshape(len(slopes), -1).T)
+                return ms.reshape(slopes.shape[1:]) / 2, bs.reshape(slopes.shape[1:])
+
+            curvatures, photon_rates = vmap(curvature_im)(slopes)
+            curvature, curvature_var = calc_mean_and_var(curvatures)
+            photon_rate, photon_rate_var = calc_mean_and_var(photon_rates)
+
+            psf = photon_rate * ngroups
+            psf_var = photon_rate_var * ngroups
+
+            file["SCI"].data = psf
+
+            # Save the biases as a separate extension
+            header = fits.Header()
+            header["EXTNAME"] = "SCI_VAR"
+            file.append(fits.ImageHDU(data=psf_var, header=header))
+
+            # Save as calgrp
+            file.writeto(file_calgrps, overwrite=True)
+            file.close()
+
+            continue
+
         else:
             raise ValueError("Invalid method")
 

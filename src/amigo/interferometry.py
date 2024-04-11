@@ -47,16 +47,32 @@ def pairwise_vectors(points):
             pairwise_vectors.append((vectors[i, j], i, j))
 
     # Sort the pairwise vectors by length
-    # TODO: Replace with an argsort?
-    pairwise_vectors.sort(key=lambda x: lengths[x[1], x[2]])
-    # return np.array(pairwise_vectors)
+    # # TODO: Replace with an argsort?
+    # pairwise_vectors.sort(key=lambda x: lengths[x[1], x[2]])
+
+    pairwise_vectors = np.array(pairwise_vectors)
+    lengths_key = [lengths[x[1], x[2]] for x in pairwise_vectors]
+    indices = np.argsort(lengths_key)
+
+    # Now you can use these indices to sort pairwise_vectors and any other list in the same way
+    sorted_pairwise_vectors = pairwise_vectors[indices]
 
     vecs = []
-    for vec in pairwise_vectors:
-        # v = vec[0]
-        # vecs.append([v[0], v[1]])
+    # for vec in pairwise_vectors:
+    for vec in sorted_pairwise_vectors:
         vecs.append(vec[0])
     return np.array(vecs)
+
+
+def get_baselines_and_inds(holes):
+    """Better version of pairwise_vectors that returns hole indicies too"""
+    pairwise_vectors = []
+    hole_inds = []
+    for i in range(len(holes)):
+        for j in range(i + 1, len(holes)):
+            pairwise_vectors.append(holes[i] - holes[j])
+            hole_inds.append((i, j))
+    return np.array(pairwise_vectors), np.array(hole_inds)
 
 
 # def hex_from_bls(coords, bl, rmax):
@@ -105,11 +121,13 @@ def uv_hex_mask(
     uv_coords = np.array(np.meshgrid(shifted_coords, shifted_coords))
 
     # Apply the mask transformations
-    tf = tf.set('translation', np.zeros(2)) # Enforce paraxial splodges (since they are)
+    tf = tf.set("translation", np.zeros(2))  # Enforce paraxial splodges (since they are)
     uv_coords = tf.apply(uv_coords)
 
     # Do this outside so we can scatter plot the baseline vectors over the psf splodges
-    hbls = pairwise_vectors(holes) / wavelength
+    # hbls = pairwise_vectors(holes) / wavelength
+    hbls, inds = get_baselines_and_inds(holes)
+    hbls /= wavelength
 
     # Hole parameters
     rmax = f2f / np.sqrt(3)
@@ -151,8 +169,13 @@ def from_uv(uv):
 
 
 def splodge_mask(mask, vis):
-    coeffs = np.ones(2 * len(vis) + 1, complex)
-    coeffs = coeffs.at[1:].set(np.concatenate([vis, vis.conj()]))
+    if len(vis) == 22:  # Includes DC term already
+        coeffs = np.ones(2 * len(vis) - 1, complex)
+        dc = np.array([vis[0]])
+        coeffs = np.concatenate([dc, vis[1:], vis[1:].conj()])
+    else:
+        coeffs = np.ones(2 * len(vis) + 1, complex)
+        coeffs = coeffs.at[1:].set(np.concatenate([vis, vis.conj()]))
     return dlu.eval_basis(mask, coeffs)
 
 
@@ -163,6 +186,15 @@ def apply_visibilities(psf, mask, vis):
 
     # We dont use np.where here because we have soft edges on the boundary of the mask
     return from_uv(to_uv(psf) * (splodges + inv_splodge_support))
+
+
+# def apply_visibilities(psf, mask, vis):
+#     # Get splodge mask and inverse
+#     splodges = splodge_mask(mask, vis)
+#     # inv_splodge_support = np.abs(1 - mask.sum(0))
+
+#     # We dont use np.where here because we have soft edges on the boundary of the mask
+#     return from_uv(to_uv(psf) * splodges)
 
 
 def visibilities(amplitudes, phases):
