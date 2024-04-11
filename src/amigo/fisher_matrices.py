@@ -461,3 +461,31 @@ def calculate_anisotropy_fisher(
     # fisher_ansio = np.eye(fisher_SRF.shape[0]) * fisher_SRF
     print(f"Anisotropy Time: {time.time() - t0:.2f}")
     return fisher_ansio
+
+def calculate_reflectivity_fisher(
+    model,
+    exposure,
+    self_fisher=True,
+    photon=False,
+    per_pix=False,
+    read_noise=10.0,
+    true_read_noise=False,
+):
+
+    fisher_fn = lambda *args, **kwargs: get_fisher(
+        *args,
+        model,
+        exposure,
+        self_fisher=self_fisher,
+        photon=photon,
+        per_pix=per_pix,
+        read_noise=read_noise,
+        true_read_noise=true_read_noise,
+        **kwargs,
+    )
+    # Holes ~1.5 minutes
+    t0 = time.time()
+    fisher_reflectivity = fisher_fn(params=["holes.reflectivity"])
+    print(f"Reflectivity Time: {time.time() - t0:.2f}")
+
+    return fisher_reflectivity
