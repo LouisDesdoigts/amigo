@@ -49,6 +49,17 @@ def model_fn(model, exposure, with_BFE=True, to_BFE=False, zero_idx=-1, noise=Tr
 
     # Apply the detector model and turn it into a ramp
     psf = model.detector.model(PSF)
+
+    from .core import PSFFit
+
+    if isinstance(exposure, PSFFit):
+        psf = dlu.downsample(psf, 4, mean=False)
+        psf = dlu.resize(psf, 80)
+        noise = total_amplifier_noise(model.one_on_fs[key])[0]
+        print(psf.shape)
+        print(noise.shape)
+        return psf + noise
+
     ramp = model_ramp(psf, exposure.ngroups)
     if to_BFE:
         return ramp

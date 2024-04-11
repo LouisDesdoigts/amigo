@@ -38,7 +38,7 @@ class Exposure(zdx.Base):
     star: str = eqx.field(static=True)
     key: str = eqx.field(static=True)
 
-    def __init__(self, file, opd=None, key_fn=None, ms_thresh=-3.):
+    def __init__(self, file, opd=None, key_fn=None, ms_thresh=-3., as_psf=False):
 
         if key_fn is None:
             key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:3])
@@ -46,7 +46,7 @@ class Exposure(zdx.Base):
         if opd is None:
             opd = get_wss_ops([file])[0]
 
-        data, variance, support = prep_data(file, ms_thresh=ms_thresh)
+        data, variance, support = prep_data(file, ms_thresh=ms_thresh, as_psf=as_psf)
 
 
         self.nints = file[0].header["NINTS"]
@@ -251,22 +251,34 @@ class Exposure(zdx.Base):
             plt.show()
 
         if up_the_ramp:
-            plt.figure(figsize=(20, 16))
+            ncols = 4
+            nrows = self.nslopes // ncols
+            if self.nslopes % ncols > 0:
+                nrows += 1
+
+            plt.figure(figsize=(5 * ncols, 4 * nrows))
             plt.suptitle("Up The Ramp Residuals")
 
             for i in range(self.nslopes):
-                plt.subplot(4, 4, i + 1)
+                # plt.subplot(4, 4, i + 1)
+                plt.subplot(nrows, ncols, i + 1)
                 v = np.nanmax(np.abs(residual[i]))
                 plt.imshow(residual[i], cmap=seismic, vmin=-v, vmax=v)
                 plt.colorbar()
             plt.show()
 
         if up_the_ramp_norm:
-            plt.figure(figsize=(20, 16))
+            ncols = 4
+            nrows = self.nslopes // ncols
+            if self.nslopes % ncols > 0:
+                nrows += 1
+
+            plt.figure(figsize=(5 * ncols, 4 * nrows))
             plt.suptitle("Normalised Up The Ramp Residuals")
 
             for i in range(self.nslopes):
-                plt.subplot(4, 4, i + 1)
+                # plt.subplot(4, 4, i + 1)
+                plt.subplot(nrows, ncols, i + 1)
                 v = np.nanmax(np.abs(norm_res_ramp[i]))
                 plt.imshow(norm_res_ramp[i], cmap=seismic, vmin=-v, vmax=v)
                 plt.colorbar()
@@ -380,6 +392,115 @@ class ExposureFit(Exposure):
                 model.one_on_fs[self.key]]
             )
 
+class PSFFit(Exposure):
+    position: Array
+    aberrations: Array
+    flux: Array  # Log now
+    one_on_fs: Array
+
+    def __init__(
+        self, 
+        file, 
+        optics,
+        opd=None, 
+        key_fn=None, 
+        ms_thresh=-3., 
+        # n_fda=10, 
+        use_pre_calc_fda=True):
+
+        super().__init__(file, opd=opd, key_fn=key_fn, ms_thresh=ms_thresh, as_psf=True)
+
+        n_fda = optics.pupil.coefficients.shape[1]
+        if use_pre_calc_fda:
+            file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
+            FDA = np.load(file_path)[:, :n_fda]
+        else:
+            FDA = np.zeros_like(optics.pupil.coefficients)
+
+        # TODO: Interpolate?
+        # psf = self.data[0].at[np.where(np.isnan(self.data[0]))].set(0.0)
+        psf = self.data.at[np.where(np.isnan(self.data))].set(0.0)
+        raw_flux = (80**2) * np.nanmean(self.data)
+        self.position = find_position(psf, optics.psf_pixel_scale)
+        self.aberrations = FDA
+        self.flux = np.log10(raw_flux)
+        self.one_on_fs = np.zeros((1, 80, 2))
+
+    def update_params(self, model):
+        return self.set(
+            ['position', 'aberrations', 'flux', 'one_on_fs'],
+            [
+                model.positions[self.key], 
+                model.aberrations[self.key], 
+                model.fluxes[self.key], 
+                model.one_on_fs[self.key]]
+            )
+
+    def to_vec(self, image):
+        return image[*self.support]
+
+class PupilAmplitudes(dl.layers.optics.OpticalLayer):
+    basis: Array
+    reflectivity: Array
+
+    def __init__(self, basis, reflectivity=None):
+        self.basis = np.asarray(basis, float)
+
+        if reflectivity is None:
+            self.reflectivity = np.zeros(basis.shape[:-2])
+        else:
+            self.reflectivity = np.asarray(reflectivity, float)
+
+    def normalise(self):
+        # Normalise to mean of 1
+        return self.add("reflectivity", self.reflectivity.mean())
+
+    def apply(self, wavefront):
+        # self = self.normalise()
+        reflectivity = 1 + dlu.eval_basis(self.basis, self.reflectivity)
+        return wavefront.multiply("amplitude", reflectivity)
+
+
+### Sub-propagations ###
+def transfer(coords, npixels, wavelength, pscale, distance):
+    """
+    The optical transfer function (OTF) for the gaussian beam.
+    Assumes propagation is along the axis.
+    """
+    scaling = npixels * pscale**2
+    rho_sq = ((coords / scaling) ** 2).sum(0)
+    return np.exp(-1.0j * np.pi * wavelength * distance * rho_sq)
+
+
+def _fft(phasor):
+    return 1 / phasor.shape[0] * np.fft.fft2(phasor)
+
+
+def _ifft(phasor):
+    return phasor.shape[0] * np.fft.ifft2(phasor)
+
+
+def plane_to_plane(wf, distance):
+    tf = transfer(wf.coordinates, wf.npixels, wf.wavelength, wf.pixel_scale, distance)
+    phasor = _fft(wf.phasor)
+    phasor *= np.fft.fftshift(tf)
+    phasor = _ifft(phasor)
+    return phasor
+
+
+class FreeSpace(dl.layers.optics.OpticalLayer):
+    distance: Array
+
+    def __init__(self, dist):
+        self.distance = np.asarray(dist, float)
+
+    def apply(self, wf):
+        phasor_out = plane_to_plane(wf, self.distance)
+        return wf.set(
+            ["amplitude", "phase"], [np.abs(phasor_out), np.angle(phasor_out)]
+        )
+
+
 class AMIOptics(dl.optical_systems.AngularOpticalSystem):
     def __init__(
         self,
@@ -387,12 +508,15 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         pupil_mask=None,
         opd=None,
         normalise=True,
+        free_amplitudes=False,
+        free_space_locations=[],
         psf_npixels=80,
         oversample=4,
         pixel_scale = 0.065524085,
         diameter = 6.603464,
         wf_npixels = 1024,
     ):
+        """Free space locations can be 'before', 'after'"""
         self.wf_npixels = wf_npixels
         self.diameter = diameter
         self.psf_npixels = psf_npixels
@@ -410,6 +534,8 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             AMI=True,
         )
 
+        layers = []
+
         # Load the values into the primary
         n_fda = primary.basis.shape[1]
         file_path = pkg.resource_filename(__name__, 'data/FDA_coeffs.npy')
@@ -419,21 +545,40 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             opd = np.zeros_like(transmission)
         primary = primary.set("opd", opd)
         primary = primary.multiply("basis", 1e-9)  # Normalise to nm
-        # primary = primary.multiply("basis", 1e-6)  # Normalise to um
-        # primary = primary.multiply("basis", 1e-3)  # Normalise to mm
+
+        layers += [("pupil", primary), ("InvertY", dl.Flip(0))]
+
+        if free_amplitudes:
+            pupil_basis = dlw.JWSTAberratedPrimary(
+                np.ones((1024, 1024)),
+                np.zeros((1024, 1024)),
+                radial_orders=[0],
+                AMI=True,
+            ).basis[:, 0]
+            layers += [("holes", PupilAmplitudes(np.flip(pupil_basis, axis=1)))]
+
+        if 'before' in free_space_locations:
+            layers += [("free_space_before", FreeSpace(0.))]
 
         if pupil_mask is None:
             pupil_mask = DynamicAMI(f2f=0.80, normalise=normalise)
+        layers += [("pupil_mask", pupil_mask)]
+
+        if 'after' in free_space_locations:
+            layers += [("free_space_after", FreeSpace(0.))]
 
         # Set the layers
-        self.layers = dlu.list2dictionary(
-            [
-                ("pupil", primary),
-                ("InvertY", dl.Flip(0)),
-                ("pupil_mask", pupil_mask),
-            ],
-            ordered=True,
-        )
+        self.layers = dlu.list2dictionary(layers, ordered=True)
+
+        # # Set the layers
+        # self.layers = dlu.list2dictionary(
+        #     [
+        #         ("pupil", primary),
+        #         ("InvertY", dl.Flip(0)),
+        #         ("pupil_mask", pupil_mask),
+        #     ],
+        #     ordered=True,
+        # )
 
 
 import dLux as dl
