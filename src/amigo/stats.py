@@ -85,12 +85,13 @@ def log_likelihood(x, mean, var):
     return norm.logpdf(x, mean, np.sqrt(var))
 
 
-def posterior(model, exposure, per_pix=True, photon=False, return_image=False, **kwargs):
+def posterior(model, exposure, per_pix=True, as_psf=False, photon=False, return_image=False, **kwargs):
     to_vec = lambda x: exposure.to_vec(x)
     slopes = to_vec(model_fn(model, exposure, **kwargs))
     data = to_vec(exposure.data)
     var = to_vec(exposure.variance)
 
+    # Probs dont need this anymore
     var = np.abs(var)
 
     # plt.title("Slopes")
@@ -109,7 +110,7 @@ def posterior(model, exposure, per_pix=True, photon=False, return_image=False, *
     # plt.show()
 
     if photon:
-        posterior = log_likelihood(slopes.sum(0), data.sum(0), var.sum(0))
+         posterior = log_likelihood(slopes.sum(0), data.sum(0), var.sum(0))
     else:
         posterior = log_likelihood(slopes, data, var)
 
