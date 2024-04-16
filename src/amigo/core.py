@@ -702,7 +702,6 @@ def _is_tree(x):
     # return isinstance(x, (list, dict, tuple, eqx.Module))
     return not eqx.is_array_like(x)
 
-
 class ModelHistory(BaseModeller):
     """
     Tracks the history of a set of parameters in a model via tuples.
@@ -719,9 +718,9 @@ class ModelHistory(BaseModeller):
         for param in tracked:
             leaf = model.get(param)
             if _is_tree(leaf):
-                history[param] = jtu.tree_map(lambda sub_leaf: (sub_leaf,), leaf)
+                history[param] = jtu.tree_map(lambda sub_leaf: [sub_leaf], leaf)
             else:
-                history[param] = (leaf,)
+                history[param] = [leaf]
 
         self.params = history
 
@@ -733,8 +732,8 @@ class ModelHistory(BaseModeller):
 
             # Tree-like case
             if _is_tree(new_leaf):
-                append_fn = lambda history, value: history + (value,)
-                leaf_fn = lambda leaf: isinstance(leaf, tuple)
+                append_fn = lambda history, value: history + [value]
+                leaf_fn = lambda leaf: isinstance(leaf, list)
                 new_leaf_history = jtu.tree_map(
                     append_fn, leaf_history, new_leaf, is_leaf=leaf_fn
                 )
@@ -742,10 +741,8 @@ class ModelHistory(BaseModeller):
 
             # Non-tree case
             else:
-                history[param] = leaf_history + (new_leaf,)
+                history[param] = leaf_history + [new_leaf]
         return self.set("params", history)
-
-
 
 
 class AmigoHistory(ModelHistory):
@@ -790,7 +787,7 @@ class AmigoHistory(ModelHistory):
         array of values for plotting.
         """
 
-        if isinstance(leaf, tuple):
+        if isinstance(leaf, list):
             # I think we can return an array here, first axis in then always the
             # history. We also need to deal with potential dimensionality (such as
             # mirror aberrations) so we reshape the remaining axes into a single axis
