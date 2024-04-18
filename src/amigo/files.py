@@ -253,15 +253,18 @@ def get_wss_ops(files):
     return opd_files
 
 
-def get_Teffs(files, default=4500):
+def get_Teffs(files, default=4500, Teff_cache="files/Teffs"):
     print("Searching for Teffs...")
     Teffs = {}
     for file in files:
         prop_name = file[0].header["TARGPROP"]
 
-        # if os.exists(f"data/Teffs/{prop_name}.npy"):
-        #     Teffs[prop_name] = np.load(f"data/{prop_name}_Teff.npy")
-        #     continue
+        # if os.exists(f"{Teff_cache}/{prop_name}.npy"):
+        try:
+            Teffs[prop_name] = np.load(f"{Teff_cache}/{prop_name}.npy")
+            continue
+        except FileNotFoundError:
+            pass
 
         if prop_name in Teffs:
             continue
@@ -273,6 +276,7 @@ def get_Teffs(files, default=4500):
             Teffs[prop_name] = default
         else:
             Teffs[prop_name] = Teff
+            np.save(f"{Teff_cache}/{prop_name}.npy", Teff)
 
     # for key, value in Teffs.items():
     #     if not os.exists(f"data/Teffs/{key}.npy"):
