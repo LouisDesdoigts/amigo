@@ -110,7 +110,7 @@ def posterior(model, exposure, per_pix=True, as_psf=False, photon=False, return_
     # plt.show()
 
     if photon:
-         posterior = log_likelihood(slopes.sum(0), data.sum(0), var.sum(0))
+        posterior = log_likelihood(slopes.sum(0), data.sum(0), var.sum(0))
     else:
         posterior = log_likelihood(slopes, data, var)
 
