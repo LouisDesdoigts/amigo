@@ -29,8 +29,7 @@ def get_fisher(
     exp,
     params,
     self_fisher=True,
-    # read_noise=10.0,
-    read_noise=14.0,
+    read_noise=10.0,
     true_read_noise=False,
     diag=False,  # Return the diagonal of the FIM
     photon=False,
