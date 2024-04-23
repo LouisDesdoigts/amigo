@@ -15,7 +15,8 @@ import pkg_resources as pkg
 import matplotlib.pyplot as plt
 from matplotlib import colormaps, colors
 import jax.scipy as jsp
-
+from .stats import get_slope_cov
+from .modelling import model_fn
 
 class Exposure(zdx.Base):
     """
@@ -24,12 +25,9 @@ class Exposure(zdx.Base):
 
     """
     data: Array
-    # covariance: Array
     variance: Array
-    # bias: Array
-    # bias_var: Array
+    zero_point: Array
     support: Array = eqx.field(static=True)
-    # pipeline_bias: Array = eqx.field(static=True)
     opd: Array = eqx.field(static=True)
     nints: int = eqx.field(static=True)
     ngroups: int = eqx.field(static=True)
@@ -41,13 +39,12 @@ class Exposure(zdx.Base):
     def __init__(self, file, opd=None, key_fn=None, ms_thresh=-3., as_psf=False):
 
         if key_fn is None:
-            key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:3])
+            key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:4])
 
         if opd is None:
             opd = get_wss_ops([file])[0]
 
         data, variance, support = prep_data(file, ms_thresh=ms_thresh, as_psf=as_psf)
-
 
         self.nints = file[0].header["NINTS"]
         self.ngroups = file[0].header["NGROUPS"]
@@ -56,15 +53,11 @@ class Exposure(zdx.Base):
         self.star = file[0].header["TARGPROP"]
         self.data = data
         self.variance = variance
-        # self.bias = np.zeros(data.shape[-2:]) # Dont add bias to data, fit it relative
-        # self.bias_var = np.asarray(file["BIAS_VAR"].data, float)
-        # self.pipeline_bias = np.asarray(file["BIAS"].data, float)
-        # self.bias_var = None
-        # self.pipeline_bias = None
         self.support = np.array(support)
         self.key = key_fn(file)
         self.opd = opd
-    
+        self.zero_point = np.asarray(file['ZPOINT'].data, float)
+
     def print_summary(self):
         print(
             f"File {self.key}\n"
@@ -74,50 +67,47 @@ class Exposure(zdx.Base):
             f"ngroups {self.ngroups}\n"
         )
 
-    # # TODO: Probs dont need this anymore
-    # @property
-    # def nims(self):
-    #     return self.nints * self.ngroups
-
-    # # TODO: This should return the leading dimension as the pixels, using np.swap_axes
-    # # to make the leading dimension the pixels, and vmap loss along first dimension
-    # def to_vec(self, image):
-    #     return image[..., *self.support].T
-
-    # def loglike_vec(self, ramp):
-    #     # Error is _standard error of the mean_, so we dont need to multiply by nints
-    #     ramp_vec = self.to_vec(ramp)
-    #     data_vec = self.to_vec(self.data)
-    #     cov_vec = self.to_vec(self.covariance)
-    #     return vmap(mvn.logpdf, (-1, -1, -1))(ramp_vec, data_vec, cov_vec)
-
-    # def loglike_im(self, ramp):
-    #     loglike_vec = np.nansum(self.loglike_vec(ramp))
-    #     return (np.nan * np.ones_like(ramp[0])).at[*self.support].set(loglike_vec)
-
     def to_vec(self, image):
         return image[..., *self.support].T
 
     def from_vec(self, vec, fill=np.nan):
-        return fill * np.ones((80, 80)).at[*self.support].set(vec)
+        return (fill * np.ones((80, 80))).at[*self.support].set(vec)
 
-
-    def loglike_vec(self, slope):
-        # Error is _standard error of the mean_, so we dont need to multiply by nints
-        ramp_vec = self.to_vec(slope)
+    def log_likelihood(self, slope, return_im=False, read_noise=0):
+        """
+        Note we have the infrastructure for dealing with the slope read noise
+        covariance, but it seems to give nan likelihoods when read_noise > ~6. As such
+        we leave the _capability_ here but set the read_noise to default of zero.
+        """
+        
+        # Get the model, data, and variances
+        slope_vec = self.to_vec(slope)
         data_vec = self.to_vec(self.data)
         var_vec = self.to_vec(self.variance)
-        return vmap(norm.logpdf, (0, 0, 0))(ramp_vec, data_vec, var_vec ** 0.5)
 
-    def loglike_im(self, ramp):
-        loglike_vec = np.nansum(self.loglike_vec(ramp), axis=1)
-        return (np.nan * np.ones_like(ramp[0])).at[*self.support].set(loglike_vec)
+        # Get th build we need to deal with the covariance terms
+        cov = get_slope_cov(self.nslopes, read_noise) / self.nints
+        eye = np.eye(self.nslopes)
 
+        # Bind the likelihood function
+        loglike_fn = lambda x, mu, var: mvn.logpdf(x, mu, (eye * var) + cov)
+
+        # Calculate per-pixel likelihood
+        likelihood = vmap(loglike_fn, (0, 0, 0))(slope_vec, data_vec, var_vec)
+
+        # Re-format into image if required
+        if return_im:
+            return self.from_vec(likelihood)
+            # nan_arr = (np.nan * np.ones_like(self.data[0]))
+            # return nan_arr.at[*self.support].set(likelihood)
+        
+        # else, return vector
+        return likelihood
 
     def summarise_fit(
         self,
         model,
-        model_fn,
+        # model_fn,
         residuals=False,
         histograms=False,
         flat_field=False,
@@ -134,22 +124,23 @@ class Exposure(zdx.Base):
         # for exp in exposures:
         # self.print_summary()
 
-        ramp = model_fn(model, self)
+        slopes = model_fn(model, self)
         data = self.data
 
-        residual = data - ramp
-        loglike_im = self.loglike_im(ramp)
+        residual = data - slopes
+        # loglike_im = self.loglike_im(slope)
+        loglike_im = self.log_likelihood(slopes, return_im=True)
         
         nan_mask = np.where(np.isnan(loglike_im))
-        ramp = ramp.at[:, *nan_mask].set(np.nan)
+        slopes = slopes.at[:, *nan_mask].set(np.nan)
         data = data.at[:, *nan_mask].set(np.nan)
 
         final_loss = np.nansum(-loglike_im) / np.prod(np.array(data.shape[-2:]))
 
-        norm_res_ramp = residual / (self.variance ** 0.5)
-        norm_res_ramp = norm_res_ramp.at[:, *nan_mask].set(np.nan)
+        norm_res_slope = residual / (self.variance ** 0.5)
+        norm_res_slope = norm_res_slope.at[:, *nan_mask].set(np.nan)
 
-        norm_res_vec = self.to_vec(norm_res_ramp)
+        norm_res_vec = self.to_vec(norm_res_slope)
         norm_res_vec = norm_res_vec[~np.isnan(norm_res_vec)]
         norm_res_vec = norm_res_vec[~np.isinf(norm_res_vec)]
 
@@ -158,7 +149,7 @@ class Exposure(zdx.Base):
         ys = jsp.stats.norm.pdf(xs)
 
         effective_data = data.sum(0)
-        effective_psf = ramp.sum(0)
+        effective_psf = slopes.sum(0)
         vmax = np.maximum(np.nanmax(np.abs(effective_data)), np.nanmax(np.abs(effective_psf)))
         vmin = np.minimum(np.nanmin(np.abs(effective_data)), np.nanmin(np.abs(effective_psf)))
 
@@ -215,10 +206,10 @@ class Exposure(zdx.Base):
                 # ax2.plot(xs, bins.max() * ys, c="k")
                 # ax2.semilogy()
 
-                v = np.nanmax(np.abs(norm_res_ramp.mean(0)))
+                v = np.nanmax(np.abs(norm_res_slope.mean(0)))
                 plt.subplot(1, 3, 3)
-                plt.title("Mean noise normalised ramp residual")
-                plt.imshow(norm_res_ramp.mean(0), vmin=-v, vmax=v, cmap=seismic)
+                plt.title("Mean noise normalised slope residual")
+                plt.imshow(norm_res_slope.mean(0), vmin=-v, vmax=v, cmap=seismic)
                 plt.colorbar()
 
                 plt.tight_layout()
@@ -279,8 +270,8 @@ class Exposure(zdx.Base):
             for i in range(self.nslopes):
                 # plt.subplot(4, 4, i + 1)
                 plt.subplot(nrows, ncols, i + 1)
-                v = np.nanmax(np.abs(norm_res_ramp[i]))
-                plt.imshow(norm_res_ramp[i], cmap=seismic, vmin=-v, vmax=v)
+                v = np.nanmax(np.abs(norm_res_slope[i]))
+                plt.imshow(norm_res_slope[i], cmap=seismic, vmin=-v, vmax=v)
                 plt.colorbar()
             plt.show()
 
@@ -354,6 +345,7 @@ class ExposureFit(Exposure):
     aberrations: Array
     flux: Array  # Log now
     one_on_fs: Array
+    coherence: Array
 
     def __init__(
         self, 
@@ -362,7 +354,6 @@ class ExposureFit(Exposure):
         opd=None, 
         key_fn=None, 
         ms_thresh=-3., 
-        # n_fda=10, 
         use_pre_calc_fda=True):
 
         super().__init__(file, opd=opd, key_fn=key_fn, ms_thresh=ms_thresh)
@@ -381,6 +372,7 @@ class ExposureFit(Exposure):
         self.aberrations = FDA
         self.flux = np.log10(raw_flux)
         self.one_on_fs = np.zeros((self.ngroups, 80, 2))
+        self.coherence = np.zeros(7)
 
     def update_params(self, model):
         return self.set(
@@ -391,53 +383,6 @@ class ExposureFit(Exposure):
                 model.fluxes[self.key], 
                 model.one_on_fs[self.key]]
             )
-
-class PSFFit(Exposure):
-    position: Array
-    aberrations: Array
-    flux: Array  # Log now
-    one_on_fs: Array
-
-    def __init__(
-        self, 
-        file, 
-        optics,
-        opd=None, 
-        key_fn=None, 
-        ms_thresh=-3., 
-        # n_fda=10, 
-        use_pre_calc_fda=True):
-
-        super().__init__(file, opd=opd, key_fn=key_fn, ms_thresh=ms_thresh, as_psf=True)
-
-        n_fda = optics.pupil.coefficients.shape[1]
-        if use_pre_calc_fda:
-            file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
-            FDA = np.load(file_path)[:, :n_fda]
-        else:
-            FDA = np.zeros_like(optics.pupil.coefficients)
-
-        # TODO: Interpolate?
-        # psf = self.data[0].at[np.where(np.isnan(self.data[0]))].set(0.0)
-        psf = self.data.at[np.where(np.isnan(self.data))].set(0.0)
-        raw_flux = (80**2) * np.nanmean(self.data)
-        self.position = find_position(psf, optics.psf_pixel_scale)
-        self.aberrations = FDA
-        self.flux = np.log10(raw_flux)
-        self.one_on_fs = np.zeros((1, 80, 2))
-
-    def update_params(self, model):
-        return self.set(
-            ['position', 'aberrations', 'flux', 'one_on_fs'],
-            [
-                model.positions[self.key], 
-                model.aberrations[self.key], 
-                model.fluxes[self.key], 
-                model.one_on_fs[self.key]]
-            )
-
-    def to_vec(self, image):
-        return image[*self.support]
 
 class PupilAmplitudes(dl.layers.optics.OpticalLayer):
     basis: Array
@@ -570,16 +515,6 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         # Set the layers
         self.layers = dlu.list2dictionary(layers, ordered=True)
 
-        # # Set the layers
-        # self.layers = dlu.list2dictionary(
-        #     [
-        #         ("pupil", primary),
-        #         ("InvertY", dl.Flip(0)),
-        #         ("pupil_mask", pupil_mask),
-        #     ],
-        #     ordered=True,
-        # )
-
 
 import dLux as dl
 import dLux.utils as dlu
@@ -614,10 +549,6 @@ class PixelAnisotropy(dl.layers.detector_layers.DetectorLayer):
 
 
     def apply(self, PSF):
-        # coords = dlu.pixel_coords(PSF.data.shape[0], PSF.pixel_scale)
-        # transformed = self.transform.apply(coords)
-        # new_coords = pix2arr(transformed, PSF.pixel_scale)
-        # new_psf = _map_coordinates(PSF.data, new_coords, order=self.order, mode="constant", cval=0.0)
         npix = PSF.data.shape[0]
         transformed = self.transform.apply(dlu.pixel_coords(npix, npix * PSF.pixel_scale))
         coords = np.roll(pix2arr(transformed, PSF.pixel_scale), 1, axis=0)
@@ -628,6 +559,8 @@ class PixelAnisotropy(dl.layers.detector_layers.DetectorLayer):
 
 
 class SUB80Ramp(dl.detectors.LayeredDetector):
+    dark_current : Array
+
     def __init__(
         self,
         angle=-0.56126717,
@@ -637,6 +570,7 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
         downsample=False,
         npixels_in=80,
         anisotropy=True,
+        dark_current=0.0,
 
     ):
         # Load the FF
@@ -661,6 +595,8 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
             layers.append(("downsample", dl.Downsample(oversample)))
 
         self.layers = dlu.list2dictionary(layers, ordered=True)
+
+        self.dark_current = np.array(dark_current, float)
 
 
 
