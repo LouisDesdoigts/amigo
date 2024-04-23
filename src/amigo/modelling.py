@@ -3,7 +3,8 @@ import dLux.utils as dlu
 from jax import vmap
 from amigo.misc import planck
 from amigo.stats import total_read_noise, total_amplifier_noise
-from amigo.detector_layers import model_ramp, model_amplifier
+from amigo.interferometry import visibilities, uv_model
+from amigo.detector_layers import model_ramp, model_amplifier, model_dark_current
 import jax.numpy as np
 import jax.tree_util as jtu
 
@@ -28,12 +29,14 @@ def model_fn(model, exposure, with_BFE=True, to_BFE=False, zero_idx=-1, noise=Tr
         [aberrations, exposure.opd],
     )
 
+    # Per exposure mirror coherence
+    if hasattr(model, "coherence"):
+        optics = optics.set("holes.reflectivity", model.coherence[key])
+
     # Make sure this has correct position units and get wavefronts
     pos_rad = dlu.arcsec2rad(model.positions[key])
     # PSF = optics.propagate(wavels, pos_rad, weights, return_psf=True)
     wfs = optics.propagate(wavels, pos_rad, weights, return_wf=True)
-
-    from amigo.interferometry import visibilities, uv_model
 
     if hasattr(model, "masks"):
         # Get visibilities and final psfs
@@ -50,17 +53,24 @@ def model_fn(model, exposure, with_BFE=True, to_BFE=False, zero_idx=-1, noise=Tr
     # Apply the detector model and turn it into a ramp
     psf = model.detector.model(PSF)
 
-    from .core import PSFFit
-
-    if isinstance(exposure, PSFFit):
-        psf = dlu.downsample(psf, 4, mean=False)
-        psf = dlu.resize(psf, 80)
-        noise = total_amplifier_noise(model.one_on_fs[key])[0]
-        print(psf.shape)
-        print(noise.shape)
-        return psf + noise
-
+    # Model the ramp
     ramp = model_ramp(psf, exposure.ngroups)
+
+    # # Add the bias - Method 1, estimate from model
+    # first_group_est = ramp[0]
+    # bias_est = exposure.zero_point - dlu.downsample(first_group_est, 4, mean=False)
+    # bias_est = np.repeat(np.repeat(bias_est, 4, axis=0), 4, axis=1)
+    # bias_est /= 16 # Normalise the subsampling
+    # bias_est = np.where(np.isnan(bias_est), 0.0, bias_est)
+
+    # Add the bias - Method 2, estimate from data
+    bias_est = exposure.zero_point - exposure.data[0]
+    bias_est = np.repeat(np.repeat(bias_est, 4, axis=0), 4, axis=1) / 16
+    bias_est = np.where(np.isnan(bias_est), 0.0, bias_est)
+
+    # Add the estimated bias to the ramp
+    ramp += bias_est[None, ...]
+
     if to_BFE:
         return ramp
 
@@ -72,9 +82,11 @@ def model_fn(model, exposure, with_BFE=True, to_BFE=False, zero_idx=-1, noise=Tr
         ramp = vmap(dsample_fn)(ramp)
     ramp = vmap(dlu.resize, (0, None))(ramp, 80)
 
-    # Apply bias and one of F correction
+    # Model the dark current
+    ramp = model_dark_current(ramp, model.detector.dark_current)
+
+    # Apply one of F model
     if noise:
-        # ramp += total_read_noise(model.biases[key], model.one_on_fs[key])
         ramp += total_amplifier_noise(model.one_on_fs[key])
 
     # return ramp
