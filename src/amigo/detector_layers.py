@@ -31,6 +31,13 @@ def model_ramp(psf, ngroups):
     return psf[None, ...] * lin_ramp[..., None, None]
 
 
+def model_dark_current(ramp, dark_current):
+    """Models the dark current as a constant background value added cumulatively to
+    each group. For now we assume that the dark current is a float."""
+    dark_ramp = dark_current * (np.arange(len(ramp)) + 1)
+    return ramp + dark_ramp[..., None, None]
+
+
 class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
 
     FF: jax.Array
