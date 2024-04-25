@@ -4,21 +4,37 @@ import jax
 import zodiax as zdx
 import jax.numpy as np
 import jax.tree_util as jtu
-from jax import jit, grad, jvp, linearize, lax
+from jax import jit, grad, jvp, linearize, lax, vmap
 
 
 # def hvp(f, primals, tangents):
 #     return jvp(grad(f), primals, tangents)[1]
 
 
-def hessian(f, x):
-    _, hvp = linearize(grad(f), x)
-    # Jit the sub-function here since it is called many times
-    # TODO: Test effect on speed
-    hvp = jit(hvp)
-    # basis = np.eye(np.prod(np.array(x.shape))).reshape(-1, *x.shape)
-    basis = np.eye(x.size).reshape(-1, *x.shape)
-    return np.stack([hvp(e) for e in basis]).reshape(x.shape + x.shape)
+def hessian(f, x, fast=True):
+    if fast:
+        # I think this basically just returns np.eye?
+        basis = np.eye(x.size).reshape(-1, *x.shape)
+
+        _, hvp = linearize(grad(f), x)
+        hvp = jit(hvp)
+
+        # Compile on first input
+        first = np.array([hvp(basis[0])])  # Add empty dim for concatenation
+
+        # Vmap others
+        others = vmap(hvp)(basis[1:])
+
+        # Recombine
+        return np.stack(np.concatenate([first, others], axis=0)).reshape(x.shape + x.shape)
+    else:
+        _, hvp = linearize(grad(f), x)
+        # Jit the sub-function here since it is called many times
+        # TODO: Test effect on speed
+        hvp = jit(hvp)
+        # basis = np.eye(np.prod(np.array(x.shape))).reshape(-1, *x.shape)
+        basis = np.eye(x.size).reshape(-1, *x.shape)
+        return np.stack([hvp(e) for e in basis]).reshape(x.shape + x.shape)
 
 
 # def FIM(
@@ -95,6 +111,7 @@ def FIM(
     *loglike_args,
     shape_dict={},
     save_ram=True,
+    vmapped=False,
     diag=False,
     **loglike_kwargs,
 ):
@@ -121,6 +138,9 @@ def FIM(
 
     if save_ram:
         return hessian(loglike_fn_vec, X)
+
+    if vmapped:
+        return hessian(loglike_fn_vec, X, fast=True)
 
     return jax.hessian(loglike_fn_vec)(X)
 

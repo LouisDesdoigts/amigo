@@ -30,6 +30,8 @@ def get_fisher(
     diag=False,  # Return the diagonal of the FIM
     # photon=False,
     per_pix=False,
+    save_ram=True,
+    vmapped=False,
     **kwargs,
 ):
 
@@ -39,7 +41,7 @@ def get_fisher(
         )
         exp = exp.set(["data", "variance"], [psf, variance])
 
-    return FIM(model, params, posterior, exp, diag=diag, per_pix=per_pix, **kwargs)
+    return FIM(model, params, posterior, exp, diag=diag, save_ram=save_ram, vmapped=vmapped, per_pix=per_pix, **kwargs)
 
 
 
@@ -148,6 +150,8 @@ def calc_local_fisher(
     per_pix=False,
     read_noise=10.0,
     true_read_noise=False,
+    save_ram=True,
+    vmapped=False,
 ):
 
     fisher_fn = lambda *args, **kwargs: get_fisher(
@@ -159,6 +163,8 @@ def calc_local_fisher(
         per_pix=per_pix,
         read_noise=read_noise, 
         true_read_noise=true_read_noise, 
+        save_ram=save_ram,
+        vmapped=vmapped,
         **kwargs,
     )
     
@@ -221,7 +227,7 @@ def calc_local_fisher(
 
 class LocalStepMapper(MatrixMapper):
 
-    def __init__(self, model, exposure):
+    def __init__(self, model, exposure, save_ram=True, vmapped=False):
         self.params = [
             f"positions.{exposure.key}",
             f"fluxes.{exposure.key}",
@@ -231,7 +237,9 @@ class LocalStepMapper(MatrixMapper):
         ]
 
         self.step_type = "matrix"
-        self.fisher_matrix = calc_local_fisher(model, exposure, self_fisher=True, per_pix=True)
+        self.fisher_matrix = calc_local_fisher(
+            model, exposure, self_fisher=True, per_pix=True, save_ram=save_ram, vmapped=vmapped
+        )
         self.step_matrix = -np.linalg.inv(self.fisher_matrix)
 
     def recalculate(self, model, exposure):
