@@ -11,8 +11,9 @@ from jax import jit, grad, jvp, linearize, lax, vmap
 #     return jvp(grad(f), primals, tangents)[1]
 
 
-def hessian(f, x, fast=True):
+def hessian(f, x, fast=False):
     if fast:
+        # print("Running Vmapped")
         # I think this basically just returns np.eye?
         basis = np.eye(x.size).reshape(-1, *x.shape)
 
@@ -28,6 +29,7 @@ def hessian(f, x, fast=True):
         # Recombine
         return np.stack(np.concatenate([first, others], axis=0)).reshape(x.shape + x.shape)
     else:
+        # print("Running non-vmapped")
         _, hvp = linearize(grad(f), x)
         # Jit the sub-function here since it is called many times
         # TODO: Test effect on speed

@@ -7,18 +7,6 @@ from amigo.stats import variance_model, posterior
 import jax.tree_util as jtu
 from tqdm.notebook import tqdm
 import time
-# from .fisher_matrices import (
-#     calc_local_fisher,
-#     calculate_mask_fisher,
-#     calculate_bfe_fisher,
-#     calc_visibility_fisher,
-#     calculate_simple_bfe_fisher,
-#     calculate_gradient_bfe_fisher,
-#     calculate_SRF_fisher,
-#     calculate_anisotropy_fisher,
-#     calculate_reflectivity_fisher,
-#     calculate_dark_current_fisher,
-# )
 
 def get_fisher(
     model,
