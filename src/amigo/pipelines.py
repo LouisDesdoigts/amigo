@@ -105,7 +105,7 @@ def sigma_clip(array, sigma=5.0, axis=0):
 #     return np.swapaxes(cleaned_counts, 0, 1)
 
 
-def nan_dqd(file, n_groups: int = None, dq_thresh: float = 0.):
+def nan_dqd(file, n_groups: int = None, dq_thresh: float = 0.0):
     # Get the bits
     dq = np.array(file["PIXELDQ"].data) > dq_thresh
     group_dq = np.array(file["GROUPDQ"].data) > 0
@@ -116,7 +116,7 @@ def nan_dqd(file, n_groups: int = None, dq_thresh: float = 0.):
 
     if n_groups is None:
         return np.where(full_dq, np.nan, electrons)
-    
+
     # for truncating the top of the ramp
     elif isinstance(n_groups, int):
         return np.where(full_dq[:, :n_groups], np.nan, electrons[:, :n_groups])
@@ -148,13 +148,7 @@ def nan_dqd(file, n_groups: int = None, dq_thresh: float = 0.):
 #     return ramp, var
 
 
-def calc_mean_and_var(data):
-    # # Mask the invalid values, sigma clip, and set back to nans for jax
-    # masked = onp.ma.masked_invalid(data, copy=True)
-    # masked_clipped = astropy.stats.sigma_clip(masked, axis=0, sigma=sigma)
-    # cleaned = onp.ma.filled(masked_clipped, fill_value=np.nan)
-    # cleaned = sigma_clip(data, sigma=sigma)
-
+def calc_mean_and_var(data, axis=0):
     # Get the support of the data - ie how many integrations contribute to the data
     support = np.asarray(~np.isnan(data), int).sum(axis)
 
@@ -181,7 +175,15 @@ def delete_contents(path):
             print("Failed to delete %s. Reason: %s" % (file_path, e))
 
 
-def process_calslope(directory, output_dir="calslope/", sigma=0, chunk_size=0, clean_dir=True):
+def process_calslope(
+    directory,
+    output_dir="calslope/",
+    sigma=0,
+    chunk_size=0,
+    n_groups=None,  # how many groups of the ramp to use
+    dq_thresh=0.0,  # threshold value for the PIXELDQ flags
+    clean_dir=True,
+):
     """
     Chunk size determines the maximum number of integrations in a 'chunk'. Each chunk
     is saved to its own file with an integer extension added. This breaks the data set
@@ -243,7 +245,7 @@ def process_calslope(directory, output_dir="calslope/", sigma=0, chunk_size=0, c
         print(file[0].header["NINTS"])
 
         # Get the data
-        data = nan_dqd(file)
+        data = nan_dqd(file, dq_thresh=dq_thresh, n_groups=n_groups)
         file.close()
 
         if chunk_size == 0:
@@ -259,7 +261,6 @@ def process_calslope(directory, output_dir="calslope/", sigma=0, chunk_size=0, c
         print(f"Breaking into {nchunks} chunks")
 
         for i, chunk in enumerate(chunks):
-
             # Check if the file is a NIS_AMI file
             file_name = file_root + f"_{i+1:0{4}}" + "_nis_calslope.fits"
             file_calslope = os.path.join(output_path + file_name)
