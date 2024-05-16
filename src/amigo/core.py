@@ -42,7 +42,9 @@ class Exposure(zdx.Base):
             key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:4])
 
         if opd is None:
-            opd = get_wss_ops([file])[0]
+            # opd = get_wss_ops([file])[0]
+            # CHANGE AGAIN IF NECESSARY !!!!!
+            opd = np.zeros(1024, 1024)
 
         data, variance, support = prep_data(file, ms_thresh=ms_thresh, as_psf=as_psf)
 

@@ -240,8 +240,10 @@ def get_Teffs(files, default=4500, straight_default=False, Teff_cache="files/Tef
             Teffs[prop_name] = default
             print("Warning using default Teff")
             continue
-
-        Teff = get_Teff(file[0].header["TARGNAME"])
+        
+        # Teff = get_Teff(file[0].header["TARGNAME"])
+        # CHANGE BACK IF NECESSARY
+        Teff = -1
 
         if Teff == -1:
             print(f"No Teff found for {prop_name}, defaulting to 4500K")
@@ -298,7 +300,9 @@ def find_position(psf, pixel_scale=0.065524085):
 # def get_exposures(files, add_read_noise=False):
 def get_exposures(files, optics, ms_thresh=None, as_psf=False):
     print("Prepping exposures...")
-    opds = get_wss_ops(files)
+    # opds = get_wss_ops(files)
+    # CHANGE AGAIN IF NECESSARY !!! 
+    opds = np.zeros((len(files), 1024, 1024))
     return [
         amigo.core.ExposureFit(file, optics, opd=opd, ms_thresh=ms_thresh)
         for file, opd in zip(files, opds)

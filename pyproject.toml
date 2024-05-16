@@ -16,9 +16,7 @@ dependencies = [
   "zodiax>=0.4.1",
   "dLux",
   "astroquery",
-  "jwst",
-  "pyia",
-  "webbpsf"
+  "pyia"
 ]
 classifiers=[
     "Programming Language :: Python :: 3",
