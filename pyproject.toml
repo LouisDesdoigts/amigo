@@ -19,10 +19,15 @@ dependencies = [
   "jwst",
   "pyia",
   "webbpsf",
+  "tqdm",
   "uncertainties",
   "dLuxWebbpsf @ git+https://github.com/itroitskaya/dLuxWebbpsf.git",
   "xara @ git+https://github.com/fmartinache/xara.git",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest", "black", "ruff", "pre-commit"]
+
 classifiers=[
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
