@@ -90,21 +90,6 @@ def sigma_clip(array, sigma=5.0, axis=0):
     return onp.ma.filled(clipped, fill_value=onp.nan)
 
 
-# def rebuild_ramps(cleaned_slopes):
-#     ngroups = cleaned_slopes.shape[1]
-
-#     # dx is defined to be 1, so the slope _is the counts_
-#     counts = 0
-#     cleaned_counts = []
-#     for k in range(ngroups):
-#         counts += cleaned_slopes[:, k]
-#         cleaned_counts.append(counts)
-#     cleaned_counts = np.array(cleaned_counts)
-
-#     # This output has the dimension of the groups and ints swapped
-#     return np.swapaxes(cleaned_counts, 0, 1)
-
-
 def nan_dqd(file, n_groups: int = None, dq_thresh: float = 0.0):
     # Get the bits
     dq = np.array(file["PIXELDQ"].data) > dq_thresh
@@ -120,33 +105,7 @@ def nan_dqd(file, n_groups: int = None, dq_thresh: float = 0.0):
     # for truncating the top of the ramp
     elif isinstance(n_groups, int):
         return np.where(full_dq[:, :n_groups], np.nan, electrons[:, :n_groups])
-
-    # # Mask the invalid values and sigma clip
-    # return onp.ma.masked_invalid(cleaned, copy=True)
-
-
-# def group_fit(cleaned_ramps, lower_bound=False):
-
-#     # Mask the invalid values, sigma clip, and set back to nans for jax
-#     masked = onp.ma.masked_invalid(cleaned_ramps, copy=True)
-#     masked_clipped = astropy.stats.sigma_clip(masked, axis=0, sigma=3)
-#     cleaned = onp.ma.filled(masked_clipped, fill_value=np.nan)
-
-#     # Get the support of the data - ie how many integrations contribute to the data
-#     support = np.asarray(~np.isnan(cleaned), int).sum(0)
-
-#     # Mean after sigma clipping - The 'robust mean', better for quantised data
-#     ramp = np.nanmean(cleaned, axis=0)
-
-#     # We dont want the error of the mean, we want the _STANDARD ERROR OF THE MEAN_,
-#     # ie scaled by the sqrt of the number of samples
-#     var = np.nanvar(cleaned, axis=0)
-#     # if lower_bound:
-#     #     var = np.maximum(var, np.nanmean(cleaned, axis=0))
-#     var /= support
-
-#     return ramp, var
-
+    return np.where(full_dq, np.nan, electrons)
 
 def calc_mean_and_var(data, axis=0):
     # Get the support of the data - ie how many integrations contribute to the data
@@ -161,7 +120,6 @@ def calc_mean_and_var(data, axis=0):
     var /= support
 
     return mean, var
-
 
 def delete_contents(path):
     for file_name in os.listdir(path):
@@ -261,6 +219,7 @@ def process_calslope(
         print(f"Breaking into {nchunks} chunks")
 
         for i, chunk in enumerate(chunks):
+          
             # Check if the file is a NIS_AMI file
             file_name = file_root + f"_{i+1:0{4}}" + "_nis_calslope.fits"
             file_calslope = os.path.join(output_path + file_name)
