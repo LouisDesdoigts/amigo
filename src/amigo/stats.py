@@ -131,7 +131,8 @@ def posterior(model, exposure, per_pix=True, return_vec=False, return_im=False, 
 # def loss_fn(model, exposures, **kwargs):
 def loss_fn(model, args, **kwargs):
     # exposures, step_mappers, model_fn = args
-    exposures, step_mappers = args
+    # exposures, step_mappers = args
+    exposures = args[0]
     return -np.array([posterior(model, exp, per_pix=True, **kwargs) for exp in exposures]).sum()
 
 

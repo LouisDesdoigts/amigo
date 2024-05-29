@@ -5,6 +5,7 @@ from amigo.misc import planck
 from amigo.stats import total_read_noise, total_amplifier_noise
 from amigo.interferometry import visibilities, uv_model
 from amigo.detector_layers import model_ramp, model_amplifier, model_dark_current
+from jax.scipy.signal import convolve
 import jax.numpy as np
 import jax.tree_util as jtu
 
@@ -63,24 +64,39 @@ def model_fn(model, exposure, with_BFE=True, to_BFE=False, zero_idx=-1, noise=Tr
     # bias_est /= 16 # Normalise the subsampling
     # bias_est = np.where(np.isnan(bias_est), 0.0, bias_est)
 
-    # Add the bias - Method 2, estimate from data
-    bias_est = exposure.zero_point - exposure.data[0]
-    bias_est = np.repeat(np.repeat(bias_est, 4, axis=0), 4, axis=1) / 16
-    bias_est = np.where(np.isnan(bias_est), 0.0, bias_est)
+    # # Add the bias - Method 2, estimate from data
+    # bias_est = exposure.zero_point - exposure.data[0]
+    # bias_est = np.repeat(np.repeat(bias_est, 4, axis=0), 4, axis=1) / 16
+    # bias_est = np.where(np.isnan(bias_est), 0.0, bias_est)
 
-    # Add the estimated bias to the ramp
-    ramp += bias_est[None, ...]
+    # # Add the estimated bias to the ramp
+    # ramp += bias_est[None, ...]
 
     if to_BFE:
         return ramp
 
     # Now apply the CNN BFE and downsample
     if with_BFE:
-        ramp = eqx.filter_vmap(model.BFE.apply_array)(ramp)
+        # if test_BFE:
+        if hasattr(model.BFE, "gru_cell"):
+            flux = 10 ** model.fluxes[key]
+            norm_psf = psf / flux
+            ramp = model.BFE.model(norm_psf, flux, exposure.ngroups)
+            dsample_fn = lambda x: dlu.downsample(x, 4, mean=False)
+            ramp = vmap(dsample_fn)(ramp)
+        else:
+            ramp = eqx.filter_vmap(model.BFE.apply_array)(ramp)
     else:
         dsample_fn = lambda x: dlu.downsample(x, 4, mean=False)
         ramp = vmap(dsample_fn)(ramp)
+
+    # Ensure we always have 80x80 images
     ramp = vmap(dlu.resize, (0, None))(ramp, 80)
+
+    # Apply IPC
+    if hasattr(model.detector, "ipc"):
+        ipc_fn = lambda x: convolve(x, model.detector.ipc, mode="same")
+        ramp = vmap(ipc_fn)(ramp)
 
     # Model the dark current
     ramp = model_dark_current(ramp, model.detector.dark_current)

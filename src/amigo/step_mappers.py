@@ -140,6 +140,7 @@ def calc_local_fisher(
     true_read_noise=False,
     save_ram=True,
     vmapped=False,
+    **kwargs,
 ):
 
     fisher_fn = lambda *args, **kwargs: get_fisher(
@@ -177,7 +178,7 @@ def calc_local_fisher(
         f"aberrations.{key}",
     ]
     t0 = time.time()
-    fisher_matrix = fisher_fn(params=exp_params)
+    fisher_matrix = fisher_fn(params=exp_params, **kwargs)
     print(f"Main Time: {time.time() - t0:.2f}")
 
     # Position and flux
@@ -195,7 +196,7 @@ def calc_local_fisher(
 
     # # Noise
     t0 = time.time()
-    one_on_f_fisher = fisher_fn(params=[f"one_on_fs.{key}"])
+    one_on_f_fisher = fisher_fn(params=[f"one_on_fs.{key}"], **kwargs)
     one_on_f_fisher *= np.eye(one_on_f_fisher.shape[0])
     print(f"Noise Time: {time.time() - t0:.2f}")
 
@@ -215,7 +216,7 @@ def calc_local_fisher(
 
 class LocalStepMapper(MatrixMapper):
 
-    def __init__(self, model, exposure, save_ram=True, vmapped=False):
+    def __init__(self, model, exposure, save_ram=True, vmapped=False, **kwargs):
         self.params = [
             f"positions.{exposure.key}",
             f"fluxes.{exposure.key}",
@@ -226,7 +227,7 @@ class LocalStepMapper(MatrixMapper):
 
         self.step_type = "matrix"
         self.fisher_matrix = calc_local_fisher(
-            model, exposure, self_fisher=True, per_pix=True, save_ram=save_ram, vmapped=vmapped
+            model, exposure, self_fisher=True, per_pix=True, save_ram=save_ram, vmapped=vmapped, **kwargs,
         )
         self.step_matrix = -np.linalg.inv(self.fisher_matrix)
 
@@ -244,6 +245,7 @@ def calculate_mask_fisher(
     per_pix=False,
     read_noise=10.0,
     true_read_noise=False,
+    **kwargs,
 ):
 
     fisher_fn = lambda *args, **kwargs: get_fisher(
@@ -269,7 +271,7 @@ def calculate_mask_fisher(
 
     # Holes ~1.5 minutes
     t0 = time.time()
-    fisher_mask = fisher_fn(params=global_params)
+    fisher_mask = fisher_fn(params=global_params, **kwargs)
     # mask = np.zeros((N, N))
     mask = np.ones((N, N))
     mask = mask.at[:14, :14].set(np.eye(14))
@@ -282,7 +284,7 @@ def calculate_mask_fisher(
 class MaskStepMapper(MatrixMapper):
     fisher_matrix: jax.Array
 
-    def __init__(self, model, exposures):
+    def __init__(self, model, exposures, **kwargs):
 
         self.step_type = "matrix"
         self.params = [
@@ -296,7 +298,7 @@ class MaskStepMapper(MatrixMapper):
         fisher_matrices = []
         for exp in tqdm(exposures):
             fisher_matrices.append(
-                calculate_mask_fisher(model, exp, self_fisher=True, per_pix=True)
+                calculate_mask_fisher(model, exp, self_fisher=True, per_pix=True, **kwargs)
             )
 
         self.fisher_matrix = np.array(fisher_matrices)

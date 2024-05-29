@@ -8,7 +8,7 @@ from jax import vmap
 import dLux.utils as dlu
 import dLux as dl
 from jax.scipy.stats import multivariate_normal as mvn, norm
-from .detector_layers import Rotate, ApplySensitivities
+from .detector_layers import Rotate, ApplySensitivities, GaussianJitter
 from .optical_layers import DynamicAMI
 from .files import prep_data, get_wss_ops, find_position
 import pkg_resources as pkg
@@ -165,7 +165,7 @@ class Exposure(zdx.Base):
 
                 plt.figure(figsize=(15, 4))
                 plt.subplot(1, 3, 1)
-                plt.title(f"Effective PSF $^{pow}$")
+                plt.title(f"Data $^{pow}$")
                 plt.imshow(effective_data, cmap=inferno, norm=norm)
                 plt.colorbar()
 
@@ -559,7 +559,8 @@ class PixelAnisotropy(dl.layers.detector_layers.DetectorLayer):
 
 
 class SUB80Ramp(dl.detectors.LayeredDetector):
-    dark_current : Array
+    dark_current: Array
+    ipc: Array
 
     def __init__(
         self,
@@ -570,8 +571,9 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
         downsample=False,
         npixels_in=80,
         anisotropy=True,
+        jitter=True,
         dark_current=0.0,
-
+        ipc=True,
     ):
         # Load the FF
         if FF is None:
@@ -580,14 +582,21 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
             if npixels_in != 80:
                 pad = (npixels_in - 80) // 2
                 FF = np.pad(FF, pad, constant_values=1)
-        
+
         if SRF is None:
             SRF = np.ones((oversample, oversample))
 
         layers = [("rotate", Rotate(angle))]
 
         if anisotropy:
-            layers.append(("anisotropy", PixelAnisotropy(order=3)))
+            compression = np.array([0.99580676, 1.00343162])
+            anisotropy = PixelAnisotropy(order=3).set('compression', compression)
+            layers.append(("anisotropy", anisotropy))
+
+        if jitter:
+            layers.append(("jitter", GaussianJitter(
+                1e-6, kernel_size=19, kernel_oversample=3
+            )))
 
         layers.append(("sensitivity", ApplySensitivities(FF, SRF)))
 
@@ -598,6 +607,13 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
 
         self.dark_current = np.array(dark_current, float)
 
+        if ipc:
+            file_path = "/Users/louis/PhD/Software/sandbox/amigo/src/amigo/data/SUB80_ipc.npy"
+            # file_path = pkg.resource_filename(__name__, "data/SUB80_ipc.npy")
+            self.ipc = np.load(file_path)
+        else:
+            self.ipc = np.array([[1.]])
+            # self.ipc = np.array(ipc, float)
 
 
 
