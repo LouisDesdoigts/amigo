@@ -90,7 +90,6 @@ def sigma_clip(array, sigma=5.0, axis=0):
     return onp.ma.filled(clipped, fill_value=onp.nan)
 
 
-
 def nan_dqd(file, n_groups: int = None, dq_thresh: float = 0.0):
     # Get the bits
     dq = np.array(file["PIXELDQ"].data) > dq_thresh
@@ -108,6 +107,7 @@ def nan_dqd(file, n_groups: int = None, dq_thresh: float = 0.0):
         return np.where(full_dq[:, :n_groups], np.nan, electrons[:, :n_groups])
     return np.where(full_dq, np.nan, electrons)
 
+
 def calc_mean_and_var(data, axis=0):
     # Get the support of the data - ie how many integrations contribute to the data
     support = np.asarray(~np.isnan(data), int).sum(axis)
@@ -121,6 +121,7 @@ def calc_mean_and_var(data, axis=0):
     var /= support
 
     return mean, var
+
 
 def delete_contents(path):
     for file_name in os.listdir(path):
@@ -209,6 +210,7 @@ def process_calslope(
 
         if chunk_size == 0:
             chunks = [data]
+            nchunks = 1
         else:
             nints = data.shape[0]
             if nints < chunk_size:
