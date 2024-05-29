@@ -294,7 +294,6 @@ def find_position(psf, pixel_scale=0.065524085):
     position = origin * pixel_scale * np.array([1, -1])
     return position
 
-
 # def get_exposures(files, add_read_noise=False):
 def get_exposures(files, optics, ms_thresh=None, as_psf=False):
     print("Prepping exposures...")
@@ -303,7 +302,6 @@ def get_exposures(files, optics, ms_thresh=None, as_psf=False):
         amigo.core.ExposureFit(file, optics, opd=opd, ms_thresh=ms_thresh)
         for file, opd in zip(files, opds)
     ]
-
 
 def initialise_params(exposures):
     positions = {}
