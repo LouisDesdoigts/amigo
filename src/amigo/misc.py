@@ -1,7 +1,5 @@
 import jax.numpy as np
 from jax import vmap
-import numpy as onp
-import jax.scipy as jsp
 
 
 def planck(wav, T):
@@ -35,7 +33,6 @@ def planck(wav, T):
     return np.power(10, logA + logB)
 
 
-
 def least_sq(x, y):
     A = np.vstack([x, np.ones(len(x))]).T
     m, b = np.linalg.lstsq(A, y, rcond=None)[0]
@@ -62,3 +59,5 @@ def convert_adjacent_to_true(bool_array):
         bool_array = bool_array.at[y - 1, x].set(True)
     return bool_array
 
+
+#

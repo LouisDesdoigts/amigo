@@ -40,8 +40,6 @@ requires = [
     "wheel"]
 build-backend = "setuptools.build_meta"
 
-[project.optional-dependencies]
-
 [tool.black]
 line-length = 99
 

@@ -1,5 +1,4 @@
 import jax.numpy as np
-import dLux.utils as dlu
 import matplotlib.pyplot as plt
 
 # from interferometry import pairwise_vectors, osamp_freqs
@@ -26,3 +25,5 @@ def plot_losses(losses, start, stop=-1):
     plt.tight_layout()
     plt.show()
 
+
+#

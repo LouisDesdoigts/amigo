@@ -50,3 +50,6 @@ class DynamicAMI(dl.layers.optical_layers.OpticalLayer):
             return getattr(self.transformation, key)
         else:
             raise AttributeError(f"Interpolator has no attribute {key}")
+
+
+#

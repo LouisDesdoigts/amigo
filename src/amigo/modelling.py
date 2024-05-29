@@ -196,3 +196,6 @@ def fast_model_fn(model, exposures, with_BFE=True, to_BFE=False, zero_idx=-1, no
 
     # return ramp
     return jtu.tree_map(lambda x: np.diff(x, axis=0), ramps)
+
+
+#

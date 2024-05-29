@@ -14,7 +14,16 @@ from . import optical_layers
 from . import detector_layers
 from . import stats
 
-# pipelines.py - requires other random shit to install, make this an optional install
-# dependency so we dont have to fuck around with CRDS paths in the amigo install
-
-# plotting.py is old
+__all__ = [
+    core,
+    BFE,
+    CNN,
+    files,
+    FIM,
+    fitting,
+    interferometry,
+    misc,
+    optical_layers,
+    detector_layers,
+    stats,
+]

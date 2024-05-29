@@ -7,7 +7,7 @@ import jax.tree_util as jtu
 from jax import vmap
 import dLux.utils as dlu
 import dLux as dl
-from jax.scipy.stats import multivariate_normal as mvn, norm
+from jax.scipy.stats import multivariate_normal as mvn
 from .detector_layers import Rotate, ApplySensitivities
 from .optical_layers import DynamicAMI
 from .files import prep_data, get_wss_ops, find_position
@@ -18,12 +18,14 @@ import jax.scipy as jsp
 from .stats import get_slope_cov
 from .modelling import model_fn
 
+
 class Exposure(zdx.Base):
     """
-    A class to hold all the data relevant to a single exposure, allowing it to be 
+    A class to hold all the data relevant to a single exposure, allowing it to be
     modelled.
 
     """
+
     data: Array
     variance: Array
     zero_point: Array
@@ -36,7 +38,7 @@ class Exposure(zdx.Base):
     star: str = eqx.field(static=True)
     key: str = eqx.field(static=True)
 
-    def __init__(self, file, opd=None, key_fn=None, ms_thresh=-3., as_psf=False):
+    def __init__(self, file, opd=None, key_fn=None, ms_thresh=-3.0, as_psf=False):
 
         if key_fn is None:
             key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:4])
@@ -56,7 +58,7 @@ class Exposure(zdx.Base):
         self.support = np.array(support)
         self.key = key_fn(file)
         self.opd = opd
-        self.zero_point = np.asarray(file['ZPOINT'].data, float)
+        self.zero_point = np.asarray(file["ZPOINT"].data, float)
 
     def print_summary(self):
         print(
@@ -79,7 +81,7 @@ class Exposure(zdx.Base):
         covariance, but it seems to give nan likelihoods when read_noise > ~6. As such
         we leave the _capability_ here but set the read_noise to default of zero.
         """
-        
+
         # Get the model, data, and variances
         slope_vec = self.to_vec(slope)
         data_vec = self.to_vec(self.data)
@@ -100,7 +102,7 @@ class Exposure(zdx.Base):
             return self.from_vec(likelihood)
             # nan_arr = (np.nan * np.ones_like(self.data[0]))
             # return nan_arr.at[*self.support].set(likelihood)
-        
+
         # else, return vector
         return likelihood
 
@@ -130,14 +132,14 @@ class Exposure(zdx.Base):
         residual = data - slopes
         # loglike_im = self.loglike_im(slope)
         loglike_im = self.log_likelihood(slopes, return_im=True)
-        
+
         nan_mask = np.where(np.isnan(loglike_im))
         slopes = slopes.at[:, *nan_mask].set(np.nan)
         data = data.at[:, *nan_mask].set(np.nan)
 
         final_loss = np.nansum(-loglike_im) / np.prod(np.array(data.shape[-2:]))
 
-        norm_res_slope = residual / (self.variance ** 0.5)
+        norm_res_slope = residual / (self.variance**0.5)
         norm_res_slope = norm_res_slope.at[:, *nan_mask].set(np.nan)
 
         norm_res_vec = self.to_vec(norm_res_slope)
@@ -186,9 +188,7 @@ class Exposure(zdx.Base):
 
                 plt.figure(figsize=(15, 4))
                 ax = plt.subplot(1, 3, 1)
-                ax.set_title(
-                    f"Noise normalised residual sigma: {norm_res_vec.std():.3}"
-                )
+                ax.set_title(f"Noise normalised residual sigma: {norm_res_vec.std():.3}")
                 ax.hist(norm_res_vec.flatten(), bins=50, density=True)
 
                 ax2 = ax.twinx()
@@ -196,10 +196,8 @@ class Exposure(zdx.Base):
                 ax2.set_ylim(0)
 
                 ax = plt.subplot(1, 3, 2)
-                ax.set_title(
-                    f"Noise normalised residual sigma: {norm_res_vec.std():.3}"
-                )
-                bins = ax.hist(norm_res_vec.flatten(), bins=50)[0]
+                ax.set_title(f"Noise normalised residual sigma: {norm_res_vec.std():.3}")
+                ax.hist(norm_res_vec.flatten(), bins=50)[0]
                 ax.semilogy()
 
                 # ax2 = ax.twinx()
@@ -221,9 +219,7 @@ class Exposure(zdx.Base):
             plt.subplot(1, 3, 1)
             plt.title("Mean Pixel Response Function")
             v = np.max(np.abs(model.detector.sensitivity.SRF - 1))
-            plt.imshow(
-                model.detector.sensitivity.SRF, vmin=1 - v, vmax=1 + v, cmap=seismic
-            )
+            plt.imshow(model.detector.sensitivity.SRF, vmin=1 - v, vmax=1 + v, cmap=seismic)
             plt.colorbar()
 
             FF = dlu.resize(model.detector.sensitivity.FF, 80)
@@ -339,7 +335,6 @@ class Exposure(zdx.Base):
             plt.show()
 
 
-
 class ExposureFit(Exposure):
     position: Array
     aberrations: Array
@@ -347,14 +342,7 @@ class ExposureFit(Exposure):
     one_on_fs: Array
     coherence: Array
 
-    def __init__(
-        self, 
-        file, 
-        optics,
-        opd=None, 
-        key_fn=None, 
-        ms_thresh=-3., 
-        use_pre_calc_fda=True):
+    def __init__(self, file, optics, opd=None, key_fn=None, ms_thresh=-3.0, use_pre_calc_fda=True):
 
         super().__init__(file, opd=opd, key_fn=key_fn, ms_thresh=ms_thresh)
 
@@ -366,7 +354,7 @@ class ExposureFit(Exposure):
             FDA = np.zeros_like(optics.pupil.coefficients)
 
         # TODO: Interpolate?
-        psf = self.data[0].at[np.where(np.isnan(self.data[0]))].set(0.0) 
+        psf = self.data[0].at[np.where(np.isnan(self.data[0]))].set(0.0)
         raw_flux = (80**2) * np.nanmean(self.data[-1]) * (self.ngroups)
         self.position = find_position(psf, optics.psf_pixel_scale)
         self.aberrations = FDA
@@ -376,13 +364,15 @@ class ExposureFit(Exposure):
 
     def update_params(self, model):
         return self.set(
-            ['position', 'aberrations', 'flux', 'one_on_fs'],
+            ["position", "aberrations", "flux", "one_on_fs"],
             [
-                model.positions[self.key], 
-                model.aberrations[self.key], 
-                model.fluxes[self.key], 
-                model.one_on_fs[self.key]]
-            )
+                model.positions[self.key],
+                model.aberrations[self.key],
+                model.fluxes[self.key],
+                model.one_on_fs[self.key],
+            ],
+        )
+
 
 class PupilAmplitudes(dl.layers.optics.OpticalLayer):
     basis: Array
@@ -441,9 +431,7 @@ class FreeSpace(dl.layers.optics.OpticalLayer):
 
     def apply(self, wf):
         phasor_out = plane_to_plane(wf, self.distance)
-        return wf.set(
-            ["amplitude", "phase"], [np.abs(phasor_out), np.angle(phasor_out)]
-        )
+        return wf.set(["amplitude", "phase"], [np.abs(phasor_out), np.angle(phasor_out)])
 
 
 class AMIOptics(dl.optical_systems.AngularOpticalSystem):
@@ -457,9 +445,9 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         free_space_locations=[],
         psf_npixels=80,
         oversample=4,
-        pixel_scale = 0.065524085,
-        diameter = 6.603464,
-        wf_npixels = 1024,
+        pixel_scale=0.065524085,
+        diameter=6.603464,
+        wf_npixels=1024,
     ):
         """Free space locations can be 'before', 'after'"""
         self.wf_npixels = wf_npixels
@@ -469,7 +457,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         self.psf_pixel_scale = pixel_scale
 
         # Get the primary mirror transmission
-        file_path = pkg.resource_filename(__name__, 'data/primary.npy')
+        file_path = pkg.resource_filename(__name__, "data/primary.npy")
         transmission = np.load(file_path)
         # Create the primary
         primary = dlw.JWSTAberratedPrimary(
@@ -483,7 +471,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
 
         # Load the values into the primary
         n_fda = primary.basis.shape[1]
-        file_path = pkg.resource_filename(__name__, 'data/FDA_coeffs.npy')
+        file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
         primary = primary.set("coefficients", np.load(file_path)[:, :n_fda])
 
         if opd is None:
@@ -502,22 +490,21 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             ).basis[:, 0]
             layers += [("holes", PupilAmplitudes(np.flip(pupil_basis, axis=1)))]
 
-        if 'before' in free_space_locations:
-            layers += [("free_space_before", FreeSpace(0.))]
+        if "before" in free_space_locations:
+            layers += [("free_space_before", FreeSpace(0.0))]
 
         if pupil_mask is None:
             pupil_mask = DynamicAMI(f2f=0.80, normalise=normalise)
         layers += [("pupil_mask", pupil_mask)]
 
-        if 'after' in free_space_locations:
-            layers += [("free_space_after", FreeSpace(0.))]
+        if "after" in free_space_locations:
+            layers += [("free_space_after", FreeSpace(0.0))]
 
         # Set the layers
         self.layers = dlu.list2dictionary(layers, ordered=True)
 
 
 import dLux as dl
-import dLux.utils as dlu
 from dLuxWebbpsf.utils.interpolation import _map_coordinates
 
 
@@ -533,7 +520,6 @@ def pix2arr(coords, pscale=1):
     return (coords / pscale) + shift
 
 
-
 class PixelAnisotropy(dl.layers.detector_layers.DetectorLayer):
     transform: dl.CoordTransform
     order: int
@@ -541,25 +527,22 @@ class PixelAnisotropy(dl.layers.detector_layers.DetectorLayer):
     def __init__(self, order=3):
         self.transform = dl.CoordTransform(compression=np.ones(2))
         self.order = int(order)
-    
+
     def __getattr__(self, key):
         if hasattr(self.transform, key):
             return getattr(self.transform, key)
         raise AttributeError(f"PixelAnisotropy has no attribute {key}")
 
-
     def apply(self, PSF):
         npix = PSF.data.shape[0]
         transformed = self.transform.apply(dlu.pixel_coords(npix, npix * PSF.pixel_scale))
         coords = np.roll(pix2arr(transformed, PSF.pixel_scale), 1, axis=0)
-        interp_fn = lambda x: _map_coordinates(
-            x, coords, order=3, mode="constant", cval=0.0
-        )
+        interp_fn = lambda x: _map_coordinates(x, coords, order=3, mode="constant", cval=0.0)
         return PSF.set("data", interp_fn(PSF.data))
 
 
 class SUB80Ramp(dl.detectors.LayeredDetector):
-    dark_current : Array
+    dark_current: Array
 
     def __init__(
         self,
@@ -571,7 +554,6 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
         npixels_in=80,
         anisotropy=True,
         dark_current=0.0,
-
     ):
         # Load the FF
         if FF is None:
@@ -580,7 +562,7 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
             if npixels_in != 80:
                 pad = (npixels_in - 80) // 2
                 FF = np.pad(FF, pad, constant_values=1)
-        
+
         if SRF is None:
             SRF = np.ones((oversample, oversample))
 
@@ -597,8 +579,6 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
         self.layers = dlu.list2dictionary(layers, ordered=True)
 
         self.dark_current = np.array(dark_current, float)
-
-
 
 
 class BaseModeller(zdx.Base):
@@ -638,6 +618,7 @@ def _is_tree(x):
     # return isinstance(x, (list, dict, tuple, eqx.Module))
     return not eqx.is_array_like(x)
 
+
 class ModelHistory(BaseModeller):
     """
     Tracks the history of a set of parameters in a model via tuples.
@@ -670,9 +651,7 @@ class ModelHistory(BaseModeller):
             if _is_tree(new_leaf):
                 append_fn = lambda history, value: history + [value]
                 leaf_fn = lambda leaf: isinstance(leaf, list)
-                new_leaf_history = jtu.tree_map(
-                    append_fn, leaf_history, new_leaf, is_leaf=leaf_fn
-                )
+                new_leaf_history = jtu.tree_map(append_fn, leaf_history, new_leaf, is_leaf=leaf_fn)
                 history[param] = new_leaf_history
 
             # Non-tree case
@@ -684,7 +663,7 @@ class ModelHistory(BaseModeller):
 class AmigoHistory(ModelHistory):
     """
     Adds plotting and convenience functions
-    
+
     TODO: Get ith
     TODO: Get exposure vals
     TODO: Get exposure fit?
@@ -738,9 +717,7 @@ class AmigoHistory(ModelHistory):
             return values
         return np.concatenate(values, axis=-1)
 
-    def _plot_ax(
-        self, leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, end=-1
-    ):
+    def _plot_ax(self, leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, end=-1):
 
         if exposures is not None:
             keys = [exp.key for exp in exposures]
@@ -782,7 +759,7 @@ class AmigoHistory(ModelHistory):
         # print(start, end)
         arr = arr[start:end]
         epochs = np.arange(len(arr))
-        ax.set(xlabel="Epochs", title=param)#, xlim=(start, epochs[end]))
+        ax.set(xlabel="Epochs", title=param)  # , xlim=(start, epochs[end]))
 
         match param:
             case "positions":
@@ -870,3 +847,6 @@ class AmigoHistory(ModelHistory):
             case _:
                 print(f"No formatting function for {param}")
                 ax.plot(epochs, arr, **kwargs)
+
+
+#

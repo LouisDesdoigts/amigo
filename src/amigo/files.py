@@ -5,9 +5,7 @@ from astroquery.simbad import Simbad
 import pyia
 import pkg_resources as pkg
 import numpy as onp
-from jax import vmap
-from .stats import check_symmetric, check_positive_semi_definite, build_cov
-from .misc import convert_adjacent_to_true, fit_slope, slope_im
+from .misc import slope_im
 from .interferometry import uv_hex_mask
 from webbpsf import mast_wss
 from xara.core import determine_origin
@@ -392,3 +390,6 @@ def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=Fa
 
         masks[filt] = np.array(_masks)
     return masks
+
+
+#

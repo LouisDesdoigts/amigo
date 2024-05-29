@@ -219,3 +219,6 @@ def uv_model(vis, psfs, mask, cplx=False):
 
 def applied_splodges(masks, vis):
     return vmap(splodge_mask, (0, None))(masks, vis)
+
+
+#
