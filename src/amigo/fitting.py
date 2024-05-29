@@ -1,4 +1,3 @@
-from tqdm.notebook import tqdm
 import zodiax as zdx
 import jax.numpy as np
 import equinox as eqx
@@ -7,9 +6,18 @@ import optax
 import jax.tree_util as jtu
 import time
 from datetime import timedelta
-from copy import deepcopy
 from typing import Any
 from jax import Array
+from .core import AmigoHistory
+
+# import tqdm appropriately
+from IPython import get_ipython
+if get_ipython() is not None:
+    # Running in Jupyter Notebook
+    from tqdm.notebook import tqdm
+else:
+    # Running in a script or other non-Jupyter environment
+    from tqdm import tqdm
 
 def get_optimiser(pytree, parameters, optimisers):
     # Pre-wrap single inputs into a list since optimisers have a length of 2
@@ -46,7 +54,6 @@ def get_optimiser(pytree, parameters, optimisers):
 
     # Return
     return (optim, opt_state)
-
 
 
 # Array
@@ -93,13 +100,16 @@ def optimise(
     loss_fn,
     epochs,
     optimisers,
-    grad_fn=lambda grads, args, optimisers: grads,
+    grad_fn=lambda model, grads, args, optimisers: grads,
     norm_fn=lambda model, args: model,
     update_fn=lambda updates, args: updates,
     print_grads=False,
     verbose=True,
     return_state=False,
     nan_method="none",
+    no_history=[],  # List of parameters to NOT track histry for (ie NN weights)
+    args_updates=[],
+    args_fn=lambda model, args: args,
 ):
     """nan_method: str, either 'debug' or 'zero', 'none'"""
     params = list(optimisers.keys())
@@ -133,13 +143,11 @@ def optimise(
             return grads
 
     else:
-        raise ValueError(
-            f"nan_method must be 'debug', 'zero' or 'none', got {nan_method}"
-        )
+        raise ValueError(f"nan_method must be 'debug', 'zero' or 'none', got {nan_method}")
 
     # Define faster step function - uses args from inside fn
     @eqx.filter_jit
-    @eqx.debug.assert_max_traces(max_traces=1)  # Probably not needed anymore
+    # @eqx.debug.assert_max_traces(max_traces=1)  # Probably not needed anymore
     def step_fn(model, opt_state, args):
         # This disappears when compiled, so use it as a compile check
         print("Step fn compiling...")
@@ -147,7 +155,7 @@ def optimise(
         # Calculate the loss and gradient
         loss, grads = val_grad_fn(model, args)
 
-        grads = grad_fn(grads, args, optimisers)
+        grads = grad_fn(model, grads, args, optimisers)
         grads = nan_check(grads)
 
         # Apply the update
@@ -158,93 +166,58 @@ def optimise(
         model = norm_fn(model, args)
         return model, loss, opt_state
 
-    # Get the params from each model
-    # from CNN import ConvBFE
-
-    params = {}
-    for param in optimisers.keys():
-        leaf = deepcopy(model.get(param))  # Mother fucker is mutable
-        # Store dict as list and append along entries
-        if isinstance(leaf, dict):
-            for p in leaf.keys():
-                leaf[p] = [leaf[p]]
-            params[param] = leaf
-
-        
-        elif isinstance(leaf, eqx.Module):
-            continue
-            filtered = eqx.filter(leaf, eqx.is_array)
-            flattened = jtu.tree_map(lambda x: x.flatten(), filtered)
-            values = np.concatenate(jtu.tree_leaves(flattened))
-            params[param] = [values]
-
-        else:
-            # Else is array, store as list
-            params[param] = [leaf]
-
-    # TODO: Build this into the core BaseModeller / zodiax params class
-    def configure_params(model, params):
-        for key, value in params.items():
-            # If entry is list, we must append along the entries
-            if isinstance(value, dict):
-                for p in value.keys():
-                    value[p].append(model.get(key)[p])
-            # If entry is _class_ we filter out non-arrays and flatten everything
-            elif isinstance(model.get(key), eqx.Module):
-                continue
-                filtered = eqx.filter(value, eqx.is_array)
-                flattened = jtu.tree_map(lambda x: x.flatten(), filtered)
-                values = np.concatenate(jtu.tree_leaves(flattened))
-                params[key].append(values)
-            else:
-                # Else is array, append to list
-                params[key].append(model.get(key))
-
-        return params
-
+    # Create model history
+    tracked = [param for param in params if param not in no_history]
+    model_history = AmigoHistory(model, tracked)
 
     # Compile call
     t0 = time.time()
     model, loss, opt_state = step_fn(model, opt_state, args)
-    params = configure_params(model, params)
-
-    # Calculate elapsed time
     elapsed_time = time.time() - t0
     formatted_time = str(timedelta(seconds=int(elapsed_time)))
 
     print(f"Compile Time: {formatted_time}")
     print(f"Initial Loss: {loss:,.2f}")
 
+    # Append to model histroy
+    model_history = model_history.append(model)
+
     looper = range(1, epochs)
     if verbose:
-        looper = tqdm(looper, desc=f"Loss: {loss:,.2f}, Change: {0.}")
+        looper = tqdm(looper, desc=f"Loss: {loss:,.2f}, Change: {0.}", initial=1, total=epochs)
 
     losses = [loss]
     for i in looper:
         if np.isnan(loss):
             print(f"Loss is NaN on {i} th epoch, exiting loop")
             if return_state:
-                return model, losses, params, opt_state
-            return model, losses, params
+                return model, losses, model_history, opt_state
+            return model, losses, model_history
+
+        if i in args_updates:
+            args = args_fn(model, args)
 
         model, _loss, opt_state = step_fn(model, opt_state, args)
-        
+
         if verbose:
             delta_loss = _loss - loss
             looper.set_description(f"Loss: {loss:,.2f}, Change: {delta_loss:,.2f}")
-        
+
         loss = _loss
         losses.append(loss)
-        params = configure_params(model, params)
-
+        # model_history = append_fn(tracked, model_history, model)
+        model_history = model_history.append(model)
 
     # Final execution time
     elapsed_time = time.time() - t0
     formatted_time = str(timedelta(seconds=int(elapsed_time)))
 
-    print(f"Compile Time: {formatted_time}")
+    print(f"Full Time: {formatted_time}")
     print(f"Final Loss: {loss:,.2f}")
 
     if return_state:
-        return model, losses, params, opt_state
-    return model, losses, params
+        return model, losses, model_history, opt_state
+    return model, losses, model_history
+
+
+#

@@ -1,11 +1,14 @@
 import os
-import numpy as np
+import jax.numpy as np
+import shutil
+import numpy as onp
 import astropy
 from astropy.io import fits
 from jwst.pipeline import Detector1Pipeline
+from tqdm.notebook import tqdm
 
 
-def process_stage0(directory, output_dir="stage1/"):
+def process_uncal(directory, output_dir="stage1/", verbose=False, AMI_only=True, reprocess=False):
     # string manip to make sure we have the right format
     if directory[-1] != "/":
         directory += "/"
@@ -17,7 +20,8 @@ def process_stage0(directory, output_dir="stage1/"):
 
     # Check if there are any files to process
     if len(files) == 0:
-        print("No _uncal.fits files found, no processing done.")
+        if verbose:
+            print("No _uncal.fits files found, no processing done.")
         return
 
     # Get the file paths
@@ -29,7 +33,8 @@ def process_stage0(directory, output_dir="stage1/"):
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
-    print("Running stage 1...")
+    if verbose:
+        print("Running stage 1...")
     for file_path in files:
         file_name = file_path.split("/")[-1]
         file_root = "_".join(file_name.split("_")[:-2])
@@ -40,13 +45,15 @@ def process_stage0(directory, output_dir="stage1/"):
 
         # Check if the file is a NIS_AMI file
         if os.path.exists(final_output_path):
-            print("File already exists, skipping...")
+            if verbose:
+                print("File already exists, skipping...")
             continue
 
         # Check if the file is a NIS_AMI file
         file = fits.open(file_path)
-        if file[0].header["EXP_TYPE"] != "NIS_AMI":
-            print("Not a NIS_AMI file, skipping...")
+        if AMI_only and file[0].header["EXP_TYPE"] != "NIS_AMI":
+            if verbose:
+                print("Not a NIS_AMI file, skipping...")
             continue
 
         # Run stage 1
@@ -57,38 +64,97 @@ def process_stage0(directory, output_dir="stage1/"):
         pl1.save_calibrated_ramp = True  # save the output
 
         # These are all the ones that are run at present, in order
-        pl1.dq_init.skip = False
-        pl1.saturation.skip = False
-        pl1.ipc.skip = False
-        pl1.superbias.skip = False
-        pl1.refpix.skip = False
-        pl1.linearity.skip = False
-        pl1.persistence.skip = False
-        pl1.dark_current.skip = False
+        pl1.dq_init.skip = False  # This is run
+        pl1.saturation.skip = False  # This is run
+        pl1.ipc.skip = True
+        pl1.superbias.skip = False  # This is run
+        pl1.refpix.skip = True
+        pl1.linearity.skip = True
+        pl1.persistence.skip = True
+        pl1.dark_current.skip = True
         pl1.charge_migration.skip = True
-        pl1.jump.skip = False
+        pl1.jump.skip = False  # This is run
         pl1.ramp_fit.skip = True
 
         pl1.run(str(file_path))  # run pipeline from uncal file
 
-    print("Done\n")
+    if verbose:
+        print("Done\n")
 
     return output_path
 
 
-def process_stage1(directory, output_dir="calgrps/", refpix_correction=0):
+def sigma_clip(array, sigma=5.0, axis=0):
+    masked = onp.ma.masked_invalid(array, copy=True)
+    clipped = astropy.stats.sigma_clip(masked, axis=axis, sigma=sigma)
+    return onp.ma.filled(clipped, fill_value=onp.nan)
+
+
+def nan_dqd(file, n_groups: int = None, dq_thresh: float = 0.0):
+    # Get the bits
+    dq = np.array(file["PIXELDQ"].data) > dq_thresh
+    group_dq = np.array(file["GROUPDQ"].data) > 0
+    electrons = np.array(file["SCI"].data)
+
+    # Nan the bad bits
+    full_dq = group_dq | dq[None, None, ...]
+
+    if n_groups is None:
+        return np.where(full_dq, np.nan, electrons)
+
+    # for truncating the top of the ramp
+    elif isinstance(n_groups, int):
+        return np.where(full_dq[:, :n_groups], np.nan, electrons[:, :n_groups])
+    return np.where(full_dq, np.nan, electrons)
+
+
+def calc_mean_and_var(data, axis=0):
+    # Get the support of the data - ie how many integrations contribute to the data
+    support = np.asarray(~np.isnan(data), int).sum(axis)
+
+    # Mean after sigma clipping - The 'robust mean', better for quantised data
+    mean = np.nanmean(data, axis=axis)
+
+    # We dont want the error of the mean, we want the _STANDARD ERROR OF THE MEAN_,
+    # ie scaled by the sqrt of the number of samples
+    var = np.nanvar(data, axis=axis)
+    var /= support
+
+    return mean, var
+
+
+def delete_contents(path):
+    for file_name in os.listdir(path):
+        file_path = os.path.join(path, file_name)
+        try:
+            if os.path.isfile(file_path):
+                os.unlink(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        except Exception as e:
+            print("Failed to delete %s. Reason: %s" % (file_path, e))
+
+
+def process_calslope(
+    directory,
+    output_dir="calslope/",
+    sigma=0,
+    chunk_size=0,
+    n_groups=None,  # how many groups of the ramp to use
+    dq_thresh=0.0,  # threshold value for the PIXELDQ flags
+    clean_dir=True,
+):
     """
-    ref_pix_correction: int
-        What reference pixel correction to apply. 0 for none, 1 for first, 2 for second.
-        'first' subtracts off the reference pixel value for _each group and
-        integration_, which is then masked and sigma clipped. 'second' performs the
-        masking and sigma clipping on both the data and reference pixel first, and then
-        subtracts the single reference pixel value for each group and column from the
-        cleaned data.
+    Chunk size determines the maximum number of integrations in a 'chunk'. Each chunk
+    is saved to its own file with an integer extension added. This breaks the data set
+    into smaller time series to help avoid issues with any time-variation in the data.
+    A chunk_size of zero will do no chunking and process the data all in one.
+
+    This will (presently) always reprocess data
+
+    if clean_dir is True, the existisng contents of the output_dir will be deleted prior
+    to procesing, so ensure no old files are hanging around
     """
-    if refpix_correction not in [0, 1, 2]:
-        raise ValueError("ref_pix_correction must be 0, 1, or 2.")
-    # string manip to make sure we have the right format
     if directory[-1] != "/":
         directory += "/"
     if output_dir[-1] != "/":
@@ -111,66 +177,117 @@ def process_stage1(directory, output_dir="calgrps/", refpix_correction=0):
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
+    # Clear the existsing files (since we might use different chunk sizes, and we do not
+    # want to have old files hang around)
+    if clean_dir:
+        print("Cleaning existing directory")
+        delete_contents(output_path)
+
     # Iterate over files
-    print("Running calgrps processing...")
-    for file_path in files:
+    print("Running calslope processing...")
+    for file_path in tqdm(files):
         file_name = file_path.split("/")[-1]
         file_root = "_".join(file_name.split("_")[:-2])
 
-        # Check if the file is a NIS_AMI file
-        final_output_path = output_path + file_root + "_nis_calgrps.fits"
-        if os.path.exists(final_output_path):
-            print("File already exists, skipping...")
-            continue
+        file = fits.open(file_path)
 
         # Check if the file is a NIS_AMI file
-        file = fits.open(file_path)
         if file[0].header["EXP_TYPE"] != "NIS_AMI":
             print("Not a NIS_AMI file, skipping...")
             continue
 
-        # Get the bits
-        dq = np.array(file["PIXELDQ"].data) > 0
-        group_dq = np.array(file["GROUPDQ"].data) > 0
-        electrons = np.array(file["SCI"].data)  # * file[0].header["TFRAME"]
+        # Skip single group files
+        if file[0].header["NGROUPS"] == 1:
+            print("Only one group, skipping...")
+            continue
 
-        # Reference pixel correction 1
-        if refpix_correction == 1:
-            electrons += electrons[:, :, 4:5, :]
+        print(file[0].header["TARGPROP"], end=" ")
+        print(file[0].header["NINTS"])
 
-        # Clean and clip
-        full_dq = group_dq | dq[None, None, ...]
-        cleaned = np.where(full_dq, np.nan, electrons)
-
-        # Mask the invalid values and sigma clip
-        masked = np.ma.masked_invalid(cleaned, copy=True)
-        masked_clipped = astropy.stats.sigma_clip(masked, axis=0, sigma=3)
-
-        # Fill the masked values with nans
-        cleaned_ramp = np.ma.filled(masked_clipped, fill_value=np.nan)
-
-        # TODO: Fit gaussian to the ramp value? - Better mean and error?
-        # Get the ramp and error
-        # Mean after sigma clipping - 'Robust mean'
-        # This is quantised data, so mean is better than median
-        ramp = np.nanmean(cleaned_ramp, axis=0)
-        err = np.nanstd(cleaned_ramp, axis=0)
-
-        # Reference pixel correction 2
-        if refpix_correction == 2:
-            refpix = electrons[:, :, 4:5, :]
-            refpix_clipped = astropy.stats.sigma_clip(refpix, axis=0, sigma=3)
-            cleaned_refpix = np.ma.filled(refpix_clipped, fill_value=np.nan)
-            ramp += np.nanmedian(cleaned_refpix, axis=0)
-
-        # Write to file
-        file["SCI"].data = ramp
-        file["ERR"].data = err
-
-        # Save as calgrp
-        file_calgrps = os.path.join(final_output_path)
-        file.writeto(file_calgrps, overwrite=True)
+        # Get the data
+        data = nan_dqd(file, dq_thresh=dq_thresh, n_groups=n_groups)
         file.close()
+
+        if chunk_size == 0:
+            chunks = [data]
+            nchunks = 1
+        else:
+            nints = data.shape[0]
+            if nints < chunk_size:
+                nchunks = 1
+            else:
+                nchunks = np.round(nints / chunk_size).astype(int)
+            chunks = np.array_split(data, nchunks)
+
+        print(f"Breaking into {nchunks} chunks")
+
+        for i, chunk in enumerate(chunks):
+
+            # Check if the file is a NIS_AMI file
+            file_name = file_root + f"_{i+1:0{4}}" + "_nis_calslope.fits"
+            file_calslope = os.path.join(output_path + file_name)
+
+            # Create the new file
+            shutil.copy(file_path, file_calslope)
+
+            # Open new file
+            file = fits.open(file_calslope, mode="update")
+
+            # Remove the redundant extensions
+            del file["GROUPDQ"]
+            del file["ERR"]
+            del file["GROUP"]
+            del file["INT_TIMES"]
+
+            # Update the various headers
+            file[0].header["NCHUNKS"] = int(nchunks)
+            file[0].header["CHUNK"] = i + 1
+            file[0].header["CHUNKSZ"] = int(chunk_size)
+            file[0].header["NINTS"] = int(chunk.shape[0])
+            file[0].header["FILENAME"] = file_name
+            file[0].header["SIGMA"] = sigma
+
+            # Sigma clip the data, not the slopes. We sigma clip the data since the detector
+            # can not distinguish between real signal and bias, so its value couples
+            # through pixel non-linearities (ie pixel response, BFE)
+            if sigma > 0:
+                chunk = sigma_clip(chunk, sigma=sigma)
+
+            # Get slopes
+            slopes = np.diff(chunk, axis=1)
+            slope, slope_var = calc_mean_and_var(slopes)
+
+            # Zero-point - We may actually want to track this to feed into the
+            # forwards model. The bias/zero point will couple into the BFE, and so exposures
+            # the 'zero-point' of a dim exposure will be different to a bright exposure. As
+            # such we need to track this. With this zero-point, we theoretically should be
+            # able to fully re-build the data
+            zero_point, zero_point_var = calc_mean_and_var(chunk[:, 0])
+
+            # Save the data
+            file["SCI"].data = slope
+
+            # Save the variance as a separate extension
+            header = fits.Header()
+            header["EXTNAME"] = "SCI_VAR"
+            file.append(fits.ImageHDU(data=slope_var, header=header))
+
+            # Save the zero point as a separate extension
+            header = fits.Header()
+            header["EXTNAME"] = "ZPOINT"
+            file.append(fits.ImageHDU(data=zero_point, header=header))
+
+            # Save the zero point variance as a separate extension
+            header = fits.Header()
+            header["EXTNAME"] = "ZPOINT_VAR"
+            file.append(fits.ImageHDU(data=zero_point_var, header=header))
+
+            # Save as calslope
+            file.writeto(file_calslope, overwrite=True)
+            file.close()
 
     print("Done\n")
     return output_path
+
+
+#

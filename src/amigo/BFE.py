@@ -284,3 +284,230 @@ class PolyBFE(dl.detector_layers.DetectorLayer):
         # NOTE: the 4x downsample is a temporary hard-code to match the ConvBFE class
         image = dlu.downsample(image, 4, mean=False)
         return apply_BFE(image, self.coeffs, self.ksize, self.inds, self.oversample)
+
+
+### Simple BFE ###
+import dLux as dl
+import equinox as eqx
+import jax
+
+
+def apply_simple_BFE(
+    image,
+    coeffs,
+    orders,
+    ksize,
+    k,
+    oksize,
+    oversample,
+    return_bleed_kernels=False,
+    return_bleed=False,
+):
+    """ """
+    # npix = 80
+    # orders = np.array([1, 2], dtype=float)
+
+    # Shapes and sizes
+    npix = image.shape[0] // oversample
+    oksize = ksize * oversample
+    k = (oksize - 1) // 2
+
+    pixel_kernels = build_pixel_kernels(image, npix, k, oksize, oversample)
+    pixel_kernels = pixel_kernels.reshape(npix, npix, oksize**2)
+
+    # Normalise the pixel values to more reasonable numbers
+    # Saturation is ~70e3, so this gives a range of 0-70, however most AMI images have
+    # less than 20e3, so the real range is more like 0-20
+    pixel_kernels *= 1e-3
+
+    full_basis = pixel_kernels
+    full_basis = full_basis.reshape(npix, npix, -1)
+    vmap2d_im = lambda fn: vmap(vmap(fn, (0,)), (1,))
+
+    def apply_basis(coeffs, order):
+        fn = lambda basis: np.sum(coeffs * np.power(basis, order))
+        out = vmap2d_im(fn)(full_basis)
+        return out
+
+    # # OKAY, so this gives nan _hessians_, but not gradients
+    # bleeds = jax.vmap(apply_basis, (0, 0))(coeffs, orders)
+    # bleeding = bleeds.sum(0)
+
+    # This gives no-nans (grad or hessian), for some inexplicable reason
+    bleeds = jtu.tree_map(apply_basis, list(coeffs), orders)
+    bleeding = np.array(jtu.tree_leaves(bleeds)).sum(0)
+    bleeding -= bleeding.mean()
+
+    # Return just the bleeding if requested (as a dict)
+    if return_bleed:
+        return bleeding
+
+    # Calculate the final bled image (as an array)
+    image = dlu.downsample(image, 4, mean=False)
+    return image + bleeding
+
+
+class SimplePolyBFE(dl.detector_layers.DetectorLayer):
+    ksize: int = eqx.field(static=True)
+    oversample: int = eqx.field(static=True)
+    orders: list = eqx.field(static=True)
+    coeffs: jax.Array
+    oksize: int = eqx.field(static=True)
+    k: int = eqx.field(static=True)
+
+    def __init__(self, ksize, oversample, orders=[1]):
+        self.ksize = int(ksize)
+        self.oversample = int(oversample)
+        self.orders = orders
+
+        # Set up coefficients
+        self.oksize = self.ksize * self.oversample
+        self.k = (self.oksize - 1) // 2
+
+        norders = len(orders)
+        self.coeffs = np.zeros((norders, self.oksize**2))
+
+    def apply(self, PSF):
+        return
+
+    def apply_array(self, image):
+        return apply_simple_BFE(
+            image,
+            self.coeffs,
+            self.orders,
+            self.ksize,
+            self.k,
+            self.oksize,
+            self.oversample,
+        )
+
+
+def image_to_grads(image, scale=1e-2, use_psf=False):
+    ygrads, xgrads = np.gradient(image)
+    yygrads = np.gradient(ygrads)[0]
+    xxgrads = np.gradient(xgrads)[1]
+    if use_psf:
+        output = np.array([image, xgrads, ygrads, xxgrads, yygrads])
+    else:
+        output = np.array([xgrads, ygrads, xxgrads, yygrads])
+    return output * scale
+
+
+# def image_to_grads(image):
+#     ygrads, xgrads = np.gradient(image)
+#     rgrads = np.hypot(xgrads, ygrads)
+#     yygrads = np.gradient(ygrads)[0]
+#     xxgrads = np.gradient(xgrads)[1]
+#     rrgrads = np.hypot(yygrads, xxgrads)
+#     return np.array([image * 2e-3, rgrads * 5e-3, rrgrads * 1e-2])
+
+
+def apply_gradient_BFE(
+    image,
+    coeffs,
+    orders,
+    ksize,
+    k,
+    oksize,
+    oversample,
+    return_bleed_kernels=False,
+    return_bleed=False,
+    conserve_charge=True,
+    use_psf=False,
+):
+    """ """
+    # npix = 80
+    # orders = np.array([1, 2], dtype=float)
+
+    # Shapes and sizes
+    npix = image.shape[0] // oversample
+    oksize = ksize * oversample
+    k = (oksize - 1) // 2
+
+    # assert orders == [1]
+
+    # grads = image_to_grads(image, scale=1e-2)
+    grads = image_to_grads(image, use_psf=use_psf)
+    n_ims = len(grads)
+
+    kern_fn = lambda image: build_pixel_kernels(image, npix, k, oksize, oversample)
+    pixel_kernels = vmap(kern_fn, out_axes=-1)(grads)
+    pixel_kernels = pixel_kernels.reshape(npix, npix, n_ims, oksize**2)
+
+    full_basis = pixel_kernels
+    # full_basis = full_basis.reshape(npix, npix, -1)
+    vmap2d_im = lambda fn: vmap(vmap(fn, (0,)), (1,))
+
+    # fn = lambda basis: np.sum(coeffs * basis)
+    # bleeding = vmap2d_im(fn)(full_basis)
+    # bleeding -= bleeding.mean()
+
+    def apply_basis(coeffs, order):
+        fn = lambda basis: np.sum(coeffs * np.power(basis, order))
+        out = vmap2d_im(fn)(full_basis)
+        return out
+
+    # This gives no-nans (grad or hessian), for some inexplicable reason
+    bleeds = jtu.tree_map(apply_basis, list(coeffs), orders)
+    bleeding = np.array(jtu.tree_leaves(bleeds)).sum(0)
+
+    if conserve_charge:
+        bleeding -= bleeding.mean()
+
+    # Return just the bleeding if requested (as a dict)
+    if return_bleed:
+        return bleeding
+
+    # Calculate the final bled image (as an array)
+    image = dlu.downsample(image, 4, mean=False)
+    return image + bleeding
+
+
+class GradientPolyBFE(dl.detector_layers.DetectorLayer):
+    ksize: int = eqx.field(static=True)
+    oversample: int = eqx.field(static=True)
+    orders: list = eqx.field(static=True)
+    coeffs: jax.Array
+    oksize: int = eqx.field(static=True)
+    k: int = eqx.field(static=True)
+    conversed: bool = eqx.field(static=True)
+    use_psf: bool = eqx.field(static=True)
+
+    def __init__(self, ksize, oversample, orders=[1], conserved=True, use_psf=False):
+        self.ksize = int(ksize)
+        self.oversample = int(oversample)
+        self.orders = orders
+
+        # Set up coefficients
+        self.oksize = self.ksize * self.oversample
+        self.k = (self.oksize - 1) // 2
+
+        ngrads = len(image_to_grads(np.zeros((80, 80))))
+        self.coeffs = np.zeros((len(orders), ngrads, self.oksize**2))
+
+        self.conversed = conserved
+        self.use_psf = use_psf
+
+    def apply(self, PSF):
+        return
+
+    def apply_array(self, image):
+        return apply_gradient_BFE(
+            image,
+            self.coeffs,
+            self.orders,
+            self.ksize,
+            self.k,
+            self.oksize,
+            self.oversample,
+            conserve_charge=self.conversed,
+        )
+
+
+class DummyBFE(dl.detector_layers.DetectorLayer):
+    def apply(self, PSF):
+        return
+
+    def apply_array(self, image):
+        downsample_fn = lambda x: dlu.downsample(x, 4, mean=False)
+        return vmap(downsample_fn)(image)

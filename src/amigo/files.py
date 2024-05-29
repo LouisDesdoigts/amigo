@@ -1,14 +1,15 @@
+import os
 import jax.numpy as np
 import jax.scipy as jsp
 from astroquery.simbad import Simbad
 import pyia
 import pkg_resources as pkg
 import numpy as onp
-from jax import vmap
-from .stats import check_symmetric, check_positive_semi_definite, build_covariance_matrix
-from .misc import convert_adjacent_to_true, fit_slope, slope_im
+from .misc import slope_im
+from .interferometry import uv_hex_mask
 from webbpsf import mast_wss
 from xara.core import determine_origin
+from tqdm.notebook import tqdm
 import amigo
 
 
@@ -64,12 +65,16 @@ def get_simbad_spectral_type(source_id):
     """Returns the spectral type and quality from Simbad for a given source ID."""
     Simbad.add_votable_fields("sptype", "sp_qual")
     table = Simbad.query_object(source_id)
+    if table is None:
+        return None, None
     return table["SP_TYPE"].tolist()[0], table["SP_QUAL"].tolist()[0]
 
 
 def get_gaia_Teff(source_id, data_dr="dr3"):
     """Returns the Teff from Gaia for a given source ID."""
     result_table = Simbad.query_objectids(source_id)
+    if result_table is None:
+        return []
     ids = []
     for x in result_table:
         if f"gaia {data_dr}" in x["ID"].lower():
@@ -85,7 +90,7 @@ def get_gaia_Teff(source_id, data_dr="dr3"):
         "teff_espucd",
         "teff_val",
     ]
-    
+
     Teffs_out = []
     for obj_id in ids:
         data = pyia.GaiaData.from_source_id(obj_id, source_id_dr="dr3", data_dr=data_dr)
@@ -109,8 +114,12 @@ def get_Teff(targ_name):
         return np.array(dr3_teffs).mean()
 
     # Then check Simbad -> Mamajeck?? table
-    spec_type, qual = get_simbad_spectral_type(targ_name)
-    # TODO: Use `MeanStars` to get Teff from spectral type
+    # Skip this for now till I have time to make it work
+    if False:
+        spec_type, qual = get_simbad_spectral_type(targ_name)
+        if spec_type is not None:
+            return pyia.spectral_type_to_Teff(spec_type)
+        # TODO: Use `MeanStars` to get Teff from spectral type
 
     # Finally, check DR2
     dr2_teffs = get_gaia_Teff(targ_name, data_dr="dr2")
@@ -157,9 +166,6 @@ def get_filters(files, nwavels=9):
     return filters
 
 
-
-
-
 def estimate_psf_and_bias(data):
     ngroups = len(data)
     ramp_bottom = data[:2]
@@ -168,74 +174,72 @@ def estimate_psf_and_bias(data):
     return psf * ngroups, bias
 
 
-
-def prep_data(file, read_noise, ms_thresh=0., bs_thresh=250, ngroups=None):
-    ramp = np.asarray(file["SCI"].data, float)    
-    err = np.asarray(file["ERR"].data, float)
+def prep_data(file, ms_thresh=None, as_psf=False):
+    data = np.asarray(file["SCI"].data, float)
+    var = np.asarray(file["SCI_VAR"].data, float)
     dq = np.asarray(file["PIXELDQ"].data > 0, bool)
 
-    # only using the first ngroups
-    if ngroups is not None:
-        total_groups = ramp.shape[0]
-        ramp = ramp[:ngroups]
-        err = err[:ngroups]
+    if ms_thresh is not None:
+        dq = dq.at[np.mean(data, axis=0) <= ms_thresh].set(True)
 
-    # Build the covariance matrix
-    cov = build_covariance_matrix(err, read_noise=read_noise, min_value=True)
+    badpix = np.load(pkg.resource_filename(__name__, "data/badpix.npy"))
+    dq = dq | badpix
 
-    # Check for bad pixels around dq'd pixels
-    dilated_dq = convert_adjacent_to_true(dq)
-    dq_edges = dilated_dq & ~dq
-    dq_edge_inds = np.array(np.where(dq_edges))
-    dq_edge_ramps = ramp[:, *dq_edge_inds].T
-    ms, bs = vmap(fit_slope)(dq_edge_ramps)
-    for i in range(len(dq_edge_ramps)):
-        if ms[i] <= ms_thresh:
-            dq = dq.at[*dq_edge_inds[:, i]].set(True)
-        if bs[i] > bs_thresh:
-            dq = dq.at[*dq_edge_inds[:, i]].set(True)
+    if as_psf:
+        supp_mask = ~np.isnan(data) & ~dq
+        support = np.where(supp_mask)
+        data = data.at[~supp_mask].set(np.nan)
+        var = var.at[~supp_mask].set(np.nan)
+        return data, var, support
 
-    # Set bad rows and cols
-    dq = dq.at[:4].set(True)  # Bottom 4 rows are bad
-    dq = dq.at[-1].set(True)  # Top row is bad
-    dq = dq.at[:, -2:].set(True)  # Right 2 columns are bad
-    dq = dq.at[:, 0].set(True)  # Left column is bad
-
-    # Check for symmetry and positive semi-definite
-    ngroups = ramp.shape[0]
-    flat_cov = cov.reshape(ngroups, ngroups, -1)
-    is_sym = vmap(check_symmetric, -1)(flat_cov).reshape(80, 80)
-    is_psd = vmap(check_positive_semi_definite, -1)(flat_cov).reshape(80, 80)
-    supp_mask = is_sym & is_psd & ~np.isnan(ramp.sum(0)) & ~dq
+    supp_mask = ~np.isnan(data.sum(0)) & ~dq
 
     # Nan the bad pixels
     support = np.where(supp_mask)
-    ramp = ramp.at[:, ~supp_mask].set(np.nan)
-    cov = cov.at[..., ~supp_mask].set(np.nan)
-    return ramp, cov, support
+    data = data.at[:, ~supp_mask].set(np.nan)
+    var = var.at[..., ~supp_mask].set(np.nan)
+
+    return data, var, support
+
 
 def get_wss_ops(files):
     opds = {}
     opd_files = []
     for file in files:
         date = file[0].header["DATE-BEG"]
-        opd0, opd1, t0, t1 = mast_wss.mast_wss_opds_around_date_query(
-            date, verbose=False
-        )
+        opd0, opd1, t0, t1 = mast_wss.mast_wss_opds_around_date_query(date, verbose=False)
         closest_fn, closest_dt = (opd1, t1) if abs(t1) < abs(t0) else (opd0, t0)
         opd_file = mast_wss.mast_retrieve_opd(closest_fn)
         if opd_file not in opds.keys():
-            opds[opd_file] = mast_wss.import_wss_opd(opd_file)[0].data
+            opd = mast_wss.import_wss_opd(opd_file)[0].data
+            opds[opd_file] = np.asarray(opd, float)
         opd_files.append(opds[opd_file])
     return opd_files
 
 
-def get_Teffs(files, default=4500):
+def get_Teffs(files, default=4500, straight_default=False, Teff_cache="files/Teffs"):
+    # Check whether the specified cache directory exists
+    if not os.path.exists(Teff_cache):
+        os.makedirs(Teff_cache)
+
     Teffs = {}
     for file in files:
         prop_name = file[0].header["TARGPROP"]
 
+        # if os.exists(f"{Teff_cache}/{prop_name}.npy"):
+        try:
+            Teffs[prop_name] = np.load(f"{Teff_cache}/{prop_name}.npy")
+            continue
+        except FileNotFoundError:
+            pass
+
         if prop_name in Teffs:
+            continue
+
+        # Temporary measure to get around gaia archive being dead
+        if straight_default:
+            Teffs[prop_name] = default
+            print("Warning using default Teff")
             continue
 
         Teff = get_Teff(file[0].header["TARGNAME"])
@@ -245,77 +249,86 @@ def get_Teffs(files, default=4500):
             Teffs[prop_name] = default
         else:
             Teffs[prop_name] = Teff
+            np.save(f"{Teff_cache}/{prop_name}.npy", Teff)
 
     return Teffs
 
-def get_amplitudes(files):
+
+def get_amplitudes(exposures, dc=False):
+    """If dc is True, an extra value for the dc term is included"""
+    if dc:
+        n = 22
+    else:
+        n = 21
     amplitudes = {}
-    for file in files:
-        prop_name = file[0].header["TARGPROP"]
-        filt = file[0].header["FILTER"]
-        if prop_name in amplitudes:
-            if filt in amplitudes[prop_name].keys():
-                continue
-            else:
-                amplitudes[prop_name][filt] = np.ones(21)
-        amplitudes[prop_name] = {filt: np.ones(21)}
+    for exp in exposures:
+        key = "_".join([exp.star, exp.filter])
+        if key not in amplitudes.keys():
+            amplitudes[key] = np.ones(n)
     return amplitudes
 
 
-def get_phases(files):
+def get_phases(exposures, dc=False):
+    """If dc is True, an extra value for the dc term is included"""
+    if dc:
+        n = 22
+    else:
+        n = 21
     phases = {}
-    for file in files:
-        prop_name = file[0].header["TARGPROP"]
-        filt = file[0].header["FILTER"]
-        if prop_name in phases:
-            if filt in phases[prop_name].keys():
-                continue
-            else:
-                phases[prop_name][filt] = np.zeros(21)
-        phases[prop_name] = {filt: np.zeros(21)}
+    for exp in exposures:
+        key = "_".join([exp.star, exp.filter])
+        if key not in phases.keys():
+            phases[key] = np.zeros(n)
     return phases
 
 
-def find_position(psf, pixel_scale):
+def get_coherence(exposures):
+    coherences = {}
+    for exp in exposures:
+        coherences[exp.key] = np.zeros(7)
+    return coherences
+
+
+def find_position(psf, pixel_scale=0.065524085):
     origin = np.array(determine_origin(psf, verbose=False))
     origin -= (np.array(psf.shape) - 1) / 2
     position = origin * pixel_scale * np.array([1, -1])
     return position
 
-def get_exposures(files, ngroups=None):
-    opds = get_wss_ops(files)
-    return [amigo.core.Exposure(file, opd=opd, ngroups=ngroups) for file, opd in zip(files, opds)]
 
-def initialise_params(exposures, pixel_scale=0.065524085):
-    FDA_coefficients = np.load(pkg.resource_filename(__name__, "data/FDA_coeffs.npy"))
+# def get_exposures(files, add_read_noise=False):
+def get_exposures(files, optics, ms_thresh=None, as_psf=False):
+    print("Prepping exposures...")
+    opds = get_wss_ops(files)
+    return [
+        amigo.core.ExposureFit(file, optics, opd=opd, ms_thresh=ms_thresh)
+        for file, opd in zip(files, opds)
+    ]
+
+
+def initialise_params(exposures):
     positions = {}
     fluxes = {}
     aberrations = {}
-    biases = {}
-    OneOnFs = {}
+    one_on_fs = {}
     aberrations = {}
     for exp in exposures:
-        psf_guess, bias = estimate_psf_and_bias(exp.data)
-        biases[exp.key] = bias
-        fluxes[exp.key] = psf_guess.sum() * 1.075  # Seems to be under estimated
-
-        # TODO: PSF Pixel scale
-        positions[exp.key] = find_position(psf_guess, pixel_scale)
-        OneOnFs[exp.key] = np.zeros((exp.ngroups, 80, 2))
-        aberrations[exp.key] = FDA_coefficients
+        positions[exp.key] = exp.position
+        aberrations[exp.key] = exp.aberrations
+        fluxes[exp.key] = exp.flux
+        one_on_fs[exp.key] = exp.one_on_fs
     return {
         "positions": positions,
         "fluxes": fluxes,
         "aberrations": aberrations,
-        "biases": biases,
-        "OneOnFs": OneOnFs,
+        "one_on_fs": one_on_fs,
     }
 
 
-def full_to_SUB80(full_arr, npix_out=80, fill=0.):
+def full_to_SUB80(full_arr, npix_out=80, fill=0.0):
     """
     This is taken from the JWST pipeline, so its probably correct.
-    
+
     The padding adds zeros to the edges of the array, keeping the SUB80 array centered.
     """
     xstart = 1045
@@ -329,3 +342,52 @@ def full_to_SUB80(full_arr, npix_out=80, fill=0.):
         pad = (npix_out - 80) // 2
         SUB80 = np.pad(SUB80, pad, constant_values=fill)
     return SUB80
+
+
+def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=False):
+    """
+    Note caches masks to disk for faster loading. The cache is indexed _relative_ to
+    where the file is run from.
+    """
+
+    # Check whether the specified cache directory exists
+    if not os.path.exists(mask_cache):
+        os.makedirs(mask_cache)
+
+    masks = {}
+    for file in files:
+        filt = file[0].header["FILTER"]
+        if filt in masks.keys():
+            continue
+        wavels = filters[filt][0]
+
+        calc_pad = 3  # 3x oversample on the mask calculation for soft edges
+        uv_pad = 2  # 2x oversample on the UV transform
+
+        _masks = []
+        looper = tqdm(wavels) if verbose else wavels
+        for wavelength in looper:
+            wl_key = f"{int(wavelength*1e9)}"  # The nearest nm
+            file_key = f"{mask_cache}/{wl_key}_{optics.oversample}"
+            try:
+                mask = np.load(f"{file_key}.npy")
+            except FileNotFoundError:
+                mask = uv_hex_mask(
+                    optics.pupil_mask.holes,
+                    optics.pupil_mask.f2f,
+                    optics.pupil_mask.transformation,
+                    wavelength,
+                    optics.psf_pixel_scale,
+                    optics.psf_npixels,
+                    optics.oversample,
+                    uv_pad,
+                    calc_pad,
+                )
+                np.save(f"{file_key}.npy", mask)
+            _masks.append(mask)
+
+        masks[filt] = np.array(_masks)
+    return masks
+
+
+#
