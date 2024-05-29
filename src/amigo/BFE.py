@@ -287,14 +287,8 @@ class PolyBFE(dl.detector_layers.DetectorLayer):
 
 
 ### Simple BFE ###
-
-from amigo.BFE import build_pixel_kernels
-import jax.numpy as np
 import dLux as dl
 import equinox as eqx
-import jax.tree_util as jtu
-from jax import vmap
-import dLux.utils as dlu
 import jax
 
 
@@ -386,16 +380,6 @@ class SimplePolyBFE(dl.detector_layers.DetectorLayer):
             self.oksize,
             self.oversample,
         )
-
-
-### Gradient BFE ###
-from amigo.BFE import build_pixel_kernels
-import jax.numpy as np
-import dLux as dl
-import equinox as eqx
-import jax.tree_util as jtu
-from jax import vmap
-import dLux.utils as dlu
 
 
 def image_to_grads(image, scale=1e-2, use_psf=False):
@@ -521,7 +505,6 @@ class GradientPolyBFE(dl.detector_layers.DetectorLayer):
 
 
 class DummyBFE(dl.detector_layers.DetectorLayer):
-
     def apply(self, PSF):
         return
 

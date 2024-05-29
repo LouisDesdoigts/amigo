@@ -2,7 +2,7 @@ import equinox as eqx
 import dLux.utils as dlu
 from jax import vmap
 from amigo.misc import planck
-from amigo.stats import total_read_noise, total_amplifier_noise
+from amigo.stats import total_amplifier_noise
 from amigo.interferometry import visibilities, uv_model
 from amigo.detector_layers import model_ramp, model_amplifier, model_dark_current
 from jax.scipy.signal import convolve
@@ -212,3 +212,6 @@ def fast_model_fn(model, exposures, with_BFE=True, to_BFE=False, zero_idx=-1, no
 
     # return ramp
     return jtu.tree_map(lambda x: np.diff(x, axis=0), ramps)
+
+
+#

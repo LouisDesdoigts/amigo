@@ -8,6 +8,7 @@ import jax.tree_util as jtu
 from tqdm.notebook import tqdm
 import time
 
+
 def get_fisher(
     model,
     exp,
@@ -29,9 +30,17 @@ def get_fisher(
         )
         exp = exp.set(["data", "variance"], [psf, variance])
 
-    return FIM(model, params, posterior, exp, diag=diag, save_ram=save_ram, vmapped=vmapped, per_pix=per_pix, **kwargs)
-
-
+    return FIM(
+        model,
+        params,
+        posterior,
+        exp,
+        diag=diag,
+        save_ram=save_ram,
+        vmapped=vmapped,
+        per_pix=per_pix,
+        **kwargs,
+    )
 
 
 def recombine(matrices):
@@ -45,14 +54,15 @@ def recombine(matrices):
 
     return mats
 
-def fix_diag(mat, thresh=1e-16, replace=1.):
+
+def fix_diag(mat, thresh=1e-16, replace=1.0):
     """
     Some parameters have no effect on the PSF, for example if some pixels are nans. This
     leads to zero gradients on the diagonal of the fisher matrix corresponding to
-    those values. If any diagonal entries are zero the inversion return a nan matrix. 
+    those values. If any diagonal entries are zero the inversion return a nan matrix.
 
     We can fix this by setting the diagonals to one. This should have no effect on the
-    result as all correlation terms will also be zero, and the gradients of those 
+    result as all correlation terms will also be zero, and the gradients of those
     parameters will also be zero, so they will have no effect
     """
     # Get the indices
@@ -65,6 +75,7 @@ def fix_diag(mat, thresh=1e-16, replace=1.):
 
     # Return the fixed matrix
     return mat.at[*inds].set(fixed_diag)
+
 
 def create_block_diagonal(size, block_size):
     # Initialize an empty matrix of zeros
@@ -144,19 +155,19 @@ def calc_local_fisher(
 ):
 
     fisher_fn = lambda *args, **kwargs: get_fisher(
-        *args, 
+        *args,
         model,
         exposure,
-        self_fisher=self_fisher, 
-        # photon=photon, 
+        self_fisher=self_fisher,
+        # photon=photon,
         per_pix=per_pix,
-        read_noise=read_noise, 
-        true_read_noise=true_read_noise, 
+        read_noise=read_noise,
+        true_read_noise=true_read_noise,
         save_ram=save_ram,
         vmapped=vmapped,
         **kwargs,
     )
-    
+
     # model, exposure, self_fisher=True, per_pix=True):
 
     # def fisher_fn(*args, **kwargs):
@@ -168,7 +179,6 @@ def calc_local_fisher(
     nmirror = exposure.aberrations.shape[0]
     nzern = exposure.aberrations.shape[1]
     n = nmirror * nzern
-
 
     """Locals"""
     # Position, flux, aberrations ~30 seconds
@@ -203,7 +213,6 @@ def calc_local_fisher(
     # # Coherence
     # coherence_fisher = fisher_fn(params=[f"coherence.{key}"])
 
-
     # Recombine
     local_fisher = recombine(
         # [pos_flux_fisher, abb_fisher_matrix, bias_fisher, one_on_f_fisher]
@@ -213,6 +222,7 @@ def calc_local_fisher(
     local_fisher = fix_diag(local_fisher)
 
     return local_fisher
+
 
 class LocalStepMapper(MatrixMapper):
 
@@ -249,14 +259,14 @@ def calculate_mask_fisher(
 ):
 
     fisher_fn = lambda *args, **kwargs: get_fisher(
-        *args, 
+        *args,
         model,
         exposure,
-        self_fisher=self_fisher, 
-        # photon=photon, 
+        self_fisher=self_fisher,
+        # photon=photon,
         per_pix=per_pix,
-        read_noise=read_noise, 
-        true_read_noise=true_read_noise, 
+        read_noise=read_noise,
+        true_read_noise=true_read_noise,
         **kwargs,
     )
     global_params = [
@@ -280,6 +290,7 @@ def calculate_mask_fisher(
     print(f"Mask Time: {time.time() - t0:.2f}")
 
     return fisher_mask
+
 
 class MaskStepMapper(MatrixMapper):
     fisher_matrix: jax.Array
@@ -316,7 +327,6 @@ class MaskStepMapper(MatrixMapper):
         return self.set(["fisher_matrix", "step_matrix"], [fisher_matrix, step_matrix])
 
 
-
 def calculate_bfe_fisher(
     model,
     exposure,
@@ -328,14 +338,14 @@ def calculate_bfe_fisher(
 ):
 
     fisher_fn = lambda *args, **kwargs: get_fisher(
-        *args, 
+        *args,
         model,
         exposure,
-        self_fisher=self_fisher, 
-        # photon=photon, 
+        self_fisher=self_fisher,
+        # photon=photon,
         per_pix=per_pix,
-        read_noise=read_noise, 
-        true_read_noise=true_read_noise, 
+        read_noise=read_noise,
+        true_read_noise=true_read_noise,
         **kwargs,
     )
 
@@ -357,6 +367,7 @@ def calculate_bfe_fisher(
     fisher_bfe = fisher_bfe.at[np.where(np.abs(fisher_bfe) < 1e-16)].set(1.0)
 
     return fisher_bfe
+
 
 class BFEStepMapper(MatrixMapper):
 
@@ -401,15 +412,14 @@ def calc_visibility_fisher(
     visibility_dict = {"amplitudes": {}, "phases": {}}
 
     base_fisher_fn = lambda *args, **kwargs: get_fisher(
-        *args, 
-        self_fisher=self_fisher, 
-        # photon=photon, 
+        *args,
+        self_fisher=self_fisher,
+        # photon=photon,
         per_pix=per_pix,
-        read_noise=read_noise, 
-        true_read_noise=true_read_noise, 
+        read_noise=read_noise,
+        true_read_noise=true_read_noise,
         **kwargs,
     )
-
 
     for key_path in tqdm(key_paths):
         exposures_in = []
@@ -433,6 +443,7 @@ def calc_visibility_fisher(
         visibility_dict["phases"][key_path] = fisher_phases
 
     return visibility_dict
+
 
 class VisibilityMapper(MatrixMapper):
 
@@ -476,7 +487,6 @@ class VisibilityMapper(MatrixMapper):
         return model.set(["amplitudes", "phases"], [new_ampl, new_phases])
 
 
-
 def calculate_simple_bfe_fisher(
     model,
     exposure,
@@ -502,6 +512,7 @@ def calculate_simple_bfe_fisher(
     fisher_bfe = fisher_fn(params=["BFE.coeffs"])
     print(f"BFE Time: {time.time() - t0:.2f}")
     return fix_diag(fisher_bfe)
+
 
 class SimpleBFEStepMapper(MatrixMapper):
     step_type: str
@@ -560,7 +571,6 @@ class SimpleBFEStepMapper(MatrixMapper):
         )
 
 
-
 def calculate_gradient_bfe_fisher(
     model,
     exposure,
@@ -586,6 +596,7 @@ def calculate_gradient_bfe_fisher(
     fisher_bfe = fisher_fn(params=["BFE.coeffs"])
     print(f"BFE Time: {time.time() - t0:.2f}")
     return fix_diag(fisher_bfe)
+
 
 class GradientBFEStepMapper(MatrixMapper):
     step_type: str
@@ -636,6 +647,7 @@ class GradientBFEStepMapper(MatrixMapper):
             ["fisher_matrix", "step_matrix", "step_type"], [fisher_matrix, step_matrix, step_type]
         )
 
+
 def calculate_SRF_fisher(
     model,
     exposure,
@@ -647,14 +659,14 @@ def calculate_SRF_fisher(
 ):
 
     fisher_fn = lambda *args, **kwargs: get_fisher(
-        *args, 
+        *args,
         model,
         exposure,
-        self_fisher=self_fisher, 
-        # photon=photon, 
+        self_fisher=self_fisher,
+        # photon=photon,
         per_pix=per_pix,
-        read_noise=read_noise, 
-        true_read_noise=true_read_noise, 
+        read_noise=read_noise,
+        true_read_noise=true_read_noise,
         **kwargs,
     )
 
@@ -704,14 +716,14 @@ def calculate_anisotropy_fisher(
 ):
 
     fisher_fn = lambda *args, **kwargs: get_fisher(
-        *args, 
+        *args,
         model,
         exposure,
-        self_fisher=self_fisher, 
-        # photon=photon, 
+        self_fisher=self_fisher,
+        # photon=photon,
         per_pix=per_pix,
-        read_noise=read_noise, 
-        true_read_noise=true_read_noise, 
+        read_noise=read_noise,
+        true_read_noise=true_read_noise,
         **kwargs,
     )
 
@@ -720,6 +732,7 @@ def calculate_anisotropy_fisher(
     # fisher_ansio = np.eye(fisher_SRF.shape[0]) * fisher_SRF
     print(f"Anisotropy Time: {time.time() - t0:.2f}")
     return fisher_ansio
+
 
 class AnisotropyStepMapper(MatrixMapper):
     fisher_matrix: jax.Array
@@ -835,6 +848,7 @@ def calculate_dark_current_fisher(
 
     return fisher_reflectivity
 
+
 class DarkCurrentStepMapper(MatrixMapper):
     fisher_matrix: jax.Array
 
@@ -862,3 +876,6 @@ class DarkCurrentStepMapper(MatrixMapper):
         fisher_matrix = np.array(fisher_matrices)
         step_matrix = -np.linalg.inv(fisher_matrix.sum(0))
         return self.set(["fisher_matrix", "step_matrix"], [fisher_matrix, step_matrix])
+
+
+#

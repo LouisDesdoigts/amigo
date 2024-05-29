@@ -65,11 +65,7 @@ def variance_model(model, exposure, true_read_noise=False, read_noise=10):
     return psf, variance
 
 
-import jax.numpy as np
-from jax.scipy.stats import norm
-from amigo.FIM import FIM
 from amigo.modelling import model_fn
-from jax.scipy.stats import multivariate_normal as mvn
 
 # def log_likelihood(x, mean, var):
 #     return norm.logpdf(x, mean, np.sqrt(var))
@@ -86,7 +82,18 @@ def get_slope_cov(n_slope, read_noise):
 #     return mvn.logpdf(x, mean, cov)
 
 
-# # def posterior(model, exposure, per_pix=True, as_psf=False, photon=False, return_vec=False, return_image=False, **kwargs):
+# def posterior(
+#     model,
+#     exposure,
+#     per_pix=True,
+#     as_psf=False,
+#     photon=False,
+#     return_vec=False,
+#     return_image=False,
+#     **kwargs,
+# ):
+
+
 # def posterior(model, exposure, per_pix=True, return_vec=False, return_image=False, **kwargs):
 #     to_vec = lambda x: exposure.to_vec(x)
 #     slopes = to_vec(model_fn(model, exposure, **kwargs))
@@ -178,3 +185,6 @@ def check_positive_semi_definite(mat):
         lambda x: np.all(np.linalg.eigvals(mat) >= 0),
         mat,
     )
+
+
+#

@@ -3,7 +3,6 @@ import jax.numpy as np
 import equinox as eqx
 from typing import List, Callable
 import dLux.utils as dlu
-import jax.random as jr
 
 
 def calc_rfield(layers):
@@ -35,13 +34,11 @@ class Squeeze(eqx.Module):
 
 
 class SpatialGrads(eqx.Module):
-
     def __call__(self, image):
         return np.array(np.gradient(image))
 
 
 class SpatialCurvature(eqx.Module):
-
     def image_to_grads(self, image):
         ygrads, xgrads = np.gradient(image)
         yygrads = np.gradient(ygrads)[0]
@@ -305,3 +302,5 @@ class NonLinDetector(eqx.Module):
 # plt.imshow(bleeding, cmap="seismic", vmin=-v, vmax=v)
 # plt.colorbar()
 # plt.show()
+
+#

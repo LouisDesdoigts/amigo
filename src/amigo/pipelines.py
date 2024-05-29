@@ -90,14 +90,21 @@ def sigma_clip(array, sigma=5.0, axis=0):
     return onp.ma.filled(clipped, fill_value=onp.nan)
 
 
-def nan_dqd(file):
+def nan_dqd(file, n_groups: int = None, dq_thresh: float = 0.0):
     # Get the bits
-    dq = np.array(file["PIXELDQ"].data) > 0
+    dq = np.array(file["PIXELDQ"].data) > dq_thresh
     group_dq = np.array(file["GROUPDQ"].data) > 0
     electrons = np.array(file["SCI"].data)
 
     # Nan the bad bits
     full_dq = group_dq | dq[None, None, ...]
+
+    if n_groups is None:
+        return np.where(full_dq, np.nan, electrons)
+
+    # for truncating the top of the ramp
+    elif isinstance(n_groups, int):
+        return np.where(full_dq[:, :n_groups], np.nan, electrons[:, :n_groups])
     return np.where(full_dq, np.nan, electrons)
 
 
@@ -128,7 +135,15 @@ def delete_contents(path):
             print("Failed to delete %s. Reason: %s" % (file_path, e))
 
 
-def process_calslope(directory, output_dir="calslope/", sigma=0, chunk_size=0, clean_dir=True):
+def process_calslope(
+    directory,
+    output_dir="calslope/",
+    sigma=0,
+    chunk_size=0,
+    n_groups=None,  # how many groups of the ramp to use
+    dq_thresh=0.0,  # threshold value for the PIXELDQ flags
+    clean_dir=True,
+):
     """
     Chunk size determines the maximum number of integrations in a 'chunk'. Each chunk
     is saved to its own file with an integer extension added. This breaks the data set
@@ -190,11 +205,12 @@ def process_calslope(directory, output_dir="calslope/", sigma=0, chunk_size=0, c
         print(file[0].header["NINTS"])
 
         # Get the data
-        data = nan_dqd(file)
+        data = nan_dqd(file, dq_thresh=dq_thresh, n_groups=n_groups)
         file.close()
 
         if chunk_size == 0:
             chunks = [data]
+            nchunks = 1
         else:
             nints = data.shape[0]
             if nints < chunk_size:
@@ -272,3 +288,6 @@ def process_calslope(directory, output_dir="calslope/", sigma=0, chunk_size=0, c
 
     print("Done\n")
     return output_path
+
+
+#

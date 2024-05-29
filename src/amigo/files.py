@@ -5,9 +5,7 @@ from astroquery.simbad import Simbad
 import pyia
 import pkg_resources as pkg
 import numpy as onp
-from jax import vmap
-from .stats import check_symmetric, check_positive_semi_definite, build_cov
-from .misc import convert_adjacent_to_true, fit_slope, slope_im
+from .misc import slope_im
 from .interferometry import uv_hex_mask
 from webbpsf import mast_wss
 from xara.core import determine_origin
@@ -220,7 +218,10 @@ def get_wss_ops(files):
 
 
 def get_Teffs(files, default=4500, straight_default=False, Teff_cache="files/Teffs"):
-    print("Searching for Teffs...")
+    # Check whether the specified cache directory exists
+    if not os.path.exists(Teff_cache):
+        os.makedirs(Teff_cache)
+
     Teffs = {}
     for file in files:
         prop_name = file[0].header["TARGPROP"]
@@ -350,6 +351,10 @@ def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=Fa
     where the file is run from.
     """
 
+    # Check whether the specified cache directory exists
+    if not os.path.exists(mask_cache):
+        os.makedirs(mask_cache)
+
     masks = {}
     for file in files:
         filt = file[0].header["FILTER"]
@@ -384,3 +389,6 @@ def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=Fa
 
         masks[filt] = np.array(_masks)
     return masks
+
+
+#

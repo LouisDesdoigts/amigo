@@ -65,10 +65,10 @@
 #     """
 #     Some parameters have no effect on the PSF, for example if some pixels are nans. This
 #     leads to zero gradients on the diagonal of the fisher matrix corresponding to
-#     those values. If any diagonal entries are zero the inversion return a nan matrix. 
+#     those values. If any diagonal entries are zero the inversion return a nan matrix.
 
 #     We can fix this by setting the diagonals to one. This should have no effect on the
-#     result as all correlation terms will also be zero, and the gradients of those 
+#     result as all correlation terms will also be zero, and the gradients of those
 #     parameters will also be zero, so they will have no effect
 #     """
 #     # Get the indices
@@ -94,17 +94,17 @@
 # ):
 
 #     fisher_fn = lambda *args, **kwargs: get_fisher(
-#         *args, 
+#         *args,
 #         model,
 #         exposure,
-#         self_fisher=self_fisher, 
-#         # photon=photon, 
+#         self_fisher=self_fisher,
+#         # photon=photon,
 #         per_pix=per_pix,
-#         read_noise=read_noise, 
-#         true_read_noise=true_read_noise, 
+#         read_noise=read_noise,
+#         true_read_noise=true_read_noise,
 #         **kwargs,
 #     )
-    
+
 #     # model, exposure, self_fisher=True, per_pix=True):
 
 #     # def fisher_fn(*args, **kwargs):
@@ -173,14 +173,14 @@
 # ):
 
 #     fisher_fn = lambda *args, **kwargs: get_fisher(
-#         *args, 
+#         *args,
 #         model,
 #         exposure,
-#         self_fisher=self_fisher, 
-#         # photon=photon, 
+#         self_fisher=self_fisher,
+#         # photon=photon,
 #         per_pix=per_pix,
-#         read_noise=read_noise, 
-#         true_read_noise=true_read_noise, 
+#         read_noise=read_noise,
+#         true_read_noise=true_read_noise,
 #         **kwargs,
 #     )
 #     global_params = [
@@ -216,14 +216,14 @@
 # ):
 
 #     fisher_fn = lambda *args, **kwargs: get_fisher(
-#         *args, 
+#         *args,
 #         model,
 #         exposure,
-#         self_fisher=self_fisher, 
-#         # photon=photon, 
+#         self_fisher=self_fisher,
+#         # photon=photon,
 #         per_pix=per_pix,
-#         read_noise=read_noise, 
-#         true_read_noise=true_read_noise, 
+#         read_noise=read_noise,
+#         true_read_noise=true_read_noise,
 #         **kwargs,
 #     )
 
@@ -294,7 +294,6 @@
 #     return visibility_dict
 
 
-
 # def calc_visibility_fisher(
 #     model,
 #     exposures,
@@ -310,12 +309,12 @@
 #     visibility_dict = {"amplitudes": {}, "phases": {}}
 
 #     base_fisher_fn = lambda *args, **kwargs: get_fisher(
-#         *args, 
-#         self_fisher=self_fisher, 
-#         # photon=photon, 
+#         *args,
+#         self_fisher=self_fisher,
+#         # photon=photon,
 #         per_pix=per_pix,
-#         read_noise=read_noise, 
-#         true_read_noise=true_read_noise, 
+#         read_noise=read_noise,
+#         true_read_noise=true_read_noise,
 #         **kwargs,
 #     )
 
@@ -412,14 +411,14 @@
 # ):
 
 #     fisher_fn = lambda *args, **kwargs: get_fisher(
-#         *args, 
+#         *args,
 #         model,
 #         exposure,
-#         self_fisher=self_fisher, 
-#         # photon=photon, 
+#         self_fisher=self_fisher,
+#         # photon=photon,
 #         per_pix=per_pix,
-#         read_noise=read_noise, 
-#         true_read_noise=true_read_noise, 
+#         read_noise=read_noise,
+#         true_read_noise=true_read_noise,
 #         **kwargs,
 #     )
 
@@ -440,14 +439,14 @@
 # ):
 
 #     fisher_fn = lambda *args, **kwargs: get_fisher(
-#         *args, 
+#         *args,
 #         model,
 #         exposure,
-#         self_fisher=self_fisher, 
-#         # photon=photon, 
+#         self_fisher=self_fisher,
+#         # photon=photon,
 #         per_pix=per_pix,
-#         read_noise=read_noise, 
-#         true_read_noise=true_read_noise, 
+#         read_noise=read_noise,
+#         true_read_noise=true_read_noise,
 #         **kwargs,
 #     )
 
@@ -513,3 +512,5 @@
 #     print(f"Reflectivity Time: {time.time() - t0:.2f}")
 
 #     return fisher_reflectivity
+
+#

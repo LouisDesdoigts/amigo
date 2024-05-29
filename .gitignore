@@ -1,5 +1,6 @@
 .gitignore
 src/amigo/files/
+src/amigo/tmp/
 src/amigo_notebooks/
 src/amigo.egg-info/
 **/__pycache__/

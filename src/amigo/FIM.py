@@ -3,7 +3,6 @@
 import jax
 import zodiax as zdx
 import jax.numpy as np
-import jax.tree_util as jtu
 from jax import jit, grad, jvp, linearize, lax, vmap
 
 
@@ -161,3 +160,6 @@ def _perturb(X, pytree, parameters, shapes, lengths):
             n += length - 1
 
     return pytree.add(parameters, xs)
+
+
+#

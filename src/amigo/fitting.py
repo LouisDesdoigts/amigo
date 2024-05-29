@@ -1,4 +1,3 @@
-from tqdm.notebook import tqdm
 import zodiax as zdx
 import jax.numpy as np
 import equinox as eqx
@@ -11,6 +10,14 @@ from typing import Any
 from jax import Array
 from .core import AmigoHistory
 
+# import tqdm appropriately
+from IPython import get_ipython
+if get_ipython() is not None:
+    # Running in Jupyter Notebook
+    from tqdm.notebook import tqdm
+else:
+    # Running in a script or other non-Jupyter environment
+    from tqdm import tqdm
 
 def get_optimiser(pytree, parameters, optimisers):
     # Pre-wrap single inputs into a list since optimisers have a length of 2
@@ -212,3 +219,6 @@ def optimise(
     if return_state:
         return model, losses, model_history, opt_state
     return model, losses, model_history
+
+
+#

@@ -6,15 +6,11 @@ This repo is currently under development and subject to change.
 
 Much of the code is eventually be split into either dLux (ie the interferometry.py file) or Zodiax (most of the fitting.py and FIM.py files).
 
-The amgio pipeline requires _custom file processing_, which is covered by the pipelines.py file. More details on this later.
-
-To see example usage of the pipeline, see the [amigo_notebooks](https://github.com/LouisDesdoigts/amigo_notebooks) repo. It is currently private, so just message me for access.
-
 ### Installation
 
 **Python version**
 
-Amigo requires either python 3.10 or 3.11. This is because the core package takes advantage of some new syntax added in python 3.10, and the jwst package (used in the pipeline) does not run on 3.12.
+Amigo requires python 3.11 due to a complex set of dependencies (various packages like `jwst` and `webbpsf` set annoying requirements, despite being minor dependencies).
 
 To run amigo is it recommended to create a fresh environment. To do so using conda, run:
 
@@ -30,44 +26,22 @@ git clone https://github.com/LouisDesdoigts/amigo.git
 pip install .
 ```
 
-**Dependencies**
+### Data Processing
 
-Core:
+Amigo requires a custom set of pipeline steps out of the JWST pipeline. There are functions set up to make this easy to do:
 
-- [Jax](https://github.com/google/jax)
-- [Equinox](https://github.com/patrick-kidger/equinox)
-- [Zodiax](https://github.com/LouisDesdoigts/zodiax)
-- [dLux](https://github.com/LouisDesdoigts/dLux)
+```python
+from amigo.pipelines import process_uncal, process_calslope
+import os
 
-Pipeline:
+os.environ["CRDS_PATH"] = "/path/to/crds_cache"
+dirs = ["/path/to/uncal/data/"]
 
-- [astroquery](https://github.com/astropy/astroquery) for initialisation of the source Teffs.
-- [jwst](https://jwst-pipeline.readthedocs.io/en/latest/getting_started/install.html) for the pipeline module.
-
-Other:
-
-- [pyia](https://github.com/adrn/pyia) for initialisation of the source Teffs.
-- [Webbpsf](https://github.com/spacetelescope/webbpsf) for initialisation of the measured WFE at closes observation time.
-
-Requires local install:
-
-- [xara](https://github.com/fmartinache/xara) for initialisation of the source position.
-
-```
-conda activate amigo
-git clone https://github.com/fmartinache/xara.git
-cd xara
-pip install .
+for directory in dirs:
+    stage1_dir = process_uncal(directory, "stage1", verbose=False)
+    calslope_dir = process_calslope(stage1_dir)
 ```
 
-- [dLuxWebbPSF](https://github.com/itroitskaya/dLuxWebbpsf) (**Requires local install**) For the JWST primary mirror aberration model + cubic spline interpolation for detector rotation. If running on the latest jax you may need to use [this branch](https://github.com/itroitskaya/dLuxWebbpsf/pull/24)
-
-```
-conda activate amigo
-git clone https://github.com/itroitskaya/dLuxWebbpsf.git
-cd dLuxWebbpsf
-git branch import_fix
-pip install .
-```
+It's that simple (in theory). In practice the jwst pipeline can be difficult to get installed, this is left as an exercise for the user ;).
 
 And never forget, AMI go brrrrrrrr
