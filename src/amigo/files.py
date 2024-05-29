@@ -220,7 +220,12 @@ def get_wss_ops(files):
 
 
 def get_Teffs(files, default=4500, straight_default=False, Teff_cache="files/Teffs"):
-    print("Searching for Teffs...")
+
+    # Check whether the specified cache directory exists
+    if not os.path.exists(Teff_cache):
+        os.makedirs(Teff_cache)
+
+    # print("Searching for Teffs...")
     Teffs = {}
     for file in files:
         prop_name = file[0].header["TARGPROP"]
@@ -294,6 +299,7 @@ def find_position(psf, pixel_scale=0.065524085):
     position = origin * pixel_scale * np.array([1, -1])
     return position
 
+
 # def get_exposures(files, add_read_noise=False):
 def get_exposures(files, optics, ms_thresh=None, as_psf=False):
     print("Prepping exposures...")
@@ -302,6 +308,7 @@ def get_exposures(files, optics, ms_thresh=None, as_psf=False):
         amigo.core.ExposureFit(file, optics, opd=opd, ms_thresh=ms_thresh)
         for file, opd in zip(files, opds)
     ]
+
 
 def initialise_params(exposures):
     positions = {}
@@ -346,6 +353,10 @@ def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=Fa
     Note caches masks to disk for faster loading. The cache is indexed _relative_ to
     where the file is run from.
     """
+
+    # Check whether the specified cache directory exists
+    if not os.path.exists(mask_cache):
+        os.makedirs(mask_cache)
 
     masks = {}
     for file in files:
