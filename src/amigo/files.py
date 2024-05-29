@@ -176,41 +176,16 @@ def estimate_psf_and_bias(data):
     return psf * ngroups, bias
 
 
-# def prep_data(file, read_noise, subtract_bias=True, ms_thresh=0., bs_thresh=250):
-# def prep_data(file, read_noise):#, ms_thresh=0., bs_thresh=250):
-def prep_data(file, ms_thresh=None, clean_edges=False, as_psf=False):
+def prep_data(file, ms_thresh=None, as_psf=False):
     data = np.asarray(file["SCI"].data, float)
     var = np.asarray(file["SCI_VAR"].data, float)
     dq = np.asarray(file["PIXELDQ"].data > 0, bool)
 
-    # Build the covariance matrix
-    # cov = build_covariance_matrix(var, read_noise=read_noise, min_value=True)
-    # cov = build_cov(var)
-
-    # Check for bad pixels around dq'd pixels
-    dilated_dq = convert_adjacent_to_true(dq)
-    dq = dq & ~dilated_dq
-    # dq_edges = dilated_dq & ~dq
-    # dq_edge_inds = np.array(np.where(dq_edges))
-    # dq_edge_ramps = ramp[:, *dq_edge_inds].T
-
     if ms_thresh is not None:
-        # ms, bs = slope_im(ramp)
-        # ms_mask =
         dq = dq.at[np.mean(data, axis=0) <= ms_thresh].set(True)
 
-    # for i in range(len(dq_edge_ramps)):
-    #     if ms[i] <= ms_thresh:
-    #         dq = dq.at[*dq_edge_inds[:, i]].set(True)
-    #     if bs[i] > bs_thresh:
-    #         dq = dq.at[*dq_edge_inds[:, i]].set(True)
-
-    # Set bad rows and cols
-    if clean_edges:
-        dq = dq.at[:4].set(True)  # Bottom 4 rows are bad
-        dq = dq.at[-1].set(True)  # Top row is bad
-        dq = dq.at[:, -2:].set(True)  # Right 2 columns are bad
-        dq = dq.at[:, 0].set(True)  # Left column is bad
+    badpix = np.load(pkg.resource_filename(__name__, "data/badpix.npy"))
+    dq = dq | badpix
 
     if as_psf:
         supp_mask = ~np.isnan(data) & ~dq
@@ -219,12 +194,6 @@ def prep_data(file, ms_thresh=None, clean_edges=False, as_psf=False):
         var = var.at[~supp_mask].set(np.nan)
         return data, var, support
 
-    # # Check for symmetry and positive semi-definite
-    # ngroups = ramp.shape[0]
-    # flat_cov = cov.reshape(ngroups, ngroups, -1)
-    # is_sym = vmap(check_symmetric, -1)(flat_cov).reshape(80, 80)
-    # is_psd = vmap(check_positive_semi_definite, -1)(flat_cov).reshape(80, 80)
-    # supp_mask = is_sym & is_psd & ~np.isnan(ramp.sum(0)) & ~dq
     supp_mask = ~np.isnan(data.sum(0)) & ~dq
 
     # Nan the bad pixels
@@ -232,9 +201,6 @@ def prep_data(file, ms_thresh=None, clean_edges=False, as_psf=False):
     data = data.at[:, ~supp_mask].set(np.nan)
     var = var.at[..., ~supp_mask].set(np.nan)
 
-    # if subtract_bias:
-    #     psf_guess, bias = estimate_psf_and_bias(ramp)
-    #     ramp -= bias[None, ...]
     return data, var, support
 
 
@@ -253,17 +219,26 @@ def get_wss_ops(files):
     return opd_files
 
 
-def get_Teffs(files, default=4500):
+def get_Teffs(files, default=4500, straight_default=False, Teff_cache="files/Teffs"):
     print("Searching for Teffs...")
     Teffs = {}
     for file in files:
         prop_name = file[0].header["TARGPROP"]
 
-        # if os.exists(f"data/Teffs/{prop_name}.npy"):
-        #     Teffs[prop_name] = np.load(f"data/{prop_name}_Teff.npy")
-        #     continue
+        # if os.exists(f"{Teff_cache}/{prop_name}.npy"):
+        try:
+            Teffs[prop_name] = np.load(f"{Teff_cache}/{prop_name}.npy")
+            continue
+        except FileNotFoundError:
+            pass
 
         if prop_name in Teffs:
+            continue
+
+        # Temporary measure to get around gaia archive being dead
+        if straight_default:
+            Teffs[prop_name] = default
+            print("Warning using default Teff")
             continue
 
         Teff = get_Teff(file[0].header["TARGNAME"])
@@ -273,10 +248,7 @@ def get_Teffs(files, default=4500):
             Teffs[prop_name] = default
         else:
             Teffs[prop_name] = Teff
-
-    # for key, value in Teffs.items():
-    #     if not os.exists(f"data/Teffs/{key}.npy"):
-    #         np.save(f"data/Teffs/{key}.npy", value)
+            np.save(f"{Teff_cache}/{prop_name}.npy", Teff)
 
     return Teffs
 
@@ -307,17 +279,13 @@ def get_phases(exposures, dc=False):
         if key not in phases.keys():
             phases[key] = np.zeros(n)
     return phases
-    # phases = {}
-    # for file in files:
-    #     prop_name = file[0].header["TARGPROP"]
-    #     filt = file[0].header["FILTER"]
-    #     if prop_name in phases:
-    #         if filt in phases[prop_name].keys():
-    #             continue
-    #         else:
-    #             phases[prop_name][filt] = np.zeros(21)
-    #     phases[prop_name] = {filt: np.zeros(21)}
-    # return phases
+
+
+def get_coherence(exposures):
+    coherences = {}
+    for exp in exposures:
+        coherences[exp.key] = np.zeros(7)
+    return coherences
 
 
 def find_position(psf, pixel_scale=0.065524085):
@@ -332,71 +300,9 @@ def get_exposures(files, optics, ms_thresh=None, as_psf=False):
     print("Prepping exposures...")
     opds = get_wss_ops(files)
     return [
-        # amigo.core.Exposure(file, opd=opd, add_read_noise=add_read_noise)
-        # amigo.core.Exposure(file, opd=opd, ms_thresh=ms_thresh)
-        # for file, opd in zip(files, opds)
         amigo.core.ExposureFit(file, optics, opd=opd, ms_thresh=ms_thresh)
         for file, opd in zip(files, opds)
-        # amigo.core.PSFFit(file, optics, opd=opd, ms_thresh=ms_thresh)
-        # for file, opd in zip(files, opds)
     ]
-
-
-# def initialise_params(
-#     exposures, n_fda=10, pixel_scale=0.065524085, log=True, has_bias=True
-# ):
-# def initialise_params(
-#     exposures, n_fda=10, pixel_scale=0.065524085, log=True, use_pre_calc_fda=True
-# ):
-#     print("Initialising parameters...")
-
-#     if use_pre_calc_fda:
-#         FDA_coefficients = np.load(pkg.resource_filename(__name__, "data/FDA_coeffs.npy"))
-#     else:
-#         FDA_coefficients = np.zeros((7, n_fda))
-#     positions = {}
-#     fluxes = {}
-#     aberrations = {}
-#     biases = {}
-#     OneOnFs = {}
-#     aberrations = {}
-#     for exp in exposures:
-#         # if has_bias:
-#         #     psf_guess, bias = estimate_psf_and_bias(exp.data - exp.bias)
-#         #     biases[exp.key] = exp.bias
-#         # else:
-#         #     psf_guess, bias = estimate_psf_and_bias(exp.data)
-#         #     biases[exp.key] = np.zeros_like(exp.bias)
-
-#         # psf_guess, bias = estimate_psf_and_bias(exp.data)
-
-#         # flux = psf_guess.sum() * 1.075  # Seems to be under estimated
-
-#         flux = np.nansum(exp.data[-1]) * (exp.ngroups + 1)
-
-#         if log:
-#             fluxes[exp.key] = np.log10(flux)
-#         else:
-#             fluxes[exp.key] = flux
-
-#         im = exp.data[0]
-#         im = im.at[np.where(np.isnan(im))].set(0.0)  # TODO: Interpolate?
-#         pos = find_position(im, pixel_scale)
-
-#         # positions[exp.key] = find_position(exp.data[0], pixel_scale)
-#         positions[exp.key] = pos
-#         aberrations[exp.key] = FDA_coefficients[:, :n_fda]
-#         # OneOnFs[exp.key] = np.zeros((exp.ngroups, 80, 2))
-#         OneOnFs[exp.key] = np.zeros((exp.ngroups + 1, 80, 2))
-#         biases[exp.key] = exp.bias
-
-#     return {
-#         "positions": positions,
-#         "fluxes": fluxes,
-#         "aberrations": aberrations,
-#         "biases": biases,
-#         "OneOnFs": OneOnFs,
-#     }
 
 
 def initialise_params(exposures):

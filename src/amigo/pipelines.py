@@ -1,13 +1,14 @@
 import os
 import jax.numpy as np
-from jax import vmap
+import shutil
 import numpy as onp
 import astropy
 from astropy.io import fits
 from jwst.pipeline import Detector1Pipeline
+from tqdm.notebook import tqdm
 
 
-def process_stage0(directory, output_dir="stage1/", verbose=False):
+def process_uncal(directory, output_dir="stage1/", verbose=False, AMI_only=True, reprocess=False):
     # string manip to make sure we have the right format
     if directory[-1] != "/":
         directory += "/"
@@ -50,7 +51,7 @@ def process_stage0(directory, output_dir="stage1/", verbose=False):
 
         # Check if the file is a NIS_AMI file
         file = fits.open(file_path)
-        if file[0].header["EXP_TYPE"] != "NIS_AMI":
+        if AMI_only and file[0].header["EXP_TYPE"] != "NIS_AMI":
             if verbose:
                 print("Not a NIS_AMI file, skipping...")
             continue
@@ -63,16 +64,16 @@ def process_stage0(directory, output_dir="stage1/", verbose=False):
         pl1.save_calibrated_ramp = True  # save the output
 
         # These are all the ones that are run at present, in order
-        pl1.dq_init.skip = False
-        pl1.saturation.skip = False
-        pl1.ipc.skip = False
-        pl1.superbias.skip = False
-        pl1.refpix.skip = False
-        pl1.linearity.skip = False
-        pl1.persistence.skip = False
-        pl1.dark_current.skip = False
+        pl1.dq_init.skip = False  # This is run
+        pl1.saturation.skip = False  # This is run
+        pl1.ipc.skip = True
+        pl1.superbias.skip = False  # This is run
+        pl1.refpix.skip = True
+        pl1.linearity.skip = True
+        pl1.persistence.skip = True
+        pl1.dark_current.skip = True
         pl1.charge_migration.skip = True
-        pl1.jump.skip = False
+        pl1.jump.skip = False  # This is run
         pl1.ramp_fit.skip = True
 
         pl1.run(str(file_path))  # run pipeline from uncal file
@@ -83,77 +84,10 @@ def process_stage0(directory, output_dir="stage1/", verbose=False):
     return output_path
 
 
-def im2vec(im):
-    return im.reshape(len(im), -1).T
-
-
-def vec2im(vec, npix):
-    return vec.T.reshape(npix, npix)
-
-
-def least_sq(x, y):
-    A = np.vstack([x, np.ones(len(x))]).T
-    m, b = np.linalg.lstsq(A, y, rcond=None)[0]
-    return m, b
-
-
-def slope_im(im, groups):
-    npix = im.shape[-1]
-    ms, bs = vmap(least_sq, (None, 0))(groups, im2vec(im))
-    return vec2im(ms, npix), vec2im(bs, npix)
-
-
-def estimate_biases(data, ngroups=2):
-    groups = np.arange(1, 1 + ngroups)
-    first_groups = data[:, :ngroups]
-    slopes, biases = vmap(slope_im, (0, None))(first_groups, groups)
-    return biases
-
-
-def subtract_bias(data):
-    groups = np.arange(1, 3)
-    first_groups = data[:, :2]
-    slopes, biases = vmap(slope_im, (0, None))(first_groups, groups)
-    return data - biases[:, None, :, :], biases
-
-    # def clean_slopes(bias_cleaned_data):
-    #     nints, ngroups, npix = bias_cleaned_data.shape[:3]
-
-    #     full_zero_ramp = np.zeros((nints, ngroups + 1, npix, npix))
-    #     full_ramp = full_zero_ramp.at[:, 1:].set(bias_cleaned_data)
-
-    #     cleaned_slopes = []
-    #     for k in range(ngroups):
-    #         group_vals = full_ramp[:, k : k + 2]
-    #         groups = np.arange(k, k + 2)
-
-    #         slopes, biases = vmap(slope_im, (0, None))(group_vals, groups)
-    #         clipped = astropy.stats.sigma_clip(slopes, axis=0, sigma=3)
-    #         cleaned_slopes.append(onp.ma.filled(clipped, fill_value=onp.nan))
-
-    #     # This output has the dimension of the groups and ints swapped
-    #     return np.swapaxes(np.array(cleaned_slopes), 0, 1)
-
-
 def sigma_clip(array, sigma=5.0, axis=0):
     masked = onp.ma.masked_invalid(array, copy=True)
     clipped = astropy.stats.sigma_clip(masked, axis=axis, sigma=sigma)
     return onp.ma.filled(clipped, fill_value=onp.nan)
-
-
-# def rebuild_ramps(cleaned_slopes):
-#     ngroups = cleaned_slopes.shape[1]
-
-#     # dx is defined to be 1, so the slope _is the counts_
-#     counts = 0
-#     cleaned_counts = []
-#     for k in range(ngroups):
-#         counts += cleaned_slopes[:, k]
-#         cleaned_counts.append(counts)
-#     cleaned_counts = np.array(cleaned_counts)
-
-#     # This output has the dimension of the groups and ints swapped
-#     return np.swapaxes(cleaned_counts, 0, 1)
 
 
 def nan_dqd(file):
@@ -165,98 +99,47 @@ def nan_dqd(file):
     # Nan the bad bits
     full_dq = group_dq | dq[None, None, ...]
     return np.where(full_dq, np.nan, electrons)
-    # # Mask the invalid values and sigma clip
-    # return onp.ma.masked_invalid(cleaned, copy=True)
 
 
-# def group_fit(cleaned_ramps, lower_bound=False):
-
-#     # Mask the invalid values, sigma clip, and set back to nans for jax
-#     masked = onp.ma.masked_invalid(cleaned_ramps, copy=True)
-#     masked_clipped = astropy.stats.sigma_clip(masked, axis=0, sigma=3)
-#     cleaned = onp.ma.filled(masked_clipped, fill_value=np.nan)
-
-#     # Get the support of the data - ie how many integrations contribute to the data
-#     support = np.asarray(~np.isnan(cleaned), int).sum(0)
-
-#     # Mean after sigma clipping - The 'robust mean', better for quantised data
-#     ramp = np.nanmean(cleaned, axis=0)
-
-#     # We dont want the error of the mean, we want the _STANDARD ERROR OF THE MEAN_,
-#     # ie scaled by the sqrt of the number of samples
-#     var = np.nanvar(cleaned, axis=0)
-#     # if lower_bound:
-#     #     var = np.maximum(var, np.nanmean(cleaned, axis=0))
-#     var /= support
-
-#     return ramp, var
-
-
-def calc_mean_and_var(data):
-    # # Mask the invalid values, sigma clip, and set back to nans for jax
-    # masked = onp.ma.masked_invalid(data, copy=True)
-    # masked_clipped = astropy.stats.sigma_clip(masked, axis=0, sigma=sigma)
-    # cleaned = onp.ma.filled(masked_clipped, fill_value=np.nan)
-    # cleaned = sigma_clip(data, sigma=sigma)
-
+def calc_mean_and_var(data, axis=0):
     # Get the support of the data - ie how many integrations contribute to the data
-    support = np.asarray(~np.isnan(data), int).sum(0)
+    support = np.asarray(~np.isnan(data), int).sum(axis)
 
     # Mean after sigma clipping - The 'robust mean', better for quantised data
-    mean = np.nanmean(data, axis=0)
+    mean = np.nanmean(data, axis=axis)
 
     # We dont want the error of the mean, we want the _STANDARD ERROR OF THE MEAN_,
     # ie scaled by the sqrt of the number of samples
-    var = np.nanvar(data, axis=0)
+    var = np.nanvar(data, axis=axis)
     var /= support
 
     return mean, var
 
 
-def bias_careful_mean_and_var(data, bias):
-
-    # Get the support of the data - ie how many integrations contribute to the data
-    support = np.asarray(~np.isnan(data), int).sum(0)
-
-    # Now subtract bias to avoid skewing the variances
-    data -= bias[None, None, :, :]
-
-    # Mean after sigma clipping - The 'robust mean', better for quantised data
-    mean = np.nanmean(data, axis=0)
-
-    # # Now subtract bias to avoid skewing the variances
-    # mean -= bias[None, :, :]
-
-    # Take variance from the non-bias subtracted data
-    var = np.nanvar(data, axis=0)
-    var /= support
-
-    return mean, var
+def delete_contents(path):
+    for file_name in os.listdir(path):
+        file_path = os.path.join(path, file_name)
+        try:
+            if os.path.isfile(file_path):
+                os.unlink(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        except Exception as e:
+            print("Failed to delete %s. Reason: %s" % (file_path, e))
 
 
-def process_stage1(directory, output_dir="calgrps/", sigma=0, method=0):
-    # def process_stage1(directory, output_dir="calgrps/", refpix_correction=0):
+def process_calslope(directory, output_dir="calslope/", sigma=0, chunk_size=0, clean_dir=True):
     """
-        ref_pix_correction: int
-            What reference pixel correction to apply. 0 for none, 1 for first, 2 for second.
-            'first' subtracts off the reference pixel value for _each group and
-            integration_, which is then masked and sigma clipped. 'second' performs the
-            masking and sigma clipping on both the data and reference pixel first, and then
-            subtracts the single reference pixel value for each group and column from the
-            cleaned data.
+    Chunk size determines the maximum number of integrations in a 'chunk'. Each chunk
+    is saved to its own file with an integer extension added. This breaks the data set
+    into smaller time series to help avoid issues with any time-variation in the data.
+    A chunk_size of zero will do no chunking and process the data all in one.
 
-    lower_bound: bool
-        Assuming we have correctly calibrated the ramp zero point (ie bias), the
-        minimum value the variance should be able to take is:
-            (psf var + read var) / nints
-        However, due to the sigma clipping in the pipeline, when we have small nints,
-        this can result in variances that are much smaller than this theoretical
-        minimum value. To correct for this, we can set a lower bound to be the minimum
-        value of the mean of the data, and the theoretical minimum value.
+    This will (presently) always reprocess data
+
+    if clean_dir is True, the existisng contents of the output_dir will be deleted prior
+    to procesing, so ensure no old files are hanging around
     """
-    # if refpix_correction not in [0, 1, 2]:
-    #     raise ValueError("ref_pix_correction must be 0, 1, or 2.")
-    # string manip to make sure we have the right format
     if directory[-1] != "/":
         directory += "/"
     if output_dir[-1] != "/":
@@ -279,296 +162,113 @@ def process_stage1(directory, output_dir="calgrps/", sigma=0, method=0):
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
+    # Clear the existsing files (since we might use different chunk sizes, and we do not
+    # want to have old files hang around)
+    if clean_dir:
+        print("Cleaning existing directory")
+        delete_contents(output_path)
+
     # Iterate over files
-    print("Running calgrps processing...")
-    for file_path in files:
+    print("Running calslope processing...")
+    for file_path in tqdm(files):
         file_name = file_path.split("/")[-1]
         file_root = "_".join(file_name.split("_")[:-2])
 
-        # Check if the file is a NIS_AMI file
-        final_output_path = output_path + file_root + "_nis_calgrps.fits"
-        if os.path.exists(final_output_path):
-            print("File already exists, skipping...")
-            continue
-        file_calgrps = os.path.join(final_output_path)
-
-        # Create the new file
-        import shutil
-
-        shutil.copy(file_path, file_calgrps)
+        file = fits.open(file_path)
 
         # Check if the file is a NIS_AMI file
-        file = fits.open(file_calgrps, mode="update")
         if file[0].header["EXP_TYPE"] != "NIS_AMI":
             print("Not a NIS_AMI file, skipping...")
             continue
 
-        # Get the data with the DQ flags nan'd
-        data = nan_dqd(file)
-        # print(np.sum(np.isnan(raw_data)) / raw_data.size)
-
-        if data.shape[1] == 1:
+        # Skip single group files
+        if file[0].header["NGROUPS"] == 1:
             print("Only one group, skipping...")
             continue
 
-        # # Subtract the bias estimate from the data
-        # # (I think this is somewhat redundant if we are only working from slopes)
-        # # Actually, this affects the lower_bound flag, as the lower bound on the
-        # # variance is the mean of the data
-        # bias_subtracted_data, biases = subtract_bias(cleaned_data)
+        print(file[0].header["TARGPROP"], end=" ")
+        print(file[0].header["NINTS"])
 
-        # # # Sigma clip the biases
-        # # cleaned_biases = clean_biases(biases)
+        # Get the data
+        data = nan_dqd(file)
+        file.close()
 
-        # # Estimate the bias and error
-        # biases, bias_var = calc_mean_and_var(biases, sigma=sigma)
+        if chunk_size == 0:
+            chunks = [data]
+        else:
+            nints = data.shape[0]
+            if nints < chunk_size:
+                nchunks = 1
+            else:
+                nchunks = np.round(nints / chunk_size).astype(int)
+            chunks = np.array_split(data, nchunks)
 
-        # # # Sigma clip the slopes
-        # # cleaned_slopes = clean_slopes(bias_subtracted_data)
+        print(f"Breaking into {nchunks} chunks")
 
-        # # # Rebuild the 'clean' ramps
-        # # cleaned_ramps = rebuild_ramps(cleaned_slopes)
+        for i, chunk in enumerate(chunks):
 
-        # # Estimate the ramp and error
-        # ramp, ramp_var = calc_mean_and_var(bias_subtracted_data, sigma=sigma)
+            # Check if the file is a NIS_AMI file
+            file_name = file_root + f"_{i+1:0{4}}" + "_nis_calslope.fits"
+            file_calslope = os.path.join(output_path + file_name)
 
-        """
-        OLD METHOD ABOVE
+            # Create the new file
+            shutil.copy(file_path, file_calslope)
 
-        NEW PLAN
+            # Open new file
+            file = fits.open(file_calslope, mode="update")
 
-        Dont subtract the biases at the start, subtract them at the end!
+            # Remove the redundant extensions
+            del file["GROUPDQ"]
+            del file["ERR"]
+            del file["GROUP"]
+            del file["INT_TIMES"]
 
-        Take the means and variances of each pixel group value
-        Take the bias as the slope fit of the resulting first two groups
-        Subtract the bias from the data
-        """
-        # # Get data and subtract the bias
-        # # TODO: Should I sigma clip at the outset here too?
-        # biases = estimate_biases(data)
-        # biases = sigma_clip(biases, sigma=sigma)
-        # bias, bias_var = calc_mean_and_var(biases)
+            # Update the various headers
+            file[0].header["NCHUNKS"] = int(nchunks)
+            file[0].header["CHUNK"] = i + 1
+            file[0].header["CHUNKSZ"] = int(chunk_size)
+            file[0].header["NINTS"] = int(chunk.shape[0])
+            file[0].header["FILENAME"] = file_name
+            file[0].header["SIGMA"] = sigma
 
-        # # Subtract mean from data
-        # # data = data - biases[:, None, :, :]
-        # data = sigma_clip(data, sigma=sigma)
-        # ramp, ramp_var = bias_careful_mean_and_var(data, bias)
-
-        # data, biases = subtract_bias(raw_data)
-        # print(np.sum(np.isnan(data)) / data.size)
-
-        # print(biases.shape)
-        # print(data.shape)
-        # inds = np.where(np.isnan(biases))
-        # data = data.at[inds[0], :, *inds[1:]].set(np.nan)
-        # print(np.sum(np.isnan(data)) / data.size)
-
-        # Estimate ramp, bias and variances
-        # print(np.sum(np.isnan(ramp)) / ramp.size)
-
-        # slope, bias = slope_im(ramp[:2], np.arange(1, 3))
-
-        # # Estimate bias variance
-        # _, biases = vmap(slope_im, (0, None))(data[:, :2], np.arange(1, 3))
-
-        # # Subtract the bias from the data
-        # ramp -= bias
-
-        # def calc_slopes(data):
-        # nints, ngroups, npix = data.shape[:3]
-
-        if method == 0:
-            slopes = np.diff(data, axis=1)
+            # Sigma clip the data, not the slopes. We sigma clip the data since the detector
+            # can not distinguish between real signal and bias, so its value couples
+            # through pixel non-linearities (ie pixel response, BFE)
             if sigma > 0:
-                slopes = sigma_clip(slopes, sigma=sigma)
+                chunk = sigma_clip(chunk, sigma=sigma)
+
+            # Get slopes
+            slopes = np.diff(chunk, axis=1)
             slope, slope_var = calc_mean_and_var(slopes)
-        elif method == 1:
 
-            slopes = np.diff(data, axis=1)
-            if sigma > 0:
-                slopes = sigma_clip(slopes, sigma=sigma)
-            n = len(slopes) // 2
-            data_first_half = slopes[:n]
-            data_second_half = slopes[n:]
-            slope1, slope1_var = calc_mean_and_var(data_first_half)
-            slope2, slope2_var = calc_mean_and_var(data_second_half)
+            # Zero-point - We may actually want to track this to feed into the
+            # forwards model. The bias/zero point will couple into the BFE, and so exposures
+            # the 'zero-point' of a dim exposure will be different to a bright exposure. As
+            # such we need to track this. With this zero-point, we theoretically should be
+            # able to fully re-build the data
+            zero_point, zero_point_var = calc_mean_and_var(chunk[:, 0])
 
-            # Slope of slope (lol)
-            from .misc import slope_im
+            # Save the data
+            file["SCI"].data = slope
 
-            ms, bs = slope_im(slope1)
-            xs = np.arange(len(slope1)) + 1
-            ys = ms * xs[:, None, None] + bs
-            clean_slope2 = slope2 - slope1 + ys
-
-            # Slope of slope (lol)
-            ms, bs = slope_im(slope2)
-            xs = np.arange(len(slope2)) + 1
-            ys = ms * xs[:, None, None] + bs
-            clean_slope1 = slope1 - slope2 + ys
-
-            slope = (clean_slope1 + clean_slope2) / 2
-            slope_var = (slope1_var + slope2_var) / 2
-
-            print("Slopes are cleaned")
-
-        elif method == 2:
-            from .misc import slope_im
-
-            # ngroups = data.shape[1]
-            # nslopes = ngroups - 1
-
-            # slopes = np.diff(data, axis=1)
-            # ms, bs = slope_im(slopes)
-            # if sigma > 0:
-            #     ms = sigma_clip(ms, sigma=sigma)
-            #     bs = sigma_clip(bs, sigma=sigma)
-            # m, _ = calc_mean_and_var(ms)
-            # b, _ = calc_mean_and_var(bs)
-
-            # xs = np.arange(nslopes) + 1
-            # slope = m * xs[:, None, None] + b
-            # _, slope_var = calc_mean_and_var(slopes)
-
-            nints = data.shape[0]
-            ngroups = data.shape[1]
-            nslopes = ngroups - 1
-
-            slopes = np.diff(data, axis=1)
-            if sigma > 0:
-                slopes = sigma_clip(slopes, sigma=sigma)
-            _, slope_var = calc_mean_and_var(slopes)
-
-            ms, bs = vmap(slope_im)(slopes)
-            m, _ = calc_mean_and_var(ms)
-            b, _ = calc_mean_and_var(bs)
-
-            xs = np.arange(nslopes) + 1
-            slope = m * xs[:, None, None] + b
-
-            # Slight magic numbers here
-            nan_mask = np.where(slope_var * nints > (2.0 * slope + 14**2))
-            slope = slope.at[nan_mask].set(np.nan)
-            slope_var = slope_var.at[nan_mask].set(np.nan)
-
-        elif method == 3:
-
-            clean_data = sigma_clip(data, sigma=sigma)
-            ramp, ramp_var = calc_mean_and_var(clean_data)
-            slope = np.diff(ramp, axis=0)
-
-            nslope = slope.shape[0]
-            slope_var = np.array([ramp_var[i] + ramp_var[i + 1] for i in range(nslope)])
-
-        elif method == 4:
-
-            nints = data.shape[0]
-            ngroups = data.shape[1]
-            nslopes = ngroups - 1
-
-            # if sigma > 0:
-            #     data = sigma_clip(data, sigma=sigma)
-
-            slopes = np.diff(data, axis=1)
-            if sigma > 0:
-                slopes = sigma_clip(slopes, sigma=sigma)
-
-            # Re-project these variances after linearising the data
-            _, slope_var = calc_mean_and_var(slopes)
-
-            def fit_curvature(slope):
-                return least_sq(np.arange(len(slope)) + 1.5, slope)
-
-            def curvature_im(slopes):
-                ms, bs = vmap(fit_curvature)(slopes.reshape(len(slopes), -1).T)
-                return ms.reshape(slopes.shape[1:]) / 2, bs.reshape(slopes.shape[1:])
-
-            curvatures, photon_rates = vmap(curvature_im)(slopes)
-            curvature, curvature_var = calc_mean_and_var(curvatures)
-            photon_rate, photon_rate_var = calc_mean_and_var(photon_rates)
-
-            psf = photon_rate * ngroups
-            psf_var = photon_rate_var * ngroups
-
-            file["SCI"].data = psf
-
-            # Save the biases as a separate extension
+            # Save the variance as a separate extension
             header = fits.Header()
             header["EXTNAME"] = "SCI_VAR"
-            file.append(fits.ImageHDU(data=psf_var, header=header))
+            file.append(fits.ImageHDU(data=slope_var, header=header))
 
-            # Save as calgrp
-            file.writeto(file_calgrps, overwrite=True)
+            # Save the zero point as a separate extension
+            header = fits.Header()
+            header["EXTNAME"] = "ZPOINT"
+            file.append(fits.ImageHDU(data=zero_point, header=header))
+
+            # Save the zero point variance as a separate extension
+            header = fits.Header()
+            header["EXTNAME"] = "ZPOINT_VAR"
+            file.append(fits.ImageHDU(data=zero_point_var, header=header))
+
+            # Save as calslope
+            file.writeto(file_calslope, overwrite=True)
             file.close()
-
-            continue
-
-        else:
-            raise ValueError("Invalid method")
-
-        # full_zero_ramp = np.zeros((nints, ngroups + 1, npix, npix))
-        # full_ramp = full_zero_ramp.at[:, 1:].set(data)
-
-        # cleaned_slopes = []
-        # for k in range(ngroups):
-        #     group_vals = full_ramp[:, k : k + 2]
-        #     groups = np.arange(k, k + 2)
-
-        #     slopes, biases = vmap(slope_im, (0, None))(group_vals, groups)
-        #     clipped = astropy.stats.sigma_clip(slopes, axis=0, sigma=3)
-        #     cleaned_slopes.append(onp.ma.filled(clipped, fill_value=onp.nan))
-
-        # # This output has the dimension of the groups and ints swapped
-        # return np.swapaxes(np.array(cleaned_slopes), 0, 1)
-
-        # if lower_bound:
-
-        #     # Load the read noise
-        #     import pkg_resources as pkg
-
-        #     file_path = pkg.resource_filename(__name__, "data/SUB80_readnoise.npy")
-        #     read_var = np.load(file_path)[None, ...] ** 2
-
-        #     # Get the number of integrations
-        #     nints = data.shape[0]
-
-        #     # Get the minimum variance
-        #     min_var = (ramp + read_var) / nints
-
-        #     bad_vars = ramp_var < min_var
-        #     ramp_var = np.where(bad_vars, min_var, ramp_var)
-        #     nbad = bad_vars.sum()
-        #     print(
-        #         f"Corrected {nbad} variances to the minimum value, ~{100 * nbad / ramp_var.size:.2f}% of all pixel reads."
-        #     )
-
-        # Write to file
-        # print(np.sum(np.isnan(ramp)) / ramp.size)
-        # print(np.nansum(ramp))
-        # print(np.nansum(ramp_var))
-        # print()
-        # file["SCI"].data = ramp
-        file["SCI"].data = slope
-
-        # Save the biases as a separate extension
-        header = fits.Header()
-        header["EXTNAME"] = "SCI_VAR"
-        # file.append(fits.ImageHDU(data=ramp_var, header=header))
-        file.append(fits.ImageHDU(data=slope_var, header=header))
-
-        # # Save the biases as a separate extension
-        # header = fits.Header()
-        # header["EXTNAME"] = "BIAS"
-        # file.append(fits.ImageHDU(data=bias, header=header))
-
-        # # Save the bias variance as a separate extension
-        # header = fits.Header()
-        # header["EXTNAME"] = "BIAS_VAR"
-        # file.append(fits.ImageHDU(data=bias_var, header=header))
-
-        # Save as calgrp
-        file.writeto(file_calgrps, overwrite=True)
-        file.close()
 
     print("Done\n")
     return output_path

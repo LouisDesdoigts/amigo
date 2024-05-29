@@ -117,6 +117,61 @@ class ConvBFE(eqx.Module):
         return self(x)
 
 
+class NonLinDetector(eqx.Module):
+    """
+    A CNN To calculate the charge bleeding.
+
+    Output should be normalised such that the sum is zero, ie conserve charge.
+
+    Norm fact is the value that everything is scaled by at the input/output of the
+    network. This keeps the network values in a reasonable range, and allows for the
+    inputs/outputs to be in the same range as the input data. This will need to be
+    larger for deeper well depth data.
+    """
+
+    layers: List[Callable]
+    oversample: int = eqx.field(static=True)
+    pad: int = eqx.field(static=True)
+
+    def __init__(self, layers, oversample, pad):
+
+        self.layers = layers
+        self.oversample = oversample
+        self.pad = pad
+
+    @property
+    def field_of_regard(self):
+        return calc_rfield(self.layers)
+
+    def image_to_grads(self, image):
+        ygrads, xgrads = np.gradient(image)
+        yygrads = np.gradient(ygrads)[0]
+        xxgrads = np.gradient(xgrads)[1]
+        output = np.array([xgrads, ygrads, xxgrads, yygrads])
+        return output / np.array([1e2, 1e2, 1e2, 1e2])[:, None, None]
+
+    def __call__(self, image):
+        # Re add back to the original image
+        initial_charge = dlu.downsample(image, self.oversample, mean=False)
+        # return initial_charge
+
+        x = self.image_to_grads(image)
+        for layer in self.layers:
+            x = layer(x)
+        # bleeding = np.squeeze(x) * 5e4
+        bleeding = np.squeeze(x) * 1e3
+
+        k = self.pad
+
+        cent_bleed = bleeding[k:-k, k:-k]
+        bleeding -= cent_bleed.mean()
+        return initial_charge + bleeding
+
+    def apply_array(self, x):
+        """This only exists to match PolyBFE methods"""
+        return self(x)
+
+
 # import jax
 # import jax.numpy as np
 # import jax.random as jr

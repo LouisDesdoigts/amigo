@@ -398,11 +398,14 @@ from jax import vmap
 import dLux.utils as dlu
 
 
-def image_to_grads(image, scale=1e-2):
+def image_to_grads(image, scale=1e-2, use_psf=False):
     ygrads, xgrads = np.gradient(image)
     yygrads = np.gradient(ygrads)[0]
     xxgrads = np.gradient(xgrads)[1]
-    output = np.array([xgrads, ygrads, xxgrads, yygrads])
+    if use_psf:
+        output = np.array([image, xgrads, ygrads, xxgrads, yygrads])
+    else:
+        output = np.array([xgrads, ygrads, xxgrads, yygrads])
     return output * scale
 
 
@@ -425,6 +428,8 @@ def apply_gradient_BFE(
     oversample,
     return_bleed_kernels=False,
     return_bleed=False,
+    conserve_charge=True,
+    use_psf=False,
 ):
     """ """
     # npix = 80
@@ -438,7 +443,7 @@ def apply_gradient_BFE(
     # assert orders == [1]
 
     # grads = image_to_grads(image, scale=1e-2)
-    grads = image_to_grads(image)
+    grads = image_to_grads(image, use_psf=use_psf)
     n_ims = len(grads)
 
     kern_fn = lambda image: build_pixel_kernels(image, npix, k, oksize, oversample)
@@ -461,7 +466,9 @@ def apply_gradient_BFE(
     # This gives no-nans (grad or hessian), for some inexplicable reason
     bleeds = jtu.tree_map(apply_basis, list(coeffs), orders)
     bleeding = np.array(jtu.tree_leaves(bleeds)).sum(0)
-    bleeding -= bleeding.mean()
+
+    if conserve_charge:
+        bleeding -= bleeding.mean()
 
     # Return just the bleeding if requested (as a dict)
     if return_bleed:
@@ -479,8 +486,10 @@ class GradientPolyBFE(dl.detector_layers.DetectorLayer):
     coeffs: jax.Array
     oksize: int = eqx.field(static=True)
     k: int = eqx.field(static=True)
+    conversed: bool = eqx.field(static=True)
+    use_psf: bool = eqx.field(static=True)
 
-    def __init__(self, ksize, oversample, orders=[1]):
+    def __init__(self, ksize, oversample, orders=[1], conserved=True, use_psf=False):
         self.ksize = int(ksize)
         self.oversample = int(oversample)
         self.orders = orders
@@ -491,6 +500,9 @@ class GradientPolyBFE(dl.detector_layers.DetectorLayer):
 
         ngrads = len(image_to_grads(np.zeros((80, 80))))
         self.coeffs = np.zeros((len(orders), ngrads, self.oksize**2))
+
+        self.conversed = conserved
+        self.use_psf = use_psf
 
     def apply(self, PSF):
         return
@@ -504,6 +516,7 @@ class GradientPolyBFE(dl.detector_layers.DetectorLayer):
             self.k,
             self.oksize,
             self.oversample,
+            conserve_charge=self.conversed,
         )
 
 

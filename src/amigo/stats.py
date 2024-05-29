@@ -69,59 +69,60 @@ import jax.numpy as np
 from jax.scipy.stats import norm
 from amigo.FIM import FIM
 from amigo.modelling import model_fn
+from jax.scipy.stats import multivariate_normal as mvn
 
-# # Actual posterior
-# # def posterior(model, exposure, model_fn, per_pix=True, zero_idx=-1, **kwargs):
-# def posterior(model, exposure, per_pix=True, **kwargs):
-#     slope = model_fn(model, exposure, **kwargs)
-#     posterior_vec = exposure.loglike_vec(slope)
-#     posterior = np.nansum(posterior_vec)
+# def log_likelihood(x, mean, var):
+#     return norm.logpdf(x, mean, np.sqrt(var))
+
+
+def get_slope_cov(n_slope, read_noise):
+    tri = np.tri(n_slope, n_slope, 1)
+    mask = (tri * tri.T) - np.eye(n_slope)
+    return -(read_noise**2) * mask
+
+
+# def log_likelihood(x, mean, var, read_noise=10):
+#     cov = np.eye(len(var)) * var + get_slope_cov(len(var), read_noise)
+#     return mvn.logpdf(x, mean, cov)
+
+
+# # def posterior(model, exposure, per_pix=True, as_psf=False, photon=False, return_vec=False, return_image=False, **kwargs):
+# def posterior(model, exposure, per_pix=True, return_vec=False, return_image=False, **kwargs):
+#     to_vec = lambda x: exposure.to_vec(x)
+#     slopes = to_vec(model_fn(model, exposure, **kwargs))
+#     data = to_vec(exposure.data)
+#     var = to_vec(exposure.variance)
+
+#     posterior = vmap(log_likelihood, (0, 0, 0))(slopes, data, var)
+
+#     if return_vec:
+#         return posterior
+#         # pass
+
+#     # if return_image:
+#     # loglike_vec = np.nansum(self.loglike_vec(ramp), axis=1)
+#     # return (np.nan * np.ones_like(ramp[0])).at[*self.support].set(loglike_vec)
+#     # return posterior
+
 #     if per_pix:
-#         return posterior / posterior_vec.size
-#     return posterior
+#         return np.nanmean(posterior)
+#     return np.nansum(posterior)
 
 
-def log_likelihood(x, mean, var):
-    return norm.logpdf(x, mean, np.sqrt(var))
+def posterior(model, exposure, per_pix=True, return_vec=False, return_im=False, **kwargs):
+    # Get the model
+    slopes = model_fn(model, exposure, **kwargs)
 
+    # Return vector
+    if return_vec:
+        return exposure.log_likelihood(slopes)
 
-def posterior(model, exposure, per_pix=True, as_psf=False, photon=False, return_image=False, **kwargs):
-    to_vec = lambda x: exposure.to_vec(x)
-    slopes = to_vec(model_fn(model, exposure, **kwargs))
-    data = to_vec(exposure.data)
-    var = to_vec(exposure.variance)
+    # return image
+    if return_im:
+        return exposure.log_likelihood(slopes, return_im=True)
 
-    # Probs dont need this anymore
-    var = np.abs(var)
-
-    # plt.title("Slopes")
-    # plt.imshow(slopes.sum(0))
-    # plt.colorbar()
-    # plt.show()
-
-    # plt.title("Data")
-    # plt.imshow(data.sum(0))
-    # plt.colorbar()
-    # plt.show()
-
-    # plt.title("Variance")
-    # plt.imshow(var.sum(0))
-    # plt.colorbar()
-    # plt.show()
-
-    if photon:
-         posterior = log_likelihood(slopes.sum(0), data.sum(0), var.sum(0))
-    else:
-        posterior = log_likelihood(slopes, data, var)
-
-    # plt.title("Posterior")
-    # plt.imshow(-posterior)
-    # plt.colorbar()
-    # plt.show()
-
-    if return_image:
-        return posterior
-
+    # Return mean or sum
+    posterior = exposure.log_likelihood(slopes)
     if per_pix:
         return np.nanmean(posterior)
     return np.nansum(posterior)
