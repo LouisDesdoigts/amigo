@@ -90,6 +90,7 @@ def sigma_clip(array, sigma=5.0, axis=0):
     return onp.ma.filled(clipped, fill_value=onp.nan)
 
 
+
 def nan_dqd(file, n_groups: int = None, dq_thresh: float = 0.0):
     # Get the bits
     dq = np.array(file["PIXELDQ"].data) > dq_thresh
@@ -219,7 +220,7 @@ def process_calslope(
         print(f"Breaking into {nchunks} chunks")
 
         for i, chunk in enumerate(chunks):
-          
+
             # Check if the file is a NIS_AMI file
             file_name = file_root + f"_{i+1:0{4}}" + "_nis_calslope.fits"
             file_calslope = os.path.join(output_path + file_name)

@@ -220,12 +220,10 @@ def get_wss_ops(files):
 
 
 def get_Teffs(files, default=4500, straight_default=False, Teff_cache="files/Teffs"):
-
     # Check whether the specified cache directory exists
     if not os.path.exists(Teff_cache):
         os.makedirs(Teff_cache)
 
-    # print("Searching for Teffs...")
     Teffs = {}
     for file in files:
         prop_name = file[0].header["TARGPROP"]
