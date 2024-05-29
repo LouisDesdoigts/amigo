@@ -13,11 +13,18 @@ def model_fn(model, exposure, with_BFE=True, to_BFE=False, zero_idx=-1, noise=Tr
     # Get exposure key
     key = exposure.key
 
-    # Get wavelengths and weights
+    # Updating source weights
     wavels, filt_weights = model.filters[exposure.filter]
-    weights = filt_weights * planck(wavels, model.Teffs[exposure.star])
-    weights *= (10 ** model.fluxes[key]) / weights.sum()
-    # weights *= model.fluxes[key] / weights.sum()
+    if exposure.star == "IO":
+        weights = filt_weights  # TODO spectrum
+    elif exposure.star == "PSFCAL.2022A-HD2236-K6":
+        weights = filt_weights * planck(wavels, model.Teffs[exposure.star])
+    # weights *= 10 ** (model.log_fluxes[key]) / weights.sum()
+
+    source = model.source.set(
+        ["position", "log_flux", "wavelengths", "weights"],
+        [model.positions[key], model.fluxes[key], wavels, weights],
+    )
 
     # Apply correct aberrations
     aberrations = model.aberrations[key]
@@ -29,39 +36,13 @@ def model_fn(model, exposure, with_BFE=True, to_BFE=False, zero_idx=-1, noise=Tr
         [aberrations, exposure.opd],
     )
 
-    # Per exposure mirror coherence
-    if hasattr(model, "coherence"):
-        optics = optics.set("holes.reflectivity", model.coherence[key])
-
-    # Make sure this has correct position units and get wavefronts
-    pos_rad = dlu.arcsec2rad(model.positions[key])
-    # PSF = optics.propagate(wavels, pos_rad, weights, return_psf=True)
-    wfs = optics.propagate(wavels, pos_rad, weights, return_wf=True)
-
-    if hasattr(model, "masks"):
-        # Get visibilities and final psfs
-        vis_key = "_".join([exposure.star, exposure.filter])
-        mask = model.masks[exposure.filter]
-        amplitudes = model.amplitudes[vis_key]
-        phases = model.phases[vis_key]
-        vis = visibilities(amplitudes, phases)
-        psf = uv_model(vis, wfs.psf, mask).sum(0)
-        PSF = dl.PSF(psf, wfs.pixel_scale.mean(0))
-    else:
-        PSF = dl.PSF(wfs.psf.sum(0), wfs.pixel_scale.mean(0))
+    PSF = source.model(optics, return_psf=True)
 
     # Apply the detector model and turn it into a ramp
     psf = model.detector.model(PSF)
 
     # Model the ramp
     ramp = model_ramp(psf, exposure.ngroups)
-
-    # # Add the bias - Method 1, estimate from model
-    # first_group_est = ramp[0]
-    # bias_est = exposure.zero_point - dlu.downsample(first_group_est, 4, mean=False)
-    # bias_est = np.repeat(np.repeat(bias_est, 4, axis=0), 4, axis=1)
-    # bias_est /= 16 # Normalise the subsampling
-    # bias_est = np.where(np.isnan(bias_est), 0.0, bias_est)
 
     # Add the bias - Method 2, estimate from data
     bias_est = exposure.zero_point - exposure.data[0]
