@@ -220,7 +220,10 @@ def get_wss_ops(files):
 
 
 def get_Teffs(files, default=4500, straight_default=False, Teff_cache="files/Teffs"):
-    print("Searching for Teffs...")
+    # Check whether the specified cache directory exists
+    if not os.path.exists(Teff_cache):
+        os.makedirs(Teff_cache)
+
     Teffs = {}
     for file in files:
         prop_name = file[0].header["TARGPROP"]
@@ -348,6 +351,10 @@ def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=Fa
     Note caches masks to disk for faster loading. The cache is indexed _relative_ to
     where the file is run from.
     """
+
+    # Check whether the specified cache directory exists
+    if not os.path.exists(mask_cache):
+        os.makedirs(mask_cache)
 
     masks = {}
     for file in files:
