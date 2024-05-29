@@ -292,6 +292,7 @@ def get_coherence(exposures):
 def find_position(psf, pixel_scale=0.065524085):
     origin = np.array(determine_origin(psf, verbose=False))
     origin -= (np.array(psf.shape) - 1) / 2
+    origin += np.array([0.5, 0.5])
     position = origin * pixel_scale * np.array([1, -1])
     return position
 

@@ -194,8 +194,9 @@ def optimise(
                 return model, losses, model_history, opt_state
             return model, losses, model_history
 
-        if i in args_updates:
-            args = args_fn(model, args)
+        # if i in args_updates:
+        #     args = args_fn(model, args)
+        model, args = args_fn(model, args)
 
         model, _loss, opt_state = step_fn(model, opt_state, args)
 
