@@ -22,7 +22,9 @@ class DynamicAMI(dl.layers.optical_layers.OpticalLayer):
     def gen_AMI(self, npix, diameter):
         rmax = self.f2f / np.sqrt(3)
         coords = dlu.pixel_coords(npix, diameter)
-        pscale = diameter / npix
+
+        # Rotate, shear and compress coordinates
+        coords = self.transformation.apply(coords)
 
         # Hard-coded offsets to match initial positioning to webbpsf
         sx = +21 * (diameter / npix)
@@ -30,14 +32,15 @@ class DynamicAMI(dl.layers.optical_layers.OpticalLayer):
         coords = dlu.translate_coords(coords, np.array([sx, sy]))
 
         # Shift the coordinates for each hole
-        shifted_coords = vmap(dlu.translate_coords, (None, 0))(coords, self.holes)
+        coords = vmap(dlu.translate_coords, (None, 0))(coords, self.holes)
 
-        # Rotate, shear and compress coordinates
-        transformed_coords = vmap(self.transformation.apply)(shifted_coords)
+        # # Rotate, shear and compress coordinates
+        # transformed_coords = vmap(self.transformation.apply)(shifted_coords)
 
         # Generate the hexagons
+        pscale = diameter / npix
         hex_fn = lambda coords: dlu.soft_reg_polygon(coords, rmax, 6, pscale)
-        return vmap(hex_fn)(transformed_coords).sum(0)
+        return vmap(hex_fn)(coords).sum(0)
 
     def apply(self, wavefront):
         wavefront = wavefront * self.gen_AMI(wavefront.npixels, wavefront.diameter)
