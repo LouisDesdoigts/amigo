@@ -8,16 +8,18 @@ import time
 from datetime import timedelta
 from typing import Any
 from jax import Array
-from .core import AmigoHistory
+from amigo.core import AmigoHistory
 
 # import tqdm appropriately
 from IPython import get_ipython
+
 if get_ipython() is not None:
     # Running in Jupyter Notebook
     from tqdm.notebook import tqdm
 else:
     # Running in a script or other non-Jupyter environment
     from tqdm import tqdm
+
 
 def get_optimiser(pytree, parameters, optimisers):
     # Pre-wrap single inputs into a list since optimisers have a length of 2
@@ -152,18 +154,31 @@ def optimise(
         # This disappears when compiled, so use it as a compile check
         print("Step fn compiling...")
 
-        # Calculate the loss and gradient
-        loss, grads = val_grad_fn(model, args)
+        def stepper(model, opt_state, args):
+            # Calculate the loss and gradient
+            loss, grads = val_grad_fn(model, args)
+            grads = grad_fn(model, grads, args, optimisers)
+            grads = nan_check(grads)
 
-        grads = grad_fn(model, grads, args, optimisers)
-        grads = nan_check(grads)
+            # Apply the update
+            updates, opt_state = optim.update(grads, opt_state, model)
+            model = zdx.apply_updates(model, updates)
 
-        # Apply the update
-        updates, opt_state = optim.update(grads, opt_state, model)
-        model = zdx.apply_updates(model, updates)
+            # Apply normalisation
+            model = norm_fn(model, args)
 
-        # Apply normalisation
-        model = norm_fn(model, args)
+            return model, loss, opt_state
+
+        if "batches" in args.keys():
+            loss = 0.0
+            for i in range(len(args["batches"])):
+                args["exposures"] = args["batches"][i]
+                model, _loss, opt_state = stepper(model, opt_state, args)
+                loss += _loss
+
+        else:
+            model, loss, opt_state = stepper(model, opt_state, args)
+
         return model, loss, opt_state
 
     # Create model history
@@ -194,8 +209,6 @@ def optimise(
                 return model, losses, model_history, opt_state
             return model, losses, model_history
 
-        # if i in args_updates:
-        #     args = args_fn(model, args)
         model, args = args_fn(model, args)
 
         model, _loss, opt_state = step_fn(model, opt_state, args)
@@ -219,6 +232,3 @@ def optimise(
     if return_state:
         return model, losses, model_history, opt_state
     return model, losses, model_history
-
-
-#
