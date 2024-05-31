@@ -101,6 +101,7 @@ def uv_hex_mask(
     psf_oversample,
     uv_pad,
     mask_pad,
+    crop_npix=None,
     verbose=False,
 ):
     """
@@ -119,6 +120,10 @@ def uv_hex_mask(
     dx = dlu.arcsec2rad(psf_pscale) / psf_oversample
     shifted_coords = osamp_freqs(psf_npix * uv_pad, dx, mask_pad)
     uv_coords = np.array(np.meshgrid(shifted_coords, shifted_coords))
+
+    # cropping
+    if crop_npix is not None:
+        uv_coords = vmap(dlu.resize, (0, None))(uv_coords, crop_npix)
 
     # Apply the mask transformations
     tf = tf.set("translation", np.zeros(2))  # Enforce paraxial splodges (since they are)
@@ -179,7 +184,11 @@ def splodge_mask(mask, vis):
     return dlu.eval_basis(mask, coeffs)
 
 
-def apply_visibilities(psf, mask, vis):
+def apply_visibilities(psf, mask, vis, pad_to=None):
+    # zero padding to correct size
+    if pad_to is not None:
+        mask = vmap(dlu.resize, (0, None))(mask, pad_to)
+
     # Get splodge mask and inverse
     splodges = splodge_mask(mask, vis)
     inv_splodge_support = np.abs(1 - mask.sum(0))
@@ -201,14 +210,14 @@ def visibilities(amplitudes, phases):
     return amplitudes * np.exp(1j * phases)
 
 
-def uv_model(vis, psfs, mask, cplx=False):
+def uv_model(vis, psfs, mask, cplx=False, pad=2):
     # Get the sizes
     npix = psfs.shape[-1]
-    npix_pad = mask.shape[-1]
+    npix_pad = pad * npix  # array size to pad mask and psfs to
 
     # Pad, apply the splodges, and cut
     psfs_pad = vmap(lambda x: dlu.resize(x, npix_pad))(psfs)
-    cplx_psfs_pad = vmap(apply_visibilities, (0, 0, None))(psfs_pad, mask, vis)
+    cplx_psfs_pad = vmap(apply_visibilities, (0, 0, None, None))(psfs_pad, mask, vis, npix_pad)
     cplx_psfs = vmap(lambda x: dlu.resize(x, npix))(cplx_psfs_pad)
 
     # Return complex or magnitude

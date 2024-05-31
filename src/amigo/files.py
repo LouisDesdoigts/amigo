@@ -134,7 +134,6 @@ def get_Teff(targ_name):
 
 
 def get_filters(files, nwavels=9):
-
     filters = {}
     for file in files:
         filt = file[0].header["FILTER"]
@@ -354,6 +353,13 @@ def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=Fa
     if not os.path.exists(mask_cache):
         os.makedirs(mask_cache)
 
+    crop_dict = {
+        "F277W": 714,
+        "F380M": 486,
+        "F430M": 426,
+        "F480M": 384,
+    }
+
     masks = {}
     for file in files:
         filt = file[0].header["FILTER"]
@@ -363,6 +369,7 @@ def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=Fa
 
         calc_pad = 3  # 3x oversample on the mask calculation for soft edges
         uv_pad = 2  # 2x oversample on the UV transform
+        crop_npix = crop_dict[filt]  # cropping masks
 
         _masks = []
         looper = tqdm(wavels) if verbose else wavels
@@ -371,6 +378,7 @@ def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=Fa
             file_key = f"{mask_cache}/{wl_key}_{optics.oversample}"
             try:
                 mask = np.load(f"{file_key}.npy")
+
             except FileNotFoundError:
                 mask = uv_hex_mask(
                     optics.pupil_mask.holes,
@@ -382,12 +390,10 @@ def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=Fa
                     optics.oversample,
                     uv_pad,
                     calc_pad,
+                    crop_npix,
                 )
-                np.save(f"{file_key}.npy", mask)
+            np.save(f"{file_key}.npy", mask)
             _masks.append(mask)
 
         masks[filt] = np.array(_masks)
     return masks
-
-
-#
