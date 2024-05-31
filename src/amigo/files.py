@@ -392,7 +392,7 @@ def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=Fa
                     calc_pad,
                     crop_npix,
                 )
-            np.save(f"{file_key}.npy", mask)
+                np.save(f"{file_key}.npy", mask)
             _masks.append(mask)
 
         masks[filt] = np.array(_masks)
