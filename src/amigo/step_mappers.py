@@ -2,8 +2,9 @@ import equinox as eqx
 import zodiax as zdx
 import jax
 import jax.numpy as np
-from amigo.FIM import FIM
-from amigo.stats import variance_model, posterior
+from .FIM import FIM
+from .stats import posterior
+from .modelling import variance_model
 import jax.tree_util as jtu
 from tqdm.notebook import tqdm
 import time
@@ -168,16 +169,11 @@ def calc_local_fisher(
         **kwargs,
     )
 
-    # model, exposure, self_fisher=True, per_pix=True):
-
-    # def fisher_fn(*args, **kwargs):
-    #     return get_fisher(model, exposure, per_pix=per_pix, *args, **kwargs)
-
     key = exposure.key
 
     # Number of aberrations
-    nmirror = exposure.aberrations.shape[0]
-    nzern = exposure.aberrations.shape[1]
+    nmirror = model.aberrations[key].shape[0]
+    nzern = model.aberrations[key].shape[1]
     n = nmirror * nzern
 
     """Locals"""
@@ -237,7 +233,13 @@ class LocalStepMapper(MatrixMapper):
 
         self.step_type = "matrix"
         self.fisher_matrix = calc_local_fisher(
-            model, exposure, self_fisher=True, per_pix=True, save_ram=save_ram, vmapped=vmapped, **kwargs,
+            model,
+            exposure,
+            self_fisher=True,
+            per_pix=True,
+            save_ram=save_ram,
+            vmapped=vmapped,
+            **kwargs,
         )
         self.step_matrix = -np.linalg.inv(self.fisher_matrix)
 
@@ -270,19 +272,21 @@ def calculate_mask_fisher(
         **kwargs,
     )
     global_params = [
-        "pupil_mask.holes",
-        # "pupil_mask.f2f",
+        "holes",
+        "f2f",
+        "translation",
         "compression",
         "rotation",
         "shear",
     ]
 
-    N = np.array(jtu.tree_map(lambda x: x.size, model.get(global_params))).sum()
+    # N = np.array(jtu.tree_map(lambda x: x.size, model.get(global_params))).sum()
 
     # Holes ~1.5 minutes
     t0 = time.time()
     fisher_mask = fisher_fn(params=global_params, **kwargs)
     # mask = np.zeros((N, N))
+    N = len(fisher_mask)
     mask = np.ones((N, N))
     mask = mask.at[:14, :14].set(np.eye(14))
     # mask = mask.at[14:, 14:].set(1.0)
@@ -299,8 +303,9 @@ class MaskStepMapper(MatrixMapper):
 
         self.step_type = "matrix"
         self.params = [
-            "pupil_mask.holes",
-            # "pupil_mask.f2f",
+            "holes",
+            "f2f",
+            "translation",
             "compression",
             "rotation",
             "shear",
@@ -628,7 +633,6 @@ class GradientBFEStepMapper(MatrixMapper):
             elif mixed_fisher:
                 step_matrix = -np.linalg.inv(fisher_matrix.sum(0))
             else:
-                from amigo.fisher_matrices import create_block_diagonal
 
                 n_marginal = model.BFE.oksize**2
                 block = create_block_diagonal(fisher_matrix.shape[-1], n_marginal)
@@ -876,6 +880,3 @@ class DarkCurrentStepMapper(MatrixMapper):
         fisher_matrix = np.array(fisher_matrices)
         step_matrix = -np.linalg.inv(fisher_matrix.sum(0))
         return self.set(["fisher_matrix", "step_matrix"], [fisher_matrix, step_matrix])
-
-
-#

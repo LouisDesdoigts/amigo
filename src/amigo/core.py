@@ -1,22 +1,136 @@
-import equinox as eqx
-import dLuxWebbpsf as dlw
-from jax import Array
-import zodiax as zdx
+import jax
 import jax.numpy as np
+import jax.scipy as jsp
 import jax.tree_util as jtu
-from jax import vmap
-import dLux.utils as dlu
+import equinox as eqx
+import zodiax as zdx
 import dLux as dl
-from jax.scipy.stats import multivariate_normal as mvn, norm
-from .detector_layers import Rotate, ApplySensitivities, GaussianJitter
-from .optical_layers import DynamicAMI
-from .files import prep_data, get_wss_ops, find_position
-import pkg_resources as pkg
+import dLux.utils as dlu
 import matplotlib.pyplot as plt
 from matplotlib import colormaps, colors
-import jax.scipy as jsp
-from .stats import get_slope_cov
-from .modelling import model_fn
+from jax.lax import dynamic_slice as lax_slice
+from .misc import planck
+from .optical_layers import AMIOptics
+from .detector_layers import SUB80Ramp
+
+
+class BaseModeller(zdx.Base):
+    params: dict
+
+    def __init__(self, params):
+        self.params = params
+
+    def __getattr__(self, key):
+        if key in self.params:
+            return self.params[key]
+        for k, val in self.params.items():
+            if hasattr(val, key):
+                return getattr(val, key)
+        raise AttributeError(
+            f"Attribute {key} not found in params of {self.__class__.__name__} object"
+        )
+
+    def __getitem__(self, key):
+
+        values = {}
+        for param, item in self.params.items():
+            if isinstance(item, dict) and key in item.keys():
+                values[param] = item[key]
+
+        return values
+
+
+class AmigoModel(BaseModeller):
+    Teffs: dict
+    filters: dict
+    optics: AMIOptics
+    detector: SUB80Ramp
+    vis_model: None
+
+    def __init__(self, params, optics, detector, Teffs, filters, vis_model=None):
+        self.params = params
+        self.Teffs = Teffs
+        self.filters = filters
+        self.optics = optics
+        self.detector = detector
+        self.vis_model = vis_model
+
+    def model(self, exposure, **kwargs):
+        return self.model_exposure(exposure, **kwargs)
+
+    def model_psf(self, pos, wavels, weights):
+
+        wfs = self.optics.propagate(wavels, dlu.arcsec2rad(pos), weights, return_wf=True)
+
+        psfs = wfs.psf
+        if self.vis_model is not None:
+            psf = self.vis_model(psfs)
+        else:
+            psf = psfs.sum(0)
+        return dl.PSF(psf, wfs.pixel_scale.mean(0))
+
+    def model_detector(self, psf, to_BFE=False):
+
+        for key, layer in self.detector.layers.items():
+            if key == "EDM" and to_BFE:
+                return psf.data
+            psf = layer.apply(psf)
+        return psf.data
+
+    def model_exposure(self, exposure, to_BFE=False, slopes=False):
+        # Get exposure key
+        key = exposure.key
+
+        # Get wavelengths and weights
+        wavels, filt_weights = self.filters[exposure.filter]
+        weights = filt_weights * planck(wavels, self.Teffs[exposure.star])
+        weights = weights / weights.sum()
+
+        position = self.positions[key]
+        flux = 10 ** self.fluxes[key]
+        aberrations = self.aberrations[key]
+        one_on_fs = self.one_on_fs[key]
+        # dark_current = self.dark_current
+        opd = exposure.opd
+
+        optics = self.optics.set(["pupil.coefficients", "pupil.opd"], [aberrations, opd])
+
+        if "coherence" in self.params.keys():
+            coherence = self.coherence[key]
+            optics = optics.set("holes.reflectivity", coherence)
+
+        detector = self.detector.set(
+            ["EDM.ngroups", "EDM.flux", "EDM.filter", "one_on_fs"],
+            [exposure.ngroups, flux, exposure.filter, one_on_fs],
+        )  # , dark_current])
+
+        self = self.set(["optics", "detector"], [optics, detector])
+        psf = self.model_psf(position, wavels, weights)
+        ramp = self.model_detector(psf, to_BFE=to_BFE)
+
+        if to_BFE:
+            return ramp
+
+        if slopes:
+            return np.diff(ramp, axis=0)
+
+        return ramp
+
+    def __getattr__(self, key):
+        if key in self.params:
+            return self.params[key]
+        for k, val in self.params.items():
+            if hasattr(val, key):
+                return getattr(val, key)
+        if hasattr(self.optics, key):
+            return getattr(self.optics, key)
+        if hasattr(self.detector, key):
+            return getattr(self.detector, key)
+        if hasattr(self.vis_model, key):
+            return getattr(self.vis_model, key)
+        raise AttributeError(
+            f"Attribute {key} not found in params of {self.__class__.__name__} object"
+        )
 
 
 class Exposure(zdx.Base):
@@ -26,11 +140,11 @@ class Exposure(zdx.Base):
 
     """
 
-    data: Array
-    variance: Array
-    zero_point: Array
-    support: Array = eqx.field(static=True)
-    opd: Array = eqx.field(static=True)
+    data: jax.Array
+    variance: jax.Array
+    zero_point: jax.Array
+    support: jax.Array = eqx.field(static=True)
+    opd: jax.Array = eqx.field(static=True)
     nints: int = eqx.field(static=True)
     ngroups: int = eqx.field(static=True)
     nslopes: int = eqx.field(static=True)
@@ -38,26 +152,18 @@ class Exposure(zdx.Base):
     star: str = eqx.field(static=True)
     key: str = eqx.field(static=True)
 
-    def __init__(self, file, opd=None, key_fn=None, ms_thresh=-3.0, as_psf=False):
+    def __init__(self, file, data, variance, support, opd, key_fn):
 
-        if key_fn is None:
-            key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:4])
-
-        if opd is None:
-            opd = get_wss_ops([file])[0]
-
-        data, variance, support = prep_data(file, ms_thresh=ms_thresh, as_psf=as_psf)
-
-        self.nints = file[0].header["NINTS"]
-        self.ngroups = file[0].header["NGROUPS"]
-        self.nslopes = len(data)
-        self.filter = file[0].header["FILTER"]
-        self.star = file[0].header["TARGPROP"]
         self.data = data
         self.variance = variance
-        self.support = np.array(support)
-        self.key = key_fn(file)
+        self.support = support
         self.opd = opd
+        self.key = key_fn(file)
+        self.nints = file[0].header["NINTS"]
+        self.ngroups = file[0].header["NGROUPS"]
+        self.nslopes = file[0].header["NGROUPS"] - 1
+        self.filter = file[0].header["FILTER"]
+        self.star = file[0].header["TARGPROP"]
         self.zero_point = np.asarray(file["ZPOINT"].data, float)
 
     def print_summary(self):
@@ -75,41 +181,9 @@ class Exposure(zdx.Base):
     def from_vec(self, vec, fill=np.nan):
         return (fill * np.ones((80, 80))).at[*self.support].set(vec)
 
-    def log_likelihood(self, slope, return_im=False, read_noise=0):
-        """
-        Note we have the infrastructure for dealing with the slope read noise
-        covariance, but it seems to give nan likelihoods when read_noise > ~6. As such
-        we leave the _capability_ here but set the read_noise to default of zero.
-        """
-
-        # Get the model, data, and variances
-        slope_vec = self.to_vec(slope)
-        data_vec = self.to_vec(self.data)
-        var_vec = self.to_vec(self.variance)
-
-        # Get th build we need to deal with the covariance terms
-        cov = get_slope_cov(self.nslopes, read_noise) / self.nints
-        eye = np.eye(self.nslopes)
-
-        # Bind the likelihood function
-        loglike_fn = lambda x, mu, var: mvn.logpdf(x, mu, (eye * var) + cov)
-
-        # Calculate per-pixel likelihood
-        likelihood = vmap(loglike_fn, (0, 0, 0))(slope_vec, data_vec, var_vec)
-
-        # Re-format into image if required
-        if return_im:
-            return self.from_vec(likelihood)
-            # nan_arr = (np.nan * np.ones_like(self.data[0]))
-            # return nan_arr.at[*self.support].set(likelihood)
-
-        # else, return vector
-        return likelihood
-
     def summarise_fit(
         self,
         model,
-        # model_fn,
         residuals=False,
         histograms=False,
         flat_field=False,
@@ -123,21 +197,23 @@ class Exposure(zdx.Base):
         inferno = colormaps["inferno"]
         seismic = colormaps["seismic"]
 
-        # for exp in exposures:
-        # self.print_summary()
-
-        slopes = model_fn(model, self)
+        # slopes = model_fn(model, self)
+        slopes = model.model(self, slopes=True)
         data = self.data
 
         residual = data - slopes
         # loglike_im = self.loglike_im(slope)
-        loglike_im = self.log_likelihood(slopes, return_im=True)
+        from .stats import posterior
 
-        nan_mask = np.where(np.isnan(loglike_im))
+        posterior_im = posterior(model, self, return_im=True)
+
+        # loglike_im = self.log_likelihood(slopes, return_im=True)
+
+        nan_mask = np.where(np.isnan(posterior_im))
         slopes = slopes.at[:, *nan_mask].set(np.nan)
         data = data.at[:, *nan_mask].set(np.nan)
 
-        final_loss = np.nansum(-loglike_im) / np.prod(np.array(data.shape[-2:]))
+        final_loss = np.nansum(-posterior_im) / np.prod(np.array(data.shape[-2:]))
 
         norm_res_slope = residual / (self.variance**0.5)
         norm_res_slope = norm_res_slope.at[:, *nan_mask].set(np.nan)
@@ -167,18 +243,18 @@ class Exposure(zdx.Base):
 
                 plt.figure(figsize=(15, 4))
                 plt.subplot(1, 3, 1)
-                plt.title(f"Data $^{pow}$")
+                plt.title(f"Data $^{str(pow)}$")
                 plt.imshow(effective_data, cmap=inferno, norm=norm)
                 plt.colorbar()
 
                 plt.subplot(1, 3, 2)
-                plt.title(f"Effective PSF $^{pow}$")
+                plt.title(f"Effective PSF $^{str(pow)}$")
                 plt.imshow(effective_psf, cmap=inferno, norm=norm)
                 plt.colorbar()
 
                 plt.subplot(1, 3, 3)
-                plt.title(f"Pixel neg log likelihood: {final_loss:,.1f}")
-                plt.imshow(-loglike_im, cmap=inferno)
+                plt.title(f"Pixel neg log posterior: {final_loss:,.1f}")
+                plt.imshow(-posterior_im, cmap=inferno)
                 plt.colorbar()
 
                 plt.tight_layout()
@@ -336,292 +412,103 @@ class Exposure(zdx.Base):
 
 
 class ExposureFit(Exposure):
-    position: Array
-    aberrations: Array
-    flux: Array  # Log now
-    one_on_fs: Array
-    coherence: Array
+    position: jax.Array
+    aberrations: jax.Array
+    flux: jax.Array  # Log now
+    one_on_fs: jax.Array
+    coherence: jax.Array
 
-    def __init__(self, file, optics, opd=None, key_fn=None, ms_thresh=-3.0, use_pre_calc_fda=True):
+    def __init__(self, exposure, position, flux, FDA, one_on_fs, coherence):
 
-        super().__init__(file, opd=opd, key_fn=key_fn, ms_thresh=ms_thresh)
-
-        n_fda = optics.pupil.coefficients.shape[1]
-        if use_pre_calc_fda:
-            file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
-            FDA = np.load(file_path)[:, :n_fda]
-        else:
-            FDA = np.zeros_like(optics.pupil.coefficients)
-
-        # TODO: Interpolate?
-        psf = self.data[0].at[np.where(np.isnan(self.data[0]))].set(0.0)
-        raw_flux = (80**2) * np.nanmean(self.data[-1]) * (self.ngroups)
-        self.position = find_position(psf, optics.psf_pixel_scale)
+        self.data = exposure.data
+        self.variance = exposure.variance
+        self.support = exposure.support
+        self.opd = exposure.opd
+        self.key = exposure.key
+        self.nints = exposure.nints
+        self.ngroups = exposure.ngroups
+        self.nslopes = exposure.nslopes
+        self.filter = exposure.filter
+        self.star = exposure.star
+        self.zero_point = exposure.zero_point
         self.aberrations = FDA
-        self.flux = np.log10(raw_flux)
-        self.one_on_fs = np.zeros((self.ngroups, 80, 2))
-        self.coherence = np.zeros(7)
-
-    def update_params(self, model):
-        return self.set(
-            ["position", "aberrations", "flux", "one_on_fs"],
-            [
-                model.positions[self.key],
-                model.aberrations[self.key],
-                model.fluxes[self.key],
-                model.one_on_fs[self.key],
-            ],
-        )
+        self.position = position
+        self.flux = flux
+        self.one_on_fs = one_on_fs
+        self.coherence = coherence
 
 
-class PupilAmplitudes(dl.layers.optics.OpticalLayer):
-    basis: Array
-    reflectivity: Array
+class NNWrapper(zdx.Base):
+    values: list
+    shapes: list = eqx.field(static=True)
+    sizes: list = eqx.field(static=True)
+    starts: list = eqx.field(static=True)
+    tree_def: None = eqx.field(static=True)
 
-    def __init__(self, basis, reflectivity=None):
-        self.basis = np.asarray(basis, float)
+    def __init__(self, network):
+        values, tree_def = jtu.tree_flatten(network)
 
-        if reflectivity is None:
-            self.reflectivity = np.zeros(basis.shape[:-2])
-        else:
-            self.reflectivity = np.asarray(reflectivity, float)
+        self.values = np.concatenate([val.flatten() for val in values])
+        self.shapes = [v.shape for v in values]
+        self.sizes = [v.size for v in values]
+        self.starts = [int(i) for i in np.cumsum(np.array([0] + self.sizes))]
+        self.tree_def = tree_def
 
-    def normalise(self):
-        # Normalise to mean of 1
-        return self.add("reflectivity", self.reflectivity.mean())
+    @property
+    def _layers(self):
+        leaves = [
+            lax_slice(self.values, (start,), (size,)).reshape(shape)
+            for start, size, shape in zip(self.starts, self.sizes, self.shapes)
+        ]
+        return jtu.tree_unflatten(self.tree_def, leaves)
 
-    def apply(self, wavefront):
-        # self = self.normalise()
-        reflectivity = 1 + dlu.eval_basis(self.basis, self.reflectivity)
-        return wavefront.multiply("amplitude", reflectivity)
-
-
-### Sub-propagations ###
-def transfer(coords, npixels, wavelength, pscale, distance):
-    """
-    The optical transfer function (OTF) for the gaussian beam.
-    Assumes propagation is along the axis.
-    """
-    scaling = npixels * pscale**2
-    rho_sq = ((coords / scaling) ** 2).sum(0)
-    return np.exp(-1.0j * np.pi * wavelength * distance * rho_sq)
+    def __call__(self, x):
+        layers = self._layers
+        for layer in layers[:-1]:
+            x = jax.nn.relu(layer(x))
+        return layers[-1](x)
 
 
-def _fft(phasor):
-    return 1 / phasor.shape[0] * np.fft.fft2(phasor)
+class ModelParams(BaseModeller):
 
+    @property
+    def keys(self):
+        return list(self.params.keys())
 
-def _ifft(phasor):
-    return phasor.shape[0] * np.fft.ifft2(phasor)
-
-
-def plane_to_plane(wf, distance):
-    tf = transfer(wf.coordinates, wf.npixels, wf.wavelength, wf.pixel_scale, distance)
-    phasor = _fft(wf.phasor)
-    phasor *= np.fft.fftshift(tf)
-    phasor = _ifft(phasor)
-    return phasor
-
-
-class FreeSpace(dl.layers.optics.OpticalLayer):
-    distance: Array
-
-    def __init__(self, dist):
-        self.distance = np.asarray(dist, float)
-
-    def apply(self, wf):
-        phasor_out = plane_to_plane(wf, self.distance)
-        return wf.set(["amplitude", "phase"], [np.abs(phasor_out), np.angle(phasor_out)])
-
-
-class AMIOptics(dl.optical_systems.AngularOpticalSystem):
-    def __init__(
-        self,
-        radial_orders=4,
-        pupil_mask=None,
-        opd=None,
-        normalise=True,
-        free_amplitudes=False,
-        free_space_locations=[],
-        psf_npixels=80,
-        oversample=4,
-        pixel_scale=0.065524085,
-        diameter=6.603464,
-        wf_npixels=1024,
-    ):
-        """Free space locations can be 'before', 'after'"""
-        self.wf_npixels = wf_npixels
-        self.diameter = diameter
-        self.psf_npixels = psf_npixels
-        self.oversample = oversample
-        self.psf_pixel_scale = pixel_scale
-
-        # Get the primary mirror transmission
-        file_path = pkg.resource_filename(__name__, "data/primary.npy")
-        transmission = np.load(file_path)
-        # Create the primary
-        primary = dlw.JWSTAberratedPrimary(
-            transmission,
-            opd=np.zeros_like(transmission),
-            radial_orders=np.arange(radial_orders),
-            AMI=True,
-        )
-
-        layers = []
-
-        # Load the values into the primary
-        n_fda = primary.basis.shape[1]
-        file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
-        primary = primary.set("coefficients", np.load(file_path)[:, :n_fda])
-
-        if opd is None:
-            opd = np.zeros_like(transmission)
-        primary = primary.set("opd", opd)
-        primary = primary.multiply("basis", 1e-9)  # Normalise to nm
-
-        layers += [("pupil", primary), ("InvertY", dl.Flip(0))]
-
-        if free_amplitudes:
-            pupil_basis = dlw.JWSTAberratedPrimary(
-                np.ones((1024, 1024)),
-                np.zeros((1024, 1024)),
-                radial_orders=[0],
-                AMI=True,
-            ).basis[:, 0]
-            layers += [("holes", PupilAmplitudes(np.flip(pupil_basis, axis=1)))]
-
-        if "before" in free_space_locations:
-            layers += [("free_space_before", FreeSpace(0.0))]
-
-        if pupil_mask is None:
-            pupil_mask = DynamicAMI(f2f=0.80, normalise=normalise)
-        layers += [("pupil_mask", pupil_mask)]
-
-        if "after" in free_space_locations:
-            layers += [("free_space_after", FreeSpace(0.0))]
-
-        # Set the layers
-        self.layers = dlu.list2dictionary(layers, ordered=True)
-
-
-import dLux as dl
-from dLuxWebbpsf.utils.interpolation import _map_coordinates
-
-
-def arr2pix(coords, pscale=1):
-    n = coords.shape[-1]
-    shift = (n - 1) / 2
-    return pscale * (coords - shift)
-
-
-def pix2arr(coords, pscale=1):
-    n = coords.shape[-1]
-    shift = (n - 1) / 2
-    return (coords / pscale) + shift
-
-
-class PixelAnisotropy(dl.layers.detector_layers.DetectorLayer):
-    transform: dl.CoordTransform
-    order: int
-
-    def __init__(self, order=3):
-        self.transform = dl.CoordTransform(compression=np.ones(2))
-        self.order = int(order)
+    @property
+    def values(self):
+        return list(self.params.values())
 
     def __getattr__(self, key):
-        if hasattr(self.transform, key):
-            return getattr(self.transform, key)
-        raise AttributeError(f"PixelAnisotropy has no attribute {key}")
-
-    def apply(self, PSF):
-        npix = PSF.data.shape[0]
-        transformed = self.transform.apply(dlu.pixel_coords(npix, npix * PSF.pixel_scale))
-        coords = np.roll(pix2arr(transformed, PSF.pixel_scale), 1, axis=0)
-        interp_fn = lambda x: _map_coordinates(x, coords, order=3, mode="constant", cval=0.0)
-        return PSF.set("data", interp_fn(PSF.data))
-
-
-class SUB80Ramp(dl.detectors.LayeredDetector):
-    dark_current: Array
-    ipc: Array
-
-    def __init__(
-        self,
-        angle=-0.56126717,
-        oversample=4,
-        SRF=None,
-        FF=None,
-        downsample=False,
-        npixels_in=80,
-        anisotropy=True,
-        jitter=True,
-        dark_current=0.0,
-        ipc=True,
-    ):
-        # Load the FF
-        if FF is None:
-            file_path = pkg.resource_filename(__name__, "data/SUB80_flatfield.npy")
-            FF = np.load(file_path)
-            if npixels_in != 80:
-                pad = (npixels_in - 80) // 2
-                FF = np.pad(FF, pad, constant_values=1)
-
-        if SRF is None:
-            SRF = np.ones((oversample, oversample))
-
-        layers = [("rotate", Rotate(angle))]
-
-        if anisotropy:
-            compression = np.array([0.99580676, 1.00343162])
-            anisotropy = PixelAnisotropy(order=3).set('compression', compression)
-            layers.append(("anisotropy", anisotropy))
-
-        if jitter:
-            layers.append(("jitter", GaussianJitter(
-                1e-6, kernel_size=19, kernel_oversample=3
-            )))
-
-        layers.append(("sensitivity", ApplySensitivities(FF, SRF)))
-
-        if downsample:
-            layers.append(("downsample", dl.Downsample(oversample)))
-
-        self.layers = dlu.list2dictionary(layers, ordered=True)
-
-        self.dark_current = np.array(dark_current, float)
-
-        if ipc:
-            file_path = "/Users/louis/PhD/Software/sandbox/amigo/src/amigo/data/SUB80_ipc.npy"
-            # file_path = pkg.resource_filename(__name__, "data/SUB80_ipc.npy")
-            self.ipc = np.load(file_path)
-        else:
-            self.ipc = np.array([[1.]])
-            # self.ipc = np.array(ipc, float)
-
-class BaseModeller(zdx.Base):
-    params: dict
-
-    def __init__(self, params):
-        self.params = params
-
-    def __getattr__(self, key):
-        if key in self.params:
+        # print("In get attr")
+        if key in self.keys:
             return self.params[key]
         for k, val in self.params.items():
+            # print(k)
             if hasattr(val, key):
                 return getattr(val, key)
+        # return self.get(key)
         raise AttributeError(
             f"Attribute {key} not found in params of {self.__class__.__name__} object"
         )
 
-    def __getitem__(self, key):
+    def replace(self, values):
+        # Takes in a super-set class and updates this class with input values
+        return self.set("params", dict([(param, getattr(values, param)) for param in self.keys]))
 
-        values = {}
-        for param, item in self.params.items():
-            if isinstance(item, dict) and key in item.keys():
-                values[param] = item[key]
+    def from_model(self, values):
+        return self.set("params", dict([(param, values.get(param)) for param in self.keys]))
 
-        return values
+    def __add__(self, values):
+        matched = self.replace(values)
+        return jax.tree_map(lambda x, y: x + y, self, matched)
+
+    def __iadd__(self, values):
+        return self.__add__(values)
+
+    def inject(self, other):
+        # Injects the values of this class into another class
+        return other.set(self.keys, self.values)
 
 
 def _is_tree(x):
@@ -636,13 +523,13 @@ def _is_tree(x):
     return not eqx.is_array_like(x)
 
 
-class ModelHistory(BaseModeller):
+class ModelHistory(ModelParams):
     """
     Tracks the history of a set of parameters in a model via tuples.
 
     Adds a series of convenience functions to interface with it.
 
-    This could have issues with leaves not being Arrays, so at some point it should be
+    This could have issues with leaves not being jax.Arrays, so at some point it should be
     explicitly enforced that only array_likes are tracked.
     """
 
@@ -659,10 +546,12 @@ class ModelHistory(BaseModeller):
         self.params = history
 
     def append(self, model):
-
         history = self.params
         for param, leaf_history in history.items():
-            new_leaf = model.get(param)
+            if hasattr(model, param):
+                new_leaf = getattr(model, param)
+            else:
+                new_leaf = model.get(param)
 
             # Tree-like case
             if _is_tree(new_leaf):
@@ -864,6 +753,3 @@ class AmigoHistory(ModelHistory):
             case _:
                 print(f"No formatting function for {param}")
                 ax.plot(epochs, arr, **kwargs)
-
-
-#

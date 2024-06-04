@@ -173,7 +173,7 @@ class NonLinDetector(eqx.Module):
 # import jax.numpy as np
 # import jax.random as jr
 # import equinox as eqx
-# from amigo.CNN import ConvBFE, Expand, Squeeze, calc_rfield
+# from .CNN import ConvBFE, Expand, Squeeze, calc_rfield
 
 # kernel_size = 3
 # oversample = model.optics.oversample

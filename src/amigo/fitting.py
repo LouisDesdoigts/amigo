@@ -1,14 +1,15 @@
 import zodiax as zdx
 import jax.numpy as np
+import jax.random as jr
+from jax import vmap
 import equinox as eqx
 import jax
 import optax
 import jax.tree_util as jtu
 import time
 from datetime import timedelta
-from typing import Any
-from jax import Array
-from amigo.core import AmigoHistory
+from amigo.core import ModelParams, AmigoHistory
+from .stats import loss_fn
 
 # import tqdm appropriately
 from IPython import get_ipython
@@ -21,214 +22,158 @@ else:
     from tqdm import tqdm
 
 
-def get_optimiser(pytree, parameters, optimisers):
-    # Pre-wrap single inputs into a list since optimisers have a length of 2
-    if not isinstance(optimisers, list):
-        optimisers = [optimisers]
-
-    # parameters have to default be wrapped in a list to match optimiser
-    if isinstance(parameters, str):
-        parameters = [parameters]
-
-    # Construct groups and get param_spec
-    groups = [str(i) for i in range(len(optimisers))]
-    param_spec = jtu.tree_map(lambda _: "null", pytree)
-
-    # Does this need to be tree_mapped with an 'isinstance' to only map optimisers
-    # to array likes ?
-    param_spec = param_spec.set(parameters, groups)
-
-    # Generate optimiser dictionary and Assign the null group
-    opt_dict = dict([(groups[i], optimisers[i]) for i in range(len(groups))])
-    opt_dict["null"] = optax.sgd(0.0)
-
-    # Get optimiser object and filtered optimiser
-    optim = optax.multi_transform(opt_dict, param_spec)
-
-    # Here we build a 'none tree' that has None's at all the leaves except those we
-    # are optimising. This ensures that the leaf shape and dtype matches those returned
-    # from the gradient tree. This is important as without this, the PyTreeDef of the
-    # 'opt_state' will change when passed through a 'step function', forcing a
-    # recompile of the JIT'd function.
-    none_tree = jtu.tree_map(lambda _: None, pytree)
-    opt_tree = none_tree.set(parameters, pytree.get(parameters))
-    opt_state = optim.init(eqx.filter(opt_tree, eqx.is_inexact_array))
-
-    # Return
-    return (optim, opt_state)
+def debug_nan_check(grads):
+    bool_tree = jax.tree_map(lambda x: np.isnan(x).any(), grads)
+    vals = np.array(jax.tree_util.tree_flatten(bool_tree)[0])
+    eqx.debug.breakpoint_if(vals.sum() > 0)
+    return grads
 
 
-# Array
-def _to_array(leaf: Any):
-    if not isinstance(leaf, Array):
-        try:
-            return np.asarray(leaf, dtype=float)
-        except TypeError:
-            # TODO: Try recursive tree map here?
-            return leaf
+def zero_nan_check(grads):
+    return jax.tree_map(lambda x: np.where(np.isnan(x), 0.0, x), grads)
+
+
+def get_optimiser(pytree, optimisers, parameters=None):
+
+    # Get the parameters and opt_dict
+    if parameters is not None:
+        optimisers = dict([(p, optimisers[p]) for p in parameters])
     else:
-        return leaf
+        parameters = list(optimisers.keys())
+
+    model_params = ModelParams(dict([(p, pytree.get(p)) for p in parameters]))
+    param_spec = ModelParams(dict([(param, param) for param in parameters]))
+    optim = optax.multi_transform(optimisers, param_spec)
+
+    # Build the optimised object - the 'model_params' object
+    state = optim.init(model_params)
+    return model_params, optim, state
 
 
 # def set_array(pytree: Base(), parameters: Params) -> Base():
 def set_array(pytree, parameters):
-    """
-    Converts all leaves specified by parameters in the pytree to arrays to
-    ensure they have a .shape property for static dimensionality and size
-    checks. This allows for 'dynamicly generated' array shapes from the path
-    based `parameters` input. This is used for dynamically generating the
-    latent X parameter that we need to generate in order to calculate the
-    hessian.
-
-    Parameters
-    ----------
-    pytree : Base()
-        The pytree to be converted.
-    parameters : Params
-        The leaves to be converted to arrays.
-
-    Returns
-    -------
-    pytree : Base()
-        The pytree with the specified leaves converted to arrays.
-    """
-    new_leaves = jtu.tree_map(_to_array, pytree.get(parameters))
-    return pytree.set(parameters, new_leaves)
+    # WARNING: Presently statically set to 64bit
+    # Enforce everything to be a float (of the same precision)
+    floats, other = eqx.partition(pytree, eqx.is_inexact_array_like)
+    floats = jtu.tree_map(lambda x: np.array(x, dtype=np.float64), floats)
+    return eqx.combine(floats, other)
 
 
 def optimise(
     model,
     args,
-    loss_fn,
     epochs,
     optimisers,
-    grad_fn=lambda model, grads, args, optimisers: grads,
-    norm_fn=lambda model, args: model,
-    update_fn=lambda updates, args: updates,
+    batch_size,
+    grad_fn=lambda model, grads, args: grads,
+    norm_fn=lambda model_params, args: model_params,
+    args_fn=lambda model, args: (model, args),
     print_grads=False,
-    verbose=True,
-    return_state=False,
-    nan_method="none",
-    no_history=[],  # List of parameters to NOT track histry for (ie NN weights)
-    args_updates=[],
-    args_fn=lambda model, args: args,
+    no_history=[],
+    batch_params=[],
 ):
-    """nan_method: str, either 'debug' or 'zero', 'none'"""
-    params = list(optimisers.keys())
-    opts = list(optimisers.values())
+    opt_params = list(optimisers.keys())
 
-    model = set_array(model, params)
-    optim, opt_state = get_optimiser(model, params, opts)
-    val_grad_fn = zdx.filter_value_and_grad(params)(loss_fn)
+    # Get the parameter classes and the optimisers
+    model = set_array(model, opt_params)
+    reg_params = [p for p in opt_params if p not in batch_params]
+    batch_params = [p for p in opt_params if p in batch_params]
 
-    if print_grads:
-        loss, grads = val_grad_fn(model, args)
-        for param in params:
-            print(f"{param}: {grads.get(param)}")
+    # Get the model, optimiser and state
+    reg_model, reg_optim, reg_state = get_optimiser(model, optimisers, reg_params)
+    batch_model, batch_optim, batch_state = get_optimiser(model, optimisers, batch_params)
 
-    if nan_method == "debug":
-
-        def nan_check(grads):
-            bool_tree = jax.tree_map(lambda x: np.isnan(x).any(), grads)
-            vals = np.array(jax.tree_util.tree_flatten(bool_tree)[0])
-            eqx.debug.breakpoint_if(vals.sum() > 0)
-            return grads
-
-    elif nan_method == "zero":
-
-        def nan_check(grads):
-            return jax.tree_map(lambda x: np.where(np.isnan(x), 0.0, x), grads)
-
-    elif nan_method == "none":
-
-        def nan_check(grads):
-            return grads
-
-    else:
-        raise ValueError(f"nan_method must be 'debug', 'zero' or 'none', got {nan_method}")
-
-    # Define faster step function - uses args from inside fn
     @eqx.filter_jit
-    # @eqx.debug.assert_max_traces(max_traces=1)  # Probably not needed anymore
-    def step_fn(model, opt_state, args):
-        # This disappears when compiled, so use it as a compile check
-        print("Step fn compiling...")
+    def model_update_fn(optim, model, grads, model_params, state):
+        print("Compiling update function")
+        updates, state = optim.update(grads, state, model_params)
+        # updates = update_fn(updates, args)
+        model_params = zdx.apply_updates(model_params, updates)
+        model_params = norm_fn(model_params, args)
+        model = model_params.inject(model)
+        # model = norm_fn(model_params.inject(model), args)
+        return model, model_params, state
 
-        def stepper(model, opt_state, args):
-            # Calculate the loss and gradient
-            loss, grads = val_grad_fn(model, args)
-            grads = grad_fn(model, grads, args, optimisers)
-            grads = nan_check(grads)
+    # Binds optimisers to update functions
+    update_batch = lambda *args: model_update_fn(batch_optim, *args)
+    update_reg = lambda *args: model_update_fn(reg_optim, *args)
+    val_grad_fn = zdx.filter_value_and_grad(opt_params)(loss_fn)
 
-            # Apply the update
-            updates, opt_state = optim.update(grads, opt_state, model)
-            model = zdx.apply_updates(model, updates)
+    @eqx.filter_jit
+    def grad_batch_fn(model, batch, args):
+        print("Grad Batch fn compiling...")
+        loss, grads = val_grad_fn(model, batch)
+        grads = grad_fn(model, grads, args)
 
-            # Apply normalisation
-            model = norm_fn(model, args)
-
-            return model, loss, opt_state
-
-        if "batches" in args.keys():
-            loss = 0.0
-            for i in range(len(args["batches"])):
-                args["exposures"] = args["batches"][i]
-                model, _loss, opt_state = stepper(model, opt_state, args)
-                loss += _loss
-
-        else:
-            model, loss, opt_state = stepper(model, opt_state, args)
-
-        return model, loss, opt_state
+        # Optionally print the grads
+        if print_grads:
+            jax.debug.print("{x}", x=jtu.tree_leaves(grads))
+        return loss, grads
 
     # Create model history
-    tracked = [param for param in params if param not in no_history]
-    model_history = AmigoHistory(model, tracked)
+    reg_history = AmigoHistory(model, [p for p in reg_params if p not in no_history])
+    batch_history = AmigoHistory(model, [p for p in batch_params if p not in no_history])
 
-    # Compile call
+    # Get batches
+    # TODO: Randomise the order of the exposures before batching
+    exposures = args["exposures"]
+    batches = [exposures[i : i + batch_size] for i in range(0, len(exposures), batch_size)]
+
+    # Get a random batch order
+    keys = jr.split(args["key"], epochs)
+    rand_batch_inds = vmap(lambda key: jr.permutation(key, len(batches)))(keys)
+
+    # Epoch loop
+    losses = []
+    looper = tqdm(range(0, epochs))
+    epoch_loss = 0.0
     t0 = time.time()
-    model, loss, opt_state = step_fn(model, opt_state, args)
-    elapsed_time = time.time() - t0
-    formatted_time = str(timedelta(seconds=int(elapsed_time)))
-
-    print(f"Compile Time: {formatted_time}")
-    print(f"Initial Loss: {loss:,.2f}")
-
-    # Append to model histroy
-    model_history = model_history.append(model)
-
-    looper = range(1, epochs)
-    if verbose:
-        looper = tqdm(looper, desc=f"Loss: {loss:,.2f}, Change: {0.}", initial=1, total=epochs)
-
-    losses = [loss]
-    for i in looper:
-        if np.isnan(loss):
-            print(f"Loss is NaN on {i} th epoch, exiting loop")
-            if return_state:
-                return model, losses, model_history, opt_state
-            return model, losses, model_history
-
+    for idx in looper:
         model, args = args_fn(model, args)
 
-        model, _loss, opt_state = step_fn(model, opt_state, args)
+        # Loop over batches
+        reg_grads = jax.tree_map(lambda x: np.zeros_like(x), reg_model)
+        batch_inds = rand_batch_inds[idx]
+        batch_losses = np.zeros(len(batches))
+        for i in batch_inds:
+            batch = batches[i]
 
-        if verbose:
-            delta_loss = _loss - loss
-            looper.set_description(f"Loss: {loss:,.2f}, Change: {delta_loss:,.2f}")
+            # Calculate the loss and grads
+            _loss, grads = grad_batch_fn(model, batch, args)
+            batch_losses = batch_losses.at[i].set(_loss)
+            batch_grads = batch_model.from_model(grads)
+            reg_grads += reg_grads.from_model(grads)
 
-        loss = _loss
-        losses.append(loss)
-        # model_history = append_fn(tracked, model_history, model)
-        model_history = model_history.append(model)
+            # Update the batch params and accumulate grads
+            model, batch_model, batch_state = update_batch(
+                model, batch_grads, batch_model, batch_state
+            )
+            batch_history = batch_history.append(batch_model)  # could be jitted
+
+        # Update the reg params
+        model, reg_model, reg_state = update_reg(model, reg_grads, reg_model, reg_state)
+        reg_history = reg_history.append(reg_model)  # could be jitted
+
+        # Check for NaNs
+        if np.isnan(_loss):
+            print(f"Loss is NaN on {i} th epoch, exiting loop")
+            return model, losses, (reg_history, batch_history), (reg_state, batch_state)
+
+        # Update the looper
+        batch_loss = np.array(batch_losses).sum()
+        looper.set_description(f"Loss: {epoch_loss:,.2f}, Change: {batch_loss - epoch_loss:,.2f}")
+        losses.append(batch_losses)
+        epoch_loss = batch_loss
+
+        if idx == 0:
+            print(f"Compile Time: {str(timedelta(seconds=int(time.time() - t0)))}")
+            print(f"Initial Loss: {epoch_loss:,.2f}")
 
     # Final execution time
     elapsed_time = time.time() - t0
     formatted_time = str(timedelta(seconds=int(elapsed_time)))
 
     print(f"Full Time: {formatted_time}")
-    print(f"Final Loss: {loss:,.2f}")
+    print(f"Final Loss: {epoch_loss:,.2f}")
 
-    if return_state:
-        return model, losses, model_history, opt_state
-    return model, losses, model_history
+    return model, losses, (reg_history, batch_history), (reg_state, batch_state)

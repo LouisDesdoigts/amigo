@@ -509,5 +509,6 @@ class DummyBFE(dl.detector_layers.DetectorLayer):
         return
 
     def apply_array(self, image):
-        downsample_fn = lambda x: dlu.downsample(x, 4, mean=False)
-        return vmap(downsample_fn)(image)
+        # downsample_fn = lambda x: dlu.downsample(x, 4, mean=False)
+        # return vmap(downsample_fn)(image)
+        return dlu.downsample(image, 4, mean=False)

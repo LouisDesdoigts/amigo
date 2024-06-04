@@ -46,10 +46,6 @@ def pairwise_vectors(points):
         for j in range(i + 1, vectors.shape[1]):
             pairwise_vectors.append((vectors[i, j], i, j))
 
-    # Sort the pairwise vectors by length
-    # # TODO: Replace with an argsort?
-    # pairwise_vectors.sort(key=lambda x: lengths[x[1], x[2]])
-
     pairwise_vectors = np.array(pairwise_vectors)
     lengths_key = [lengths[x[1], x[2]] for x in pairwise_vectors]
     indices = np.argsort(lengths_key)
@@ -75,9 +71,7 @@ def get_baselines_and_inds(holes):
     return np.array(pairwise_vectors), np.array(hole_inds)
 
 
-# def hex_from_bls(coords, bl, rmax):
 def hex_from_bls(bl, coords, rmax):
-    # coords = dlu.translate_coords(coords, np.array([-bl[0], bl[1]]))
     coords = dlu.translate_coords(coords, np.array(bl))
     return dlu.reg_polygon(coords, rmax, 6)
 
@@ -87,7 +81,6 @@ def get_baselines(holes):
     hole_mask = np.where(~np.eye(holes.shape[0], dtype=bool))
     thisu = (holes[:, 0, None] - holes[None, :, 0]).T[hole_mask]
     thisv = (holes[:, 1, None] - holes[None, :, 1]).T[hole_mask]
-    # return np.array([thisv, thisu]).T
     return np.array([thisu, thisv]).T
 
 
@@ -125,7 +118,6 @@ def uv_hex_mask(
     uv_coords = tf.apply(uv_coords)
 
     # Do this outside so we can scatter plot the baseline vectors over the psf splodges
-    # hbls = pairwise_vectors(holes) / wavelength
     hbls, inds = get_baselines_and_inds(holes)
     hbls /= wavelength
 
@@ -188,15 +180,6 @@ def apply_visibilities(psf, mask, vis):
     return from_uv(to_uv(psf) * (splodges + inv_splodge_support))
 
 
-# def apply_visibilities(psf, mask, vis):
-#     # Get splodge mask and inverse
-#     splodges = splodge_mask(mask, vis)
-#     # inv_splodge_support = np.abs(1 - mask.sum(0))
-
-#     # We dont use np.where here because we have soft edges on the boundary of the mask
-#     return from_uv(to_uv(psf) * splodges)
-
-
 def visibilities(amplitudes, phases):
     return amplitudes * np.exp(1j * phases)
 
@@ -219,6 +202,3 @@ def uv_model(vis, psfs, mask, cplx=False):
 
 def applied_splodges(masks, vis):
     return vmap(splodge_mask, (0, None))(masks, vis)
-
-
-#

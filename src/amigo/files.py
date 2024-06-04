@@ -10,7 +10,9 @@ from .interferometry import uv_hex_mask
 from webbpsf import mast_wss
 from xara.core import determine_origin
 from tqdm.notebook import tqdm
-import amigo
+
+# import amigo
+# from .core import ExposureFit
 
 
 def summarise_files(files, extra_keys=[]):
@@ -297,27 +299,44 @@ def find_position(psf, pixel_scale=0.065524085):
     return position
 
 
-# def get_exposures(files, add_read_noise=False):
-def get_exposures(files, optics, ms_thresh=None, as_psf=False):
-    print("Prepping exposures...")
+def get_exposures(files, ms_thresh=None, as_psf=False, key_fn=None):
+    from amigo.core import Exposure
+
     opds = get_wss_ops(files)
-    return [
-        amigo.core.ExposureFit(file, optics, opd=opd, ms_thresh=ms_thresh)
-        for file, opd in zip(files, opds)
-    ]
+    exposures = []
+    for file, opd in zip(files, opds):
+        data, variance, support = prep_data(file, ms_thresh=ms_thresh, as_psf=as_psf)
+        if key_fn is None:
+            key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:4])
+        exposures.append(Exposure(file, data, variance, support, opd, key_fn))
+    return exposures
 
 
-def initialise_params(exposures):
+def initialise_params(exposures, optics, pre_calc_FDA=False, amp_order=1):
     positions = {}
     fluxes = {}
     aberrations = {}
     one_on_fs = {}
     aberrations = {}
     for exp in exposures:
-        positions[exp.key] = exp.position
-        aberrations[exp.key] = exp.aberrations
-        fluxes[exp.key] = exp.flux
-        one_on_fs[exp.key] = exp.one_on_fs
+
+        im = exp.data[0]
+        psf = np.where(np.isnan(im), 0.0, im)
+        flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.data[0]))
+        position = find_position(psf, optics.psf_pixel_scale)
+        n_fda = optics.pupil.coefficients.shape[1]
+
+        if pre_calc_FDA:
+            file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
+            FDA = np.load(file_path)[:, :n_fda]
+        else:
+            FDA = np.zeros((7, n_fda))
+
+        positions[exp.key] = position
+        aberrations[exp.key] = FDA
+        fluxes[exp.key] = flux
+        one_on_fs[exp.key] = np.zeros((exp.ngroups, 80, amp_order + 1))
+
     return {
         "positions": positions,
         "fluxes": fluxes,
@@ -389,6 +408,3 @@ def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=Fa
 
         masks[filt] = np.array(_masks)
     return masks
-
-
-#
