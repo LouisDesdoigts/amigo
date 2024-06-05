@@ -94,7 +94,6 @@ def model_fn(model, exposure, with_BFE=True, to_BFE=False, zero_idx=-1, noise=Tr
 
 
 def build_optical_inputs(model, exposures, zero_idx=-1):
-
     wavels_in = []
     weights_in = []
     aberrations_in = []

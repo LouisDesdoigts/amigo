@@ -269,7 +269,7 @@ def get_amplitudes(exposures, radial_orders=None, noll_indices=None, dc=False):
         key = "_".join([exp.star, exp.filter])
         if key not in amplitudes.keys():
             pistons = np.ones((n, 1))  # ones for pistons
-            higher_orders = np.zeros((n, n_zernikes-1))  # zeros elsewhere
+            higher_orders = np.zeros((n, n_zernikes - 1))  # zeros elsewhere
             amplitudes[key] = np.hstack([pistons, higher_orders])
     return amplitudes
 
@@ -354,7 +354,15 @@ def full_to_SUB80(full_arr, npix_out=80, fill=0.0):
     return SUB80
 
 
-def get_uv_hexikes(files, optics, filters, radial_orders=None, noll_indices=None, hexike_cache="files/uv_hexikes", verbose=False):
+def get_uv_hexikes(
+    files,
+    optics,
+    filters,
+    radial_orders=None,
+    noll_indices=None,
+    hexike_cache="files/uv_hexikes",
+    verbose=False,
+):
     """
     Note caches masks to disk for faster loading. The cache is indexed _relative_ to
     where the file is run from.
@@ -362,9 +370,7 @@ def get_uv_hexikes(files, optics, filters, radial_orders=None, noll_indices=None
 
     # Dealing with the radial_orders and noll_indices arguments
     if radial_orders is not None and noll_indices is not None:
-        print(
-            "Warning: Both radial_orders and noll_indices provided. Using noll_indices."
-        )
+        print("Warning: Both radial_orders and noll_indices provided. Using noll_indices.")
         radial_orders = None
 
     # # Check whether the specified cache directory exists
@@ -388,7 +394,7 @@ def get_uv_hexikes(files, optics, filters, radial_orders=None, noll_indices=None
 
         calc_pad = 3  # 3x oversample on the mask calculation for soft edges
         uv_pad = 2  # 2x oversample on the UV transform
-        crop_npix = crop_dict[filt] # cropping masks
+        crop_npix = crop_dict[filt]  # cropping masks
 
         _bases = []
         _weights = []
@@ -400,7 +406,7 @@ def get_uv_hexikes(files, optics, filters, radial_orders=None, noll_indices=None
             file_key = f"{hexike_cache}/{wl_key}_{optics.oversample}"
             # try:
             #     mask = np.load(f"{file_key}.npy")
-                
+
             # except FileNotFoundError:
             basis, weight, support = build_hexikes(
                 optics.pupil_mask.holes,
@@ -416,11 +422,11 @@ def get_uv_hexikes(files, optics, filters, radial_orders=None, noll_indices=None
                 noll_indices=noll_indices,
                 crop_npix=crop_npix,
             )
-                # np.save(f"{file_key}.npy", mask)
+            # np.save(f"{file_key}.npy", mask)
             _bases.append(basis)
             _weights.append(weight)
             _supports.append(support)
 
         hexikes[filt] = UVHexikes(np.array(_bases), np.array(_weights), np.array(_supports))
-        
+
     return hexikes

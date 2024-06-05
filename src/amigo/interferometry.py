@@ -7,7 +7,6 @@ from dLuxWebbpsf.basis import get_noll_indices
 
 
 class UVHexikes(zdx.Base):
-
     basis: Array
     weight: Array
     support: Array
@@ -19,7 +18,7 @@ class UVHexikes(zdx.Base):
         self.support = support
 
         # calculating the inverse support mask
-        self.inv_support = 1. - support
+        self.inv_support = 1.0 - support
 
 
 # Mask generation and baselines
@@ -100,12 +99,11 @@ def hex_from_bls(bl, coords, rmax):
 
 
 def hexikes_from_bls(bl, coords, rmax, radial_orders=None, noll_indices=None):
-
     noll_indices = get_noll_indices(radial_orders, noll_indices)
 
     coords = dlu.translate_coords(coords, np.array(bl))
     hexagon = dlu.reg_polygon(coords, rmax, 6)
-    return hexagon[None, ...] * dlu.zernike_basis(noll_indices, coords, 2*rmax)
+    return hexagon[None, ...] * dlu.zernike_basis(noll_indices, coords, 2 * rmax)
 
 
 def get_baselines(holes):
@@ -176,10 +174,24 @@ def build_hexikes(
     else:
         looper = hbls
     for bl in looper:
-        uv_hexikes.append(hexikes_from_bls(bl, uv_coords, rmax_in, radial_orders=radial_orders, noll_indices=noll_indices))
-        uv_hexikes_conj.append(hexikes_from_bls(-1 * bl, uv_coords, rmax_in, radial_orders=radial_orders, noll_indices=noll_indices))  # Conjugate 
+        uv_hexikes.append(
+            hexikes_from_bls(
+                bl, uv_coords, rmax_in, radial_orders=radial_orders, noll_indices=noll_indices
+            )
+        )
+        uv_hexikes_conj.append(
+            hexikes_from_bls(
+                -1 * bl, uv_coords, rmax_in, radial_orders=radial_orders, noll_indices=noll_indices
+            )
+        )  # Conjugate
 
-    dc_hex = np.array([hexikes_from_bls([0, 0], uv_coords, rmax_in, radial_orders=radial_orders, noll_indices=noll_indices)])
+    dc_hex = np.array(
+        [
+            hexikes_from_bls(
+                [0, 0], uv_coords, rmax_in, radial_orders=radial_orders, noll_indices=noll_indices
+            )
+        ]
+    )
     hexikes = np.concatenate([dc_hex, np.array(uv_hexikes), np.array(uv_hexikes_conj)])
 
     # Normalising
@@ -195,7 +207,7 @@ def build_hexikes(
     # downsampling weights and support
     weight_mask = dlu.downsample(weight_mask, mask_pad)
     support_mask = dlu.nandiv(hex_mask[:, 0], weight_mask[None, ...], 0.0).sum(0)
-    
+
     return hex_mask, weight_mask, support_mask
 
 
@@ -209,7 +221,6 @@ def from_uv(uv):
 
 
 def splodge_mask(basis, vis):
-
     n_vis = vis.shape[0]
     n_zernikes = vis.shape[1]
 
@@ -217,16 +228,24 @@ def splodge_mask(basis, vis):
         dc = np.array([vis[0]])
         coeffs = np.concatenate([dc, vis[1:], vis[1:].conj()])
     elif n_vis == 21:
-        dc = np.array([1,] + (n_zernikes - 1) * [0,], complex)[None]
+        dc = np.array(
+            [
+                1,
+            ]
+            + (n_zernikes - 1)
+            * [
+                0,
+            ],
+            complex,
+        )[None]
         coeffs = np.concatenate([dc, vis, vis.conj()])
 
     return dlu.eval_basis(basis, coeffs)
 
 
 def apply_visibilities(psf, vis, basis, weights, inv_support, pad_to=None):
-    
     # normalise the basis
-    basis = dlu.nandiv(basis, weights, 0.)
+    basis = dlu.nandiv(basis, weights, 0.0)
 
     # zero padding to correct size
     if pad_to is not None:
@@ -240,9 +259,9 @@ def apply_visibilities(psf, vis, basis, weights, inv_support, pad_to=None):
         # padding inverse support mask with ones
         inv_support = np.pad(
             inv_support,
-            (pad_to - inv_support.shape[0])//2,
-            constant_values=1.,
-            )
+            (pad_to - inv_support.shape[0]) // 2,
+            constant_values=1.0,
+        )
 
     # We dont use np.where here because we have soft edges on the boundary of the mask
     return from_uv(to_uv(psf) * (splodge_mask(basis, vis) + inv_support))
