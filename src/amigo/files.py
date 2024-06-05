@@ -11,9 +11,6 @@ from webbpsf import mast_wss
 from xara.core import determine_origin
 from tqdm.notebook import tqdm
 
-# import amigo
-# from .core import ExposureFit
-
 
 def summarise_files(files, extra_keys=[]):
     main_keys = []
@@ -197,8 +194,7 @@ def prep_data(file, ms_thresh=None, as_psf=False):
     supp_mask = ~np.isnan(data.sum(0)) & ~dq
 
     # Nan the bad pixels
-    support = np.where(supp_mask)
-    # support = np.array(np.where(supp_mask))
+    support = np.array(np.where(supp_mask))
     data = data.at[:, ~supp_mask].set(np.nan)
     var = var.at[..., ~supp_mask].set(np.nan)
 

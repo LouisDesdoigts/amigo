@@ -1,8 +1,8 @@
 import jax.numpy as np
+import jax.scipy as jsp
+import dLux.utils as dlu
 import matplotlib.pyplot as plt
-
-# from interferometry import pairwise_vectors, osamp_freqs
-from matplotlib import colormaps
+from matplotlib import colormaps, colors
 
 inferno = colormaps["inferno"]
 seismic = colormaps["seismic"]
@@ -24,3 +24,419 @@ def plot_losses(losses, start, stop=-1):
 
     plt.tight_layout()
     plt.show()
+
+
+from .stats import posterior
+
+
+def summarise_fit(
+    exposure,
+    model,
+    residuals=False,
+    histograms=False,
+    flat_field=False,
+    up_the_ramp=False,
+    up_the_ramp_norm=False,
+    full_bias=False,
+    aberrations=False,
+    pow=0.5,
+):
+
+    inferno = colormaps["inferno"]
+    seismic = colormaps["seismic"]
+
+    # slopes = model_fn(model, exposure)
+    slopes = model.model(exposure, slopes=True)
+    data = exposure.data
+
+    residual = data - slopes
+    # loglike_im = exposure.loglike_im(slope)
+
+    posterior_im = posterior(model, exposure, return_im=True)
+
+    # loglike_im = exposure.log_likelihood(slopes, return_im=True)
+
+    nan_mask = np.where(np.isnan(posterior_im))
+    slopes = slopes.at[:, *nan_mask].set(np.nan)
+    data = data.at[:, *nan_mask].set(np.nan)
+
+    final_loss = np.nansum(-posterior_im) / np.prod(np.array(data.shape[-2:]))
+
+    norm_res_slope = residual / (exposure.variance**0.5)
+    norm_res_slope = norm_res_slope.at[:, *nan_mask].set(np.nan)
+
+    norm_res_vec = exposure.to_vec(norm_res_slope)
+    norm_res_vec = norm_res_vec[~np.isnan(norm_res_vec)]
+    norm_res_vec = norm_res_vec[~np.isinf(norm_res_vec)]
+
+    x = np.nanmax(np.abs(norm_res_vec))
+    xs = np.linspace(-x, x, 200)
+    ys = jsp.stats.norm.pdf(xs)
+
+    effective_data = data.sum(0)
+    effective_psf = slopes.sum(0)
+    vmax = np.maximum(np.nanmax(np.abs(effective_data)), np.nanmax(np.abs(effective_psf)))
+    vmin = np.minimum(np.nanmin(np.abs(effective_data)), np.nanmin(np.abs(effective_psf)))
+
+    skip = False
+    if np.isnan(vmin) or np.isnan(vmax):
+        skip = True
+
+    if not skip:
+        if residuals:
+            norm = colors.PowerNorm(gamma=0.5, vmin=-vmin, vmax=vmax)
+            inferno.set_bad("k", 0.5)
+            seismic.set_bad("k", 0.5)
+
+            plt.figure(figsize=(15, 4))
+            plt.subplot(1, 3, 1)
+            plt.title(f"Data $^{str(pow)}$")
+            plt.imshow(effective_data, cmap=inferno, norm=norm)
+            plt.colorbar()
+
+            plt.subplot(1, 3, 2)
+            plt.title(f"Effective PSF $^{str(pow)}$")
+            plt.imshow(effective_psf, cmap=inferno, norm=norm)
+            plt.colorbar()
+
+            plt.subplot(1, 3, 3)
+            plt.title(f"Pixel neg log posterior: {final_loss:,.1f}")
+            plt.imshow(-posterior_im, cmap=inferno)
+            plt.colorbar()
+
+            plt.tight_layout()
+            plt.show()
+
+        if histograms:
+
+            plt.figure(figsize=(15, 4))
+            ax = plt.subplot(1, 3, 1)
+            ax.set_title(f"Noise normalised residual sigma: {norm_res_vec.std():.3}")
+            ax.hist(norm_res_vec.flatten(), bins=50, density=True)
+
+            ax2 = ax.twinx()
+            ax2.plot(xs, ys, c="k")
+            ax2.set_ylim(0)
+
+            ax = plt.subplot(1, 3, 2)
+            ax.set_title(f"Noise normalised residual sigma: {norm_res_vec.std():.3}")
+            ax.hist(norm_res_vec.flatten(), bins=50)[0]
+            ax.semilogy()
+
+            # ax2 = ax.twinx()
+            # ax2.plot(xs, bins.max() * ys, c="k")
+            # ax2.semilogy()
+
+            v = np.nanmax(np.abs(norm_res_slope.mean(0)))
+            plt.subplot(1, 3, 3)
+            plt.title("Mean noise normalised slope residual")
+            plt.imshow(norm_res_slope.mean(0), vmin=-v, vmax=v, cmap=seismic)
+            plt.colorbar()
+
+            plt.tight_layout()
+            plt.show()
+
+    if flat_field:
+        plt.figure(figsize=(15, 4))
+
+        plt.subplot(1, 3, 1)
+        plt.title("Mean Pixel Response Function")
+        v = np.max(np.abs(model.detector.sensitivity.SRF - 1))
+        plt.imshow(model.detector.sensitivity.SRF, vmin=1 - v, vmax=1 + v, cmap=seismic)
+        plt.colorbar()
+
+        FF = dlu.resize(model.detector.sensitivity.FF, 80)
+        nan_mask = np.where(np.isnan(data.mean(0)))
+        FF = FF.at[nan_mask].set(np.nan)
+
+        plt.subplot(1, 3, 2)
+        plt.title("Flat Field")
+        plt.imshow(FF, vmin=0, vmax=2, cmap=seismic)
+        plt.colorbar()
+
+        plt.subplot(1, 3, 3)
+        plt.title("Flat Field Histogram")
+        plt.hist(FF.flatten(), bins=100)
+        # plt.xlim(0, 2)
+        plt.show()
+
+    if up_the_ramp:
+        ncols = 4
+        nrows = exposure.nslopes // ncols
+        if exposure.nslopes % ncols > 0:
+            nrows += 1
+
+        plt.figure(figsize=(5 * ncols, 4 * nrows))
+        plt.suptitle("Up The Ramp Residuals")
+
+        for i in range(exposure.nslopes):
+            # plt.subplot(4, 4, i + 1)
+            plt.subplot(nrows, ncols, i + 1)
+            v = np.nanmax(np.abs(residual[i]))
+            plt.imshow(residual[i], cmap=seismic, vmin=-v, vmax=v)
+            plt.colorbar()
+        plt.show()
+
+    if up_the_ramp_norm:
+        ncols = 4
+        nrows = exposure.nslopes // ncols
+        if exposure.nslopes % ncols > 0:
+            nrows += 1
+
+        plt.figure(figsize=(5 * ncols, 4 * nrows))
+        plt.suptitle("Normalised Up The Ramp Residuals")
+
+        for i in range(exposure.nslopes):
+            # plt.subplot(4, 4, i + 1)
+            plt.subplot(nrows, ncols, i + 1)
+            v = np.nanmax(np.abs(norm_res_slope[i]))
+            plt.imshow(norm_res_slope[i], cmap=seismic, vmin=-v, vmax=v)
+            plt.colorbar()
+        plt.show()
+
+    if full_bias:
+        coeffs = model.one_on_fs[exposure.key]
+        nan_mask = 1 + (np.nan * np.isnan(data.sum(0)))
+        bias = nan_mask * model.biases[exposure.key]
+
+        plt.figure(figsize=(15, 4))
+        plt.subplot(1, 2, 1)
+        plt.title("Pixel Bias")
+        plt.imshow(bias, cmap=inferno)
+        plt.colorbar()
+
+        plt.subplot(2, 4, (3, 4))
+        plt.title("1/f Gradient")
+        plt.imshow(coeffs[..., 0])
+        plt.colorbar()
+        plt.xlabel("x-pixel")
+        plt.ylabel("Group")
+
+        plt.subplot(2, 4, (7, 8))
+        plt.title("1/f Bias")
+        plt.imshow(coeffs[..., 1])
+        plt.colorbar()
+        plt.xlabel("x-pixel")
+        plt.ylabel("Group")
+
+        plt.tight_layout()
+        plt.show()
+
+    if aberrations:
+        # Get the AMI mask and applied mask
+        optics = model.optics.set("coefficients", model.aberrations[exposure.key])
+        applied_mask = optics.pupil_mask.gen_AMI(optics.wf_npixels, optics.diameter)
+
+        # Get the applied opds in nm and flip to match the mask
+        static_opd = np.flipud(exposure.opd) * 1e9
+        added_opd = np.flipud(optics.basis_opd) * 1e9
+        static_opd = static_opd.at[np.where(~(applied_mask > 1e-6))].set(np.nan)
+        added_opd = added_opd.at[np.where(~(applied_mask > 1e-6))].set(np.nan)
+        mirror_opd = static_opd + added_opd
+
+        plt.figure(figsize=(15, 4))
+
+        v = np.nanmax(np.abs(static_opd))
+        plt.subplot(1, 3, 1)
+        plt.title("Static OPD")
+        plt.imshow(static_opd, cmap=seismic, vmin=-v, vmax=v)
+        plt.colorbar()
+
+        v = np.nanmax(np.abs(added_opd))
+        plt.subplot(1, 3, 2)
+        plt.title("Added OPD")
+        plt.imshow(added_opd, cmap=seismic, vmin=-v, vmax=v)
+        plt.colorbar()
+
+        v = np.nanmax(np.abs(mirror_opd))
+        plt.subplot(1, 3, 3)
+        plt.title("Total OPD")
+        plt.imshow(mirror_opd, cmap=seismic, vmin=-v, vmax=v)
+        plt.colorbar()
+
+        plt.tight_layout()
+        plt.show()
+
+
+def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1):
+
+    params = list(history.params.keys())
+    params_in = [param for param in params if param not in ignore]
+
+    # Plot in groups of two
+    for i in np.arange(0, len(params_in), 2):
+        plt.figure(figsize=(16, 5))
+        ax = plt.subplot(1, 2, 1)
+
+        param = params_in[i]
+        leaf = history.params[param]
+        _plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end)
+
+        ax = plt.subplot(1, 2, 2)
+        if i + 1 == len(params_in):
+            plt.tight_layout()
+            plt.show()
+            break
+
+        param = params_in[i + 1]
+        leaf = history.params[param]
+        _plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end)
+
+        plt.tight_layout()
+        plt.show()
+
+
+def _format_leaf(leaf, per_exp=False, keys=None):
+    """
+    Takes in a tuple, or a dictionary of a tuples of parameters and returns a 2D
+    array of values for plotting.
+    """
+
+    if isinstance(leaf, list):
+        # I think we can return an array here, first axis in then always the
+        # history. We also need to deal with potential dimensionality (such as
+        # mirror aberrations) so we reshape the remaining axes into a single axis
+        return np.array(leaf).reshape(len(leaf), -1)
+
+    # leaf should always be a dictionary now, but that is presently not enforced
+    if keys is None:
+        keys = list(leaf.keys())
+    values = [_format_leaf(leaf[key]) for key in keys]
+
+    if per_exp:
+        return values
+    return np.concatenate(values, axis=-1)
+
+
+def _get_styles(n):
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    linestyles = ["-", "--", "-.", ":"]
+
+    color_list = [colors[i % len(colors)] for i in range(n)]
+    linestyle_list = [linestyles[i // len(colors)] for i in range(n)]
+
+    return color_list, linestyle_list
+
+
+def _plot_ax(leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, end=-1):
+
+    if exposures is not None:
+        keys = [exp.key for exp in exposures]
+        labels = [key_fn(exp) for exp in exposures]
+    else:
+        keys = None
+
+    if isinstance(leaf, dict):
+        values = _format_leaf(leaf, per_exp=True, keys=keys)
+
+        if keys is None:
+            keys = list(leaf.keys())
+            labels = keys
+
+        colors, linestyles = _get_styles(len(keys))
+
+        for val, c, ls, label in zip(values, colors, linestyles, labels):
+            kwargs = {"c": c, "ls": ls}
+            _plot_param(ax, val, param, start=start, end=end, **kwargs)
+            ax.plot([], label=label, **kwargs)
+
+        plt.legend()
+
+    else:
+        arr = _format_leaf(leaf)
+        _plot_param(ax, arr, param, start=start, end=end)
+
+
+def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
+    """This is the ugly gross function that is necessary"""
+    # print(start, end)
+    arr = arr[start:end]
+    epochs = np.arange(len(arr))
+    ax.set(xlabel="Epochs", title=param)  # , xlim=(start, epochs[end]))
+
+    match param:
+        case "positions":
+            norm_pos = arr - arr[0]
+            # rs = np.hypot(norm_pos[:, 0], norm_pos[:, 1])
+            # ax.plot(epochs, rs, **kwargs)
+            ax.plot(epochs, norm_pos, **kwargs)
+            ax.set(ylabel="$\Delta$ Position (arcsec)")
+
+        case "fluxes":
+            norm_flux = arr - arr[0]
+            # norm_flux = 100 * (1 - arr / arr[0])
+            ax.plot(epochs, norm_flux, **kwargs)
+            ax.set(ylabel="$\Delta$ Flux (log)")
+
+        case "aberrations":
+            norm_ab = arr - arr[0]
+            ax.plot(epochs, norm_ab, alpha=0.4, **kwargs)
+            ax.set(ylabel="$\Delta$ Aberrations (nm)")
+
+        case "one_on_fs":
+            norm_oneonf = arr - arr[0]
+            ax.plot(epochs, norm_oneonf, alpha=0.25, **kwargs)
+            ax.set(ylabel="$\Delta$ one_on_fs")
+
+        case "BFE":
+            pass
+            # norm_bfe_lin = arr - arr[0]
+            # ax.plot(epochs, norm_bfe_lin, alpha=0.2, **kwargs)
+            # ax.set(ylabel="$\Delta$ Linear Coefficients")
+
+        case "BFE.linear":
+            norm_bfe_lin = arr - arr[0]
+            ax.plot(epochs, norm_bfe_lin, alpha=0.2, **kwargs)
+            ax.set(ylabel="$\Delta$ Linear Coefficients")
+
+        case "BFE.quadratic":
+            norm_bfe_quad = arr - arr[0]
+            ax.plot(epochs, norm_bfe_quad, alpha=0.1, **kwargs)
+            ax.set(ylabel="$\Delta$ BFE Quadratic Coefficients")
+
+        case "BFE.coeffs":
+            norm_bfe = arr - arr[0]
+            ax.plot(epochs, norm_bfe, alpha=0.5, **kwargs)
+            ax.set(ylabel="$\Delta$ Linear Coefficients")
+
+        case "SRF":
+            srf = arr - arr[0]
+            ax.plot(epochs, srf, **kwargs)
+            ax.set(ylabel="SRF")
+
+        case "pupil_mask.holes":
+            arr *= 1e3
+            norm_holes = arr - arr[0]
+            ax.plot(epochs, norm_holes, **kwargs)
+            ax.set(ylabel="$\Delta$ Pupil Mask Holes (mm)")
+
+        case "pupil_mask.f2f":
+            arr *= 1e2
+            ax.plot(epochs, arr, **kwargs)
+            ax.set(ylabel="Pupil Mask f2f (cm)")
+
+        case "biases":
+            norm_bias = arr - arr[0]
+            ax.plot(epochs, norm_bias, alpha=0.25, **kwargs)
+            ax.set(ylabel="$\Delta$ Bias")
+
+        case "rotation":
+            arr = dlu.rad2deg(arr)
+            norm_rot = arr
+            ax.plot(epochs, norm_rot, **kwargs)
+            ax.set(ylabel="Rotation (deg)")
+
+        case "amplitudes":
+            norm_amplitudes = arr
+            ax.plot(epochs, norm_amplitudes, **kwargs)
+            ax.set(ylabel="Visibility Amplitude")
+
+        case "phases":
+            arr = dlu.rad2deg(arr)
+            norm_phases = arr
+            ax.plot(epochs, norm_phases, **kwargs)
+            ax.set(ylabel="Visibility Phase (deg)")
+
+        case _:
+            print(f"No formatting function for {param}")
+            ax.plot(epochs, arr, **kwargs)

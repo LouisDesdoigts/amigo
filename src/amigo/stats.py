@@ -1,10 +1,6 @@
 import jax.numpy as np
 from jax import vmap, lax
-
-# from .detector_layers import model_amplifier
 from jax.scipy.stats import multivariate_normal as mvn
-
-# from .modelling import model_fn
 
 
 # Noise modelling
@@ -81,35 +77,6 @@ def posterior(model, exposure, per_pix=True, return_im=False):
 
 def loss_fn(model, exposures):
     return -np.array([posterior(model, exp, per_pix=True) for exp in exposures]).sum()
-
-
-# def build_covariance_matrix(var, read_noise=None, min_value=True):
-#     """
-#     The off-diagonal covariance terms cov(i, j), can be the minimum value of:
-#         1. The value: min(var(i), var(j))
-#         2. The index: var(min(i, j))
-
-#     if min_value is True (default), then the minimum value is chosen, otherwise the
-#     minimum index is chosen. Testing show min index results in some data sets being
-#     majority nan, as the resulting covariance matrix is non symmetric or positive
-#     semi-definite.
-
-#     Read noise can optional be added to the diagonal terms.
-#     """
-#     Is = np.arange(len(var))
-#     IJs = np.array(np.meshgrid(Is, Is))
-
-#     if min_value:
-#         vals = vmap(vmap(vmap(lambda ind: var[ind], 0), 1), 0)(IJs)
-#         cov = np.min(vals, (0))
-#     else:
-#         inds = vmap(vmap(vmap(lambda ind: ind, 0), 1), 0)(IJs)
-#         cov = var[np.min(inds, 0)]
-
-#     if read_noise is not None:
-#         cov += get_read_cov(read_noise, len(var))
-
-#     return cov
 
 
 def check_symmetric(mat):

@@ -6,10 +6,6 @@ import jax.numpy as np
 from jax import jit, grad, jvp, linearize, lax, vmap
 
 
-# def hvp(f, primals, tangents):
-#     return jvp(grad(f), primals, tangents)[1]
-
-
 def hessian(f, x, fast=False):
     if fast:
         # print("Running Vmapped")
@@ -36,56 +32,6 @@ def hessian(f, x, fast=False):
         # basis = np.eye(np.prod(np.array(x.shape))).reshape(-1, *x.shape)
         basis = np.eye(x.size).reshape(-1, *x.shape)
         return np.stack([hvp(e) for e in basis]).reshape(x.shape + x.shape)
-
-
-# def FIM(
-#     pytree,
-#     parameters,
-#     loglike_fn,
-#     *loglike_args,
-#     shape_dict={},
-#     save_ram=True,
-#     **loglike_kwargs,
-# ):
-#     # Build X vec
-#     pytree = zdx.tree.set_array(pytree, parameters)
-#     leaves = pytree.get(parameters)
-
-#     # shapes = jtu.tree_map(lambda x: x.shape, leaves)
-#     # lengths = jtu.tree_map(lambda x: x.size, leaves)
-
-#     shapes = [leaf.shape for leaf in leaves]
-#     lengths = [leaf.size for leaf in leaves]
-#     N = np.array(lengths).sum()
-#     X = np.zeros(N)
-
-#     # shapes, lengths = zdx.bayes._shapes_and_lengths(pytree, parameters, shape_dict)
-#     # X = np.zeros(zdx.bayes._lengths_to_N(lengths))
-
-#     # Build function to calculate FIM and calculate
-#     def calc_fim(X):
-#         parametric_pytree = _perturb(X, pytree, parameters, shapes, lengths)
-#         return loglike_fn(parametric_pytree, *loglike_args, **loglike_kwargs)
-
-#     if save_ram:
-#         return hessian(calc_fim, X)
-#     return jax.hessian(calc_fim)(X)
-
-
-# def _perturb(X, pytree, parameters, shapes, lengths):
-#     n, xs = 0, []
-#     if isinstance(parameters, str):
-#         parameters = [parameters]
-#     indexes = range(len(parameters))
-
-#     for i, param, shape, length in zip(indexes, parameters, shapes, lengths):
-#         if length == 1:
-#             xs.append(X[i + n])
-#         else:
-#             xs.append(lax.dynamic_slice(X, (i + n,), (length,)).reshape(shape))
-#             n += length - 1
-
-#     return pytree.add(parameters, xs)
 
 
 """
@@ -160,6 +106,3 @@ def _perturb(X, pytree, parameters, shapes, lengths):
             n += length - 1
 
     return pytree.add(parameters, xs)
-
-
-#

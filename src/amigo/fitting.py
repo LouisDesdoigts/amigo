@@ -8,7 +8,7 @@ import optax
 import jax.tree_util as jtu
 import time
 from datetime import timedelta
-from amigo.core import ModelParams, AmigoHistory
+from amigo.core import ModelParams, ModelHistory
 from .stats import loss_fn
 
 # import tqdm appropriately
@@ -41,8 +41,8 @@ def get_optimiser(pytree, optimisers, parameters=None):
     else:
         parameters = list(optimisers.keys())
 
-    model_params = ModelParams(dict([(p, pytree.get(p)) for p in parameters]))
-    param_spec = ModelParams(dict([(param, param) for param in parameters]))
+    model_params = ModelHistory(dict([(p, pytree.get(p)) for p in parameters]))
+    param_spec = ModelHistory(dict([(param, param) for param in parameters]))
     optim = optax.multi_transform(optimisers, param_spec)
 
     # Build the optimised object - the 'model_params' object
@@ -65,7 +65,7 @@ def optimise(
     epochs,
     optimisers,
     batch_size,
-    grad_fn=lambda model, grads, args: grads,
+    grad_fn=lambda model, grads: grads,
     norm_fn=lambda model_params, args: model_params,
     args_fn=lambda model, args: (model, args),
     print_grads=False,
@@ -87,11 +87,9 @@ def optimise(
     def model_update_fn(optim, model, grads, model_params, state):
         print("Compiling update function")
         updates, state = optim.update(grads, state, model_params)
-        # updates = update_fn(updates, args)
         model_params = zdx.apply_updates(model_params, updates)
         model_params = norm_fn(model_params, args)
         model = model_params.inject(model)
-        # model = norm_fn(model_params.inject(model), args)
         return model, model_params, state
 
     # Binds optimisers to update functions
@@ -99,11 +97,10 @@ def optimise(
     update_reg = lambda *args: model_update_fn(reg_optim, *args)
     val_grad_fn = zdx.filter_value_and_grad(opt_params)(loss_fn)
 
-    @eqx.filter_jit
-    def grad_batch_fn(model, batch, args):
+    def grad_batch_fn(model, batch):
         print("Grad Batch fn compiling...")
         loss, grads = val_grad_fn(model, batch)
-        grads = grad_fn(model, grads, args)
+        grads = grad_fn(model, grads)
 
         # Optionally print the grads
         if print_grads:
@@ -111,13 +108,17 @@ def optimise(
         return loss, grads
 
     # Create model history
-    reg_history = AmigoHistory(model, [p for p in reg_params if p not in no_history])
-    batch_history = AmigoHistory(model, [p for p in batch_params if p not in no_history])
+    reg_history = ModelParams(model, [p for p in reg_params if p not in no_history])
+    batch_history = ModelParams(model, [p for p in batch_params if p not in no_history])
 
     # Get batches
     # TODO: Randomise the order of the exposures before batching
     exposures = args["exposures"]
     batches = [exposures[i : i + batch_size] for i in range(0, len(exposures), batch_size)]
+
+    # Bind batches to grad_fn - This _shouldn't_ be necessary but its the easiest way
+    # to get guarantees about inputs to the compiled function
+    batch_fns = [eqx.filter_jit(lambda model: grad_batch_fn(model, batch)) for batch in batches]
 
     # Get a random batch order
     keys = jr.split(args["key"], epochs)
@@ -136,10 +137,11 @@ def optimise(
         batch_inds = rand_batch_inds[idx]
         batch_losses = np.zeros(len(batches))
         for i in batch_inds:
-            batch = batches[i]
 
-            # Calculate the loss and grads
-            _loss, grads = grad_batch_fn(model, batch, args)
+            # Calculate loss and grads
+            _loss, grads = batch_fns[i](model)
+
+            # Update losses and grads
             batch_losses = batch_losses.at[i].set(_loss)
             batch_grads = batch_model.from_model(grads)
             reg_grads += reg_grads.from_model(grads)
@@ -148,11 +150,11 @@ def optimise(
             model, batch_model, batch_state = update_batch(
                 model, batch_grads, batch_model, batch_state
             )
-            batch_history = batch_history.append(batch_model)  # could be jitted
+            batch_history = batch_history.append(batch_model)  # could be JIT'd with work
 
         # Update the reg params
         model, reg_model, reg_state = update_reg(model, reg_grads, reg_model, reg_state)
-        reg_history = reg_history.append(reg_model)  # could be jitted
+        reg_history = reg_history.append(reg_model)  # could be JIT'd with work
 
         # Check for NaNs
         if np.isnan(_loss):
