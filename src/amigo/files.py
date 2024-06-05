@@ -5,7 +5,6 @@ from astroquery.simbad import Simbad
 import pyia
 import pkg_resources as pkg
 import numpy as onp
-from .misc import slope_im
 from .interferometry import uv_hex_mask
 from webbpsf import mast_wss
 from xara.core import determine_origin
@@ -163,14 +162,6 @@ def get_filters(files, nwavels=9):
         wavels *= 1e-10
         filters[filt] = np.array([wavels, weights])
     return filters
-
-
-def estimate_psf_and_bias(data):
-    ngroups = len(data)
-    ramp_bottom = data[:2]
-    ramp_bottom = np.where(np.isnan(ramp_bottom), 0, ramp_bottom)
-    psf, bias = slope_im(ramp_bottom)  # Estimate from the bottom of the ramp
-    return psf * ngroups, bias
 
 
 def prep_data(file, ms_thresh=None, as_psf=False):

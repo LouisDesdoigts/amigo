@@ -288,6 +288,3 @@ def process_calslope(
 
     print("Done\n")
     return output_path
-
-
-#

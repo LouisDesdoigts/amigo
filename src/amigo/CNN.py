@@ -302,5 +302,3 @@ class NonLinDetector(eqx.Module):
 # plt.imshow(bleeding, cmap="seismic", vmin=-v, vmax=v)
 # plt.colorbar()
 # plt.show()
-
-#

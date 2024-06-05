@@ -378,27 +378,6 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.plot(epochs, norm_oneonf, alpha=0.25, **kwargs)
             ax.set(ylabel="$\Delta$ one_on_fs")
 
-        # case "BFE":
-        #     pass
-        # norm_bfe_lin = arr - arr[0]
-        # ax.plot(epochs, norm_bfe_lin, alpha=0.2, **kwargs)
-        # ax.set(ylabel="$\Delta$ Linear Coefficients")
-
-        # case "BFE.linear":
-        #     norm_bfe_lin = arr - arr[0]
-        #     ax.plot(epochs, norm_bfe_lin, alpha=0.2, **kwargs)
-        #     ax.set(ylabel="$\Delta$ Linear Coefficients")
-
-        # case "BFE.quadratic":
-        #     norm_bfe_quad = arr - arr[0]
-        #     ax.plot(epochs, norm_bfe_quad, alpha=0.1, **kwargs)
-        #     ax.set(ylabel="$\Delta$ BFE Quadratic Coefficients")
-
-        # case "BFE.coeffs":
-        #     norm_bfe = arr - arr[0]
-        #     ax.plot(epochs, norm_bfe, alpha=0.5, **kwargs)
-        #     ax.set(ylabel="$\Delta$ Linear Coefficients")
-
         case "SRF":
             srf = arr - arr[0]
             ax.plot(epochs, srf, **kwargs)
