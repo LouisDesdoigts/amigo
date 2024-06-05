@@ -1,7 +1,25 @@
 import jax.numpy as np
 from tqdm.notebook import tqdm
 import dLux.utils as dlu
-from jax import vmap
+from jax import vmap, Array
+import zodiax as zdx
+from dLuxWebbpsf.basis import get_noll_indices
+
+
+class UVHexikes(zdx.Base):
+
+    basis: Array
+    weight: Array
+    support: Array
+    inv_support: Array
+
+    def __init__(self, basis, weight, support):
+        self.basis = basis
+        self.weight = weight
+        self.support = support
+
+        # calculating the inverse support mask
+        self.inv_support = 1. - support
 
 
 # Mask generation and baselines
@@ -75,11 +93,19 @@ def get_baselines_and_inds(holes):
     return np.array(pairwise_vectors), np.array(hole_inds)
 
 
-# def hex_from_bls(coords, bl, rmax):
 def hex_from_bls(bl, coords, rmax):
     # coords = dlu.translate_coords(coords, np.array([-bl[0], bl[1]]))
     coords = dlu.translate_coords(coords, np.array(bl))
     return dlu.reg_polygon(coords, rmax, 6)
+
+
+def hexikes_from_bls(bl, coords, rmax, radial_orders=None, noll_indices=None):
+
+    noll_indices = get_noll_indices(radial_orders, noll_indices)
+
+    coords = dlu.translate_coords(coords, np.array(bl))
+    hexagon = dlu.reg_polygon(coords, rmax, 6)
+    return hexagon[None, ...] * dlu.zernike_basis(noll_indices, coords, 2*rmax)
 
 
 def get_baselines(holes):
@@ -91,7 +117,7 @@ def get_baselines(holes):
     return np.array([thisu, thisv]).T
 
 
-def uv_hex_mask(
+def build_hexikes(
     holes,
     f2f,
     tf,
@@ -101,6 +127,8 @@ def uv_hex_mask(
     psf_oversample,
     uv_pad,
     mask_pad,
+    radial_orders=None,
+    noll_indices=None,
     crop_npix=None,
     verbose=False,
 ):
@@ -139,29 +167,36 @@ def uv_hex_mask(
     rmax_in = 2 * rmax / wavelength  # x2 because size doubles through a correlation
 
     # Get splodge masks and append DC term
-    uv_hexes = []
-    uv_hexes_conj = []
+    uv_hexikes = []
+    uv_hexikes_conj = []
 
     # Baselines
     if verbose:
         looper = tqdm(hbls)
     else:
         looper = hbls
-
     for bl in looper:
-        uv_hexes.append(hex_from_bls(bl, uv_coords, rmax_in))
-        uv_hexes_conj.append(hex_from_bls(-1 * bl, uv_coords, rmax_in))
-    uv_hexes = np.array(uv_hexes)
-    uv_hexes_conj = np.array(uv_hexes_conj)
+        uv_hexikes.append(hexikes_from_bls(bl, uv_coords, rmax_in, radial_orders=radial_orders, noll_indices=noll_indices))
+        uv_hexikes_conj.append(hexikes_from_bls(-1 * bl, uv_coords, rmax_in, radial_orders=radial_orders, noll_indices=noll_indices))  # Conjugate 
 
-    dc_hex = np.array([hex_from_bls([0, 0], uv_coords, rmax_in)])
+    dc_hex = np.array([hexikes_from_bls([0, 0], uv_coords, rmax_in, radial_orders=radial_orders, noll_indices=noll_indices)])
+    hexikes = np.concatenate([dc_hex, np.array(uv_hexikes), np.array(uv_hexikes_conj)])
 
-    hexes = np.concatenate([dc_hex, uv_hexes, uv_hexes_conj])
+    # Normalising
+    weight_mask = hexikes.sum(0)[0]  # grabbing piston
 
-    # Normalise
-    norm_hexes = dlu.nandiv(hexes, hexes.sum(0), 0.0)
-    dsampler = vmap(lambda arr: dlu.downsample(arr, mask_pad))
-    return dsampler(norm_hexes)
+    # reshaping to vmap over both wavelength and baselines
+    vmapped_shapes = hexikes.shape[:2]
+    npix_in = hexikes.shape[2:]
+    dsampler = vmap(lambda arr: dlu.downsample(arr, mask_pad))  # vmap function
+    hex_mask = dsampler(hexikes.reshape(-1, *npix_in))  # vmapping
+    hex_mask = hex_mask.reshape(*vmapped_shapes, *hex_mask.shape[1:])  # reshaping back
+
+    # downsampling weights and support
+    weight_mask = dlu.downsample(weight_mask, mask_pad)
+    support_mask = dlu.nandiv(hex_mask[:, 0], weight_mask[None, ...], 0.0).sum(0)
+    
+    return hex_mask, weight_mask, support_mask
 
 
 # Visibility modelling
@@ -173,51 +208,64 @@ def from_uv(uv):
     return np.fft.fftshift(np.fft.ifft2(np.fft.fftshift(uv)))
 
 
-def splodge_mask(mask, vis):
-    if len(vis) == 22:  # Includes DC term already
-        coeffs = np.ones(2 * len(vis) - 1, complex)
+def splodge_mask(basis, vis):
+
+    n_vis = vis.shape[0]
+    n_zernikes = vis.shape[1]
+
+    if n_vis == 22:  # Includes DC term already
         dc = np.array([vis[0]])
         coeffs = np.concatenate([dc, vis[1:], vis[1:].conj()])
-    else:
-        coeffs = np.ones(2 * len(vis) + 1, complex)
-        coeffs = coeffs.at[1:].set(np.concatenate([vis, vis.conj()]))
-    return dlu.eval_basis(mask, coeffs)
+    elif n_vis == 21:
+        dc = np.array([1,] + (n_zernikes - 1) * [0,], complex)[None]
+        coeffs = np.concatenate([dc, vis, vis.conj()])
+
+    return dlu.eval_basis(basis, coeffs)
 
 
-def apply_visibilities(psf, mask, vis, pad_to=None):
+def apply_visibilities(psf, vis, basis, weights, inv_support, pad_to=None):
+    
+    # normalise the basis
+    basis = dlu.nandiv(basis, weights, 0.)
+
     # zero padding to correct size
     if pad_to is not None:
-        mask = vmap(dlu.resize, (0, None))(mask, pad_to)
+        # padding normalised basis
+        vmapped_shapes = basis.shape[:2]
+        npix_in = basis.shape[2:]
+        padder = vmap(lambda arr: dlu.resize(arr, pad_to))  # vmap function
+        basis = padder(basis.reshape(-1, *npix_in))  # vmapping
+        basis = basis.reshape(*vmapped_shapes, *basis.shape[1:])  # reshaping back
 
-    # Get splodge mask and inverse
-    splodges = splodge_mask(mask, vis)
-    inv_splodge_support = np.abs(1 - mask.sum(0))
+        # padding inverse support mask with ones
+        inv_support = np.pad(
+            inv_support,
+            (pad_to - inv_support.shape[0])//2,
+            constant_values=1.,
+            )
 
     # We dont use np.where here because we have soft edges on the boundary of the mask
-    return from_uv(to_uv(psf) * (splodges + inv_splodge_support))
-
-
-# def apply_visibilities(psf, mask, vis):
-#     # Get splodge mask and inverse
-#     splodges = splodge_mask(mask, vis)
-#     # inv_splodge_support = np.abs(1 - mask.sum(0))
-
-#     # We dont use np.where here because we have soft edges on the boundary of the mask
-#     return from_uv(to_uv(psf) * splodges)
+    return from_uv(to_uv(psf) * (splodge_mask(basis, vis) + inv_support))
 
 
 def visibilities(amplitudes, phases):
     return amplitudes * np.exp(1j * phases)
 
 
-def uv_model(vis, psfs, mask, cplx=False, pad=2):
+def uv_model(vis, psfs, hexikes, cplx=False, pad=2):
     # Get the sizes
     npix = psfs.shape[-1]
     npix_pad = pad * npix  # array size to pad mask and psfs to
 
-    # Pad, apply the splodges, and cut
+    # unpacking from hexikes
+    basis = hexikes.basis
+    weights = hexikes.weight
+    inv_support = hexikes.inv_support
+
+    # Pad, apply the splodges, and crop
     psfs_pad = vmap(lambda x: dlu.resize(x, npix_pad))(psfs)
-    cplx_psfs_pad = vmap(apply_visibilities, (0, 0, None, None))(psfs_pad, mask, vis, npix_pad)
+    vis_applyer = vmap(apply_visibilities, (0, None, 0, 0, 0, None))
+    cplx_psfs_pad = vis_applyer(psfs_pad, vis, basis, weights, inv_support, npix_pad)
     cplx_psfs = vmap(lambda x: dlu.resize(x, npix))(cplx_psfs_pad)
 
     # Return complex or magnitude
