@@ -23,7 +23,6 @@ class SUB80Ramp(dl.detectors.LayeredDetector):
         oversample=4,
         SRF=None,
         FF=None,
-        # downsample=False,
         npixels_in=80,
         anisotropy=True,
         jitter=True,

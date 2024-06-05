@@ -24,6 +24,3 @@ def plot_losses(losses, start, stop=-1):
 
     plt.tight_layout()
     plt.show()
-
-
-#

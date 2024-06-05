@@ -12,6 +12,7 @@ from jax.lax import dynamic_slice as lax_slice
 from .misc import planck
 from .optical_layers import AMIOptics
 from .detector_layers import SUB80Ramp
+from .stats import posterior
 
 
 class BaseModeller(zdx.Base):
@@ -203,7 +204,6 @@ class Exposure(zdx.Base):
 
         residual = data - slopes
         # loglike_im = self.loglike_im(slope)
-        from .stats import posterior
 
         posterior_im = posterior(model, self, return_im=True)
 

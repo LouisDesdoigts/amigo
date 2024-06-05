@@ -58,6 +58,3 @@ def convert_adjacent_to_true(bool_array):
         bool_array = bool_array.at[y + 1, x].set(True)
         bool_array = bool_array.at[y - 1, x].set(True)
     return bool_array
-
-
-#

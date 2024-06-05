@@ -279,20 +279,10 @@ def calculate_mask_fisher(
         "rotation",
         "shear",
     ]
-
-    # N = np.array(jtu.tree_map(lambda x: x.size, model.get(global_params))).sum()
-
-    # Holes ~1.5 minutes
     t0 = time.time()
     fisher_mask = fisher_fn(params=global_params, **kwargs)
-    # mask = np.zeros((N, N))
-    N = len(fisher_mask)
-    mask = np.ones((N, N))
-    mask = mask.at[:14, :14].set(np.eye(14))
-    # mask = mask.at[14:, 14:].set(1.0)
-    fisher_mask *= mask
+    fisher_mask = np.eye(len(fisher_mask)) * fisher_mask
     print(f"Mask Time: {time.time() - t0:.2f}")
-
     return fisher_mask
 
 

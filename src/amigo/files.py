@@ -198,6 +198,7 @@ def prep_data(file, ms_thresh=None, as_psf=False):
 
     # Nan the bad pixels
     support = np.where(supp_mask)
+    # support = np.array(np.where(supp_mask))
     data = data.at[:, ~supp_mask].set(np.nan)
     var = var.at[..., ~supp_mask].set(np.nan)
 
