@@ -6,9 +6,9 @@ import zodiax as zdx
 import dLux as dl
 import dLux.utils as dlu
 from jax.lax import dynamic_slice as lax_slice
-from .misc import planck
-from .optical_layers import AMIOptics
-from .detector_layers import SUB80Ramp
+from .optics import AMIOptics
+from .detectors import SUB80Ramp
+from .modelling import planck
 
 
 class BaseModeller(zdx.Base):

@@ -41,8 +41,8 @@ def get_optimiser(pytree, optimisers, parameters=None):
     else:
         parameters = list(optimisers.keys())
 
-    model_params = ModelHistory(dict([(p, pytree.get(p)) for p in parameters]))
-    param_spec = ModelHistory(dict([(param, param) for param in parameters]))
+    model_params = ModelParams(dict([(p, pytree.get(p)) for p in parameters]))
+    param_spec = ModelParams(dict([(param, param) for param in parameters]))
     optim = optax.multi_transform(optimisers, param_spec)
 
     # Build the optimised object - the 'model_params' object
@@ -108,8 +108,8 @@ def optimise(
         return loss, grads
 
     # Create model history
-    reg_history = ModelParams(model, [p for p in reg_params if p not in no_history])
-    batch_history = ModelParams(model, [p for p in batch_params if p not in no_history])
+    reg_history = ModelHistory(model, [p for p in reg_params if p not in no_history])
+    batch_history = ModelHistory(model, [p for p in batch_params if p not in no_history])
 
     # Get batches
     # TODO: Randomise the order of the exposures before batching

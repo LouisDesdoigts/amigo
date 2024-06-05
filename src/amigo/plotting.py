@@ -378,39 +378,39 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.plot(epochs, norm_oneonf, alpha=0.25, **kwargs)
             ax.set(ylabel="$\Delta$ one_on_fs")
 
-        case "BFE":
-            pass
-            # norm_bfe_lin = arr - arr[0]
-            # ax.plot(epochs, norm_bfe_lin, alpha=0.2, **kwargs)
-            # ax.set(ylabel="$\Delta$ Linear Coefficients")
+        # case "BFE":
+        #     pass
+        # norm_bfe_lin = arr - arr[0]
+        # ax.plot(epochs, norm_bfe_lin, alpha=0.2, **kwargs)
+        # ax.set(ylabel="$\Delta$ Linear Coefficients")
 
-        case "BFE.linear":
-            norm_bfe_lin = arr - arr[0]
-            ax.plot(epochs, norm_bfe_lin, alpha=0.2, **kwargs)
-            ax.set(ylabel="$\Delta$ Linear Coefficients")
+        # case "BFE.linear":
+        #     norm_bfe_lin = arr - arr[0]
+        #     ax.plot(epochs, norm_bfe_lin, alpha=0.2, **kwargs)
+        #     ax.set(ylabel="$\Delta$ Linear Coefficients")
 
-        case "BFE.quadratic":
-            norm_bfe_quad = arr - arr[0]
-            ax.plot(epochs, norm_bfe_quad, alpha=0.1, **kwargs)
-            ax.set(ylabel="$\Delta$ BFE Quadratic Coefficients")
+        # case "BFE.quadratic":
+        #     norm_bfe_quad = arr - arr[0]
+        #     ax.plot(epochs, norm_bfe_quad, alpha=0.1, **kwargs)
+        #     ax.set(ylabel="$\Delta$ BFE Quadratic Coefficients")
 
-        case "BFE.coeffs":
-            norm_bfe = arr - arr[0]
-            ax.plot(epochs, norm_bfe, alpha=0.5, **kwargs)
-            ax.set(ylabel="$\Delta$ Linear Coefficients")
+        # case "BFE.coeffs":
+        #     norm_bfe = arr - arr[0]
+        #     ax.plot(epochs, norm_bfe, alpha=0.5, **kwargs)
+        #     ax.set(ylabel="$\Delta$ Linear Coefficients")
 
         case "SRF":
             srf = arr - arr[0]
             ax.plot(epochs, srf, **kwargs)
-            ax.set(ylabel="SRF")
+            ax.set(ylabel="$\Delta$ SRF")
 
-        case "pupil_mask.holes":
+        case "holes":
             arr *= 1e3
             norm_holes = arr - arr[0]
             ax.plot(epochs, norm_holes, **kwargs)
             ax.set(ylabel="$\Delta$ Pupil Mask Holes (mm)")
 
-        case "pupil_mask.f2f":
+        case "f2f":
             arr *= 1e2
             ax.plot(epochs, arr, **kwargs)
             ax.set(ylabel="Pupil Mask f2f (cm)")
@@ -426,6 +426,34 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.plot(epochs, norm_rot, **kwargs)
             ax.set(ylabel="Rotation (deg)")
 
+        case "compression":
+            ax.plot(epochs, arr, **kwargs)
+            ax.set(ylabel="Compression")
+
+        case "shear":
+            ax.plot(epochs, arr, **kwargs)
+            ax.set(ylabel="Shear")
+
+        case "translation":
+            norm_arr = arr - arr[0]
+            norm_arr *= 1e2
+            ax.plot(epochs, norm_arr, **kwargs)
+            ax.set(ylabel="$\Delta$ translation (cm)")
+
+        case "holes":
+            norm_arr = arr - arr[0]
+            norm_arr *= 1e2
+            ax.plot(epochs, norm_arr, **kwargs)
+            ax.set(ylabel="$\Delta$ Hole position (cm)")
+
+        case "dark_current":
+            ax.plot(epochs, arr, **kwargs)
+            ax.set(ylabel="Dark Current")
+
+        case "jitter.r":
+            ax.plot(epochs, arr, **kwargs)
+            ax.set(ylabel="Jitter Magnitude")
+
         case "amplitudes":
             norm_amplitudes = arr
             ax.plot(epochs, norm_amplitudes, **kwargs)
@@ -437,6 +465,17 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.plot(epochs, norm_phases, **kwargs)
             ax.set(ylabel="Visibility Phase (deg)")
 
+        case "EDM.values":
+            norm_weights = arr - arr[0]
+            ax.plot(epochs, norm_weights, **kwargs)
+            ax.set(ylabel="$\Delta$ Convolutional Values")
+
+        case "EDM.amplitude":
+            norm_weights = arr - arr[0]
+            ax.plot(epochs, norm_weights, **kwargs)
+            ax.set(ylabel="$\Delta$ Convolutional Output Amplitude")
+
         case _:
             print(f"No formatting function for {param}")
-            ax.plot(epochs, arr, **kwargs)
+            ax.plot(epochs, arr - arr[0], **kwargs)
+            ax.set(ylabel="$\Delta$ values")
