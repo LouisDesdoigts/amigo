@@ -8,8 +8,6 @@ from jax.scipy.signal import convolve
 from jax import Array
 from dLuxWebbpsf.utils.interpolation import _map_coordinates
 
-# from .modelling import model_dark_current, model_ramp
-
 
 def arr2pix(coords, pscale=1):
     n = coords.shape[-1]
@@ -166,13 +164,3 @@ class DarkCurrent(dl.detector_layers.DetectorLayer):
     def apply(self, ramp):
         dark_current = model_dark_current(self.dark_current, len(ramp.data))
         return ramp.add("data", dark_current)
-
-
-# class BuildRamp(dl.detector_layers.DetectorLayer):
-#     ngroups: int
-
-#     def __init__(self, ngroups):
-#         self.ngroups = int(ngroups)
-
-#     def apply(self, psf):
-#         return Ramp(model_ramp(psf.data, self.ngroups), psf.pixel_scale)

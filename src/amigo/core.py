@@ -3,16 +3,11 @@ import jax.numpy as np
 import jax.tree_util as jtu
 import equinox as eqx
 import zodiax as zdx
-import dLux as dl
-import dLux.utils as dlu
 from jax.lax import dynamic_slice as lax_slice
 from .optics import AMIOptics
 from .detectors import LinearDetectorModel, ReadModel
-from .detectors import SimpleRamp
-from .modelling import planck
-from amigo.detectors import model_ramp
-from xara.core import determine_origin
-import pkg_resources as pkg
+from .ramps import SimpleRamp
+from .modelling import model_exposure
 from .files import get_Teffs, get_filters
 
 
@@ -42,141 +37,47 @@ class BaseModeller(zdx.Base):
         return values
 
 
-def find_position(psf, pixel_scale=0.065524085):
-    origin = np.array(determine_origin(psf, verbose=False))
-    origin -= (np.array(psf.shape) - 1) / 2
-    origin += np.array([0.5, 0.5])
-    position = origin * pixel_scale * np.array([1, -1])
-    return position
-
-
-def initialise_params(exposures, optics, pre_calc_FDA=False, amp_order=1):
-    positions = {}
-    fluxes = {}
-    aberrations = {}
-    one_on_fs = {}
-    aberrations = {}
-    for exp in exposures:
-
-        im = exp.data[0]
-        psf = np.where(np.isnan(im), 0.0, im)
-        flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.data[0]))
-        position = find_position(psf, optics.psf_pixel_scale)
-        n_fda = optics.pupil.coefficients.shape[1]
-
-        if pre_calc_FDA:
-            file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
-            coeffs = np.load(file_path)[:, :n_fda]
-        else:
-            coeffs = np.zeros((7, n_fda))
-
-        positions[exp.key] = position
-        aberrations[exp.key] = coeffs
-        fluxes[exp.key] = flux
-        one_on_fs[exp.key] = np.zeros((exp.ngroups, 80, amp_order + 1))
-
-    return {
-        "positions": positions,
-        "fluxes": fluxes,
-        "aberrations": aberrations,
-        "one_on_fs": one_on_fs,
-    }
-
-
 class AmigoModel(BaseModeller):
     Teffs: dict
     filters: dict
     optics: AMIOptics
-    vis_model: None
-    linear_detector: None
-    non_linear_detector: None
-    read_detector: None
+    visibilities: None
+    detector: None
+    ramp: None
+    read: None
 
     def __init__(
         self,
         files,
-        exposures,
+        # exposures,
+        params,
         optics=None,
-        non_linear_detector=None,
-        linear_detector=None,
-        read_detector=None,
-        vis_model=None,
+        ramp=None,
+        detector=None,
+        read=None,
+        visibilities=None,
     ):
 
         if optics is None:
             optics = AMIOptics()
-        if linear_detector is None:
-            linear_detector = LinearDetectorModel()
-        if non_linear_detector is None:
-            non_linear_detector = SimpleRamp()
-        if read_detector is None:
-            read_detector = ReadModel()
+        if detector is None:
+            detector = LinearDetectorModel()
+        if ramp is None:
+            ramp = SimpleRamp()
+        if read is None:
+            read = ReadModel()
 
-        params = initialise_params(exposures, optics)
-        self.params = params
         self.Teffs = get_Teffs(files)
         self.filters = get_filters(files)
         self.optics = optics
-        self.linear_detector = linear_detector
-        self.non_linear_detector = non_linear_detector
-        self.read_detector = read_detector
-        self.vis_model = vis_model
+        self.detector = detector
+        self.ramp = ramp
+        self.read = read
+        self.visibilities = visibilities
+        self.params = params
 
     def model(self, exposure, **kwargs):
-        return self.model_exposure(exposure, **kwargs)
-
-    def model_exposure(self, exposure, to_BFE=False, slopes=False):
-        # Get wavelengths and weights
-        wavels, filt_weights = self.filters[exposure.filter]
-        weights = filt_weights * planck(wavels, self.Teffs[exposure.star])
-        weights = weights / weights.sum()
-
-        optics = self.optics.set(
-            ["pupil.coefficients", "pupil.opd"], [self.aberrations[exposure.key], exposure.opd]
-        )
-
-        if "coherence" in self.params.keys():
-            coherence = self.coherence[exposure.key]
-            optics = optics.set("holes.reflectivity", coherence)
-
-        # Model the optics
-        pos = dlu.arcsec2rad(self.positions[exposure.key])
-        wfs = optics.propagate(wavels, pos, weights, return_wf=True)
-
-        psfs = wfs.psf
-        if self.vis_model is not None:
-            psf = self.vis_model(psfs)
-        else:
-            psf = psfs.sum(0)
-
-        # PSF is still unitary here
-        psf = self.linear_detector.apply(dl.PSF(psf, wfs.pixel_scale.mean(0)))
-
-        # Get the hyper-parameters for the non-linear model
-        flux = 10 ** self.fluxes[exposure.key]
-        oversample = optics.oversample
-
-        # Return the BFE and required meta-data
-        if to_BFE:
-            return psf, flux, oversample
-
-        # Non linear model always goes from unit psf, flux, oversample to an 80x80 ramp
-        if self.non_linear_detector is not None:
-            ramp = self.non_linear_detector.apply(psf, flux, exposure, oversample)
-        else:
-            psf_data = dlu.downsample(psf.data * flux, oversample, mean=False)
-            ramp = psf.set("data", model_ramp(psf_data, exposure.ngroups))
-
-        # Model the read effects
-        one_on_fs = self.one_on_fs[exposure.key]
-        ramp = self.read_detector.set("one_on_fs", one_on_fs).apply(ramp)
-
-        # Return the slopes if required
-        if slopes:
-            return np.diff(ramp.data, axis=0)
-
-        # Return the ramp
-        return ramp.data
+        return model_exposure(self, exposure, **kwargs)
 
     def __getattr__(self, key):
         if key in self.params:
@@ -186,14 +87,14 @@ class AmigoModel(BaseModeller):
                 return getattr(val, key)
         if hasattr(self.optics, key):
             return getattr(self.optics, key)
-        if hasattr(self.linear_detector, key):
-            return getattr(self.linear_detector, key)
-        if hasattr(self.non_linear_detector, key):
-            return getattr(self.non_linear_detector, key)
-        if hasattr(self.read_detector, key):
-            return getattr(self.read_detector, key)
-        if hasattr(self.vis_model, key):
-            return getattr(self.vis_model, key)
+        if hasattr(self.detector, key):
+            return getattr(self.detector, key)
+        if hasattr(self.ramp, key):
+            return getattr(self.ramp, key)
+        if hasattr(self.read, key):
+            return getattr(self.read, key)
+        if hasattr(self.visibilities, key):
+            return getattr(self.visibilities, key)
         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
 
 

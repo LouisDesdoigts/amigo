@@ -72,8 +72,12 @@ def posterior(model, exposure, per_pix=True, return_im=False):
     return np.nansum(posterior_vec)
 
 
-def loss_fn(model, exposures):
-    return -np.array([posterior(model, exp, per_pix=True) for exp in exposures]).sum()
+def loss_fn(model, exposure):
+    return -np.array(posterior(model, exposure, per_pix=True)).sum()
+
+
+def batch_loss_fn(model, batch):
+    return -np.array([posterior(model, exp, per_pix=True) for exp in batch]).sum()
 
 
 def check_symmetric(mat):

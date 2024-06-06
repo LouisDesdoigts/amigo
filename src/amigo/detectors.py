@@ -2,7 +2,6 @@ import pkg_resources as pkg
 import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
-
 from .jitter import GaussianJitter
 from .detector_layers import (
     PixelAnisotropy,
@@ -12,19 +11,6 @@ from .detector_layers import (
     Amplifier,
     Rotate,
 )
-
-
-def model_ramp(psf, ngroups):
-    """Applies an 'up the ramp' model of the input 'optical' PSF. Input PSF.data
-    should have shape (npix, npix) and return shape (ngroups, npix, npix)"""
-    lin_ramp = (np.arange(ngroups) + 1) / ngroups
-    return psf[None, ...] * lin_ramp[..., None, None]
-
-
-def model_dark_current(dark_current, ngroups):
-    """Models the dark current as a constant background value added cumulatively to
-    each group. For now we assume that the dark current is a float."""
-    return (dark_current * (np.arange(ngroups) + 1))[..., None, None]
 
 
 class LayeredDetector(dl.detectors.LayeredDetector):
@@ -43,26 +29,6 @@ class LayeredDetector(dl.detectors.LayeredDetector):
                 continue
             psf = layer.apply(psf)
         return psf
-
-
-# class EffectiveDetectorModel(dl.detectors.BaseDetector):
-#     linear_model: LayeredDetector
-#     non_linear_model: LayeredDetector
-#     read_model: LayeredDetector
-
-#     def __init__(self, linear_model, non_linear_model, read_model):
-#         self.linear_model = linear_model
-#         self.non_linear_model = non_linear_model
-#         self.read_model = read_model
-
-#     def __getattr__(self, key: str):
-#         if hasattr(self.linear_model, key):
-#             return getattr(self.linear_model, key)
-#         if hasattr(self.non_linear_model, key):
-#             return getattr(self.non_linear_model, key)
-#         if hasattr(self.read_model, key):
-#             return getattr(self.read_model, key)
-#         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
 
 
 class LinearDetectorModel(LayeredDetector):
@@ -101,15 +67,6 @@ class LinearDetectorModel(LayeredDetector):
         layers.append(("sensitivity", ApplySensitivities(FF, SRF)))
 
         self.layers = dlu.list2dictionary(layers, ordered=True)
-
-
-class SimpleRamp(dl.detectors.BaseDetector):
-
-    def apply(self, psf, flux, exposure, oversample):
-        return model_ramp(dlu.downsample(psf * flux, oversample, mean=False), exposure.ngroups)
-
-    def model(self, psf):
-        raise NotImplementedError
 
 
 class ReadModel(LayeredDetector):

@@ -8,6 +8,7 @@ import numpy as onp
 from .interferometry import uv_hex_mask
 from webbpsf import mast_wss
 from tqdm.notebook import tqdm
+from xara.core import determine_origin
 
 
 def summarise_files(files, extra_keys=[]):
@@ -130,6 +131,59 @@ def get_Teff(targ_name):
     return -1
 
 
+def find_position(psf, pixel_scale=0.065524085):
+    origin = np.array(determine_origin(psf, verbose=False))
+    origin -= (np.array(psf.shape) - 1) / 2
+    origin += np.array([0.5, 0.5])
+    position = origin * pixel_scale * np.array([1, -1])
+    return position
+
+
+def initialise_params(
+    exposures,
+    optics,
+    pre_calc_FDA=False,
+    amp_order=1,
+    fit_one_on_fs=True,
+    fit_coherence=False,
+):
+    positions = {}
+    fluxes = {}
+    aberrations = {}
+    one_on_fs = {}
+    aberrations = {}
+    coherence = {}
+    for exp in exposures:
+
+        im = exp.data[0]
+        psf = np.where(np.isnan(im), 0.0, im)
+        flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.data[0]))
+        position = find_position(psf, optics.psf_pixel_scale)
+        n_fda = optics.pupil.coefficients.shape[1]
+
+        if pre_calc_FDA:
+            file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
+            coeffs = np.load(file_path)[:, :n_fda]
+        else:
+            coeffs = np.zeros((7, n_fda))
+
+        positions[exp.key] = position
+        aberrations[exp.key] = coeffs
+        fluxes[exp.key] = flux
+        one_on_fs[exp.key] = np.zeros((exp.ngroups, 80, amp_order + 1))
+        coherence[exp.key] = np.zeros_like(optics.reflectivity)
+
+    params = {"positions": positions, "fluxes": fluxes, "aberrations": aberrations}
+
+    if fit_one_on_fs:
+        params["one_on_fs"] = one_on_fs
+
+    if fit_coherence:
+        params["coherence"] = coherence
+
+    return params
+
+
 def get_filters(files, nwavels=9):
 
     filters = {}
@@ -206,7 +260,8 @@ def get_wss_ops(files):
     return opd_files
 
 
-def get_Teffs(files, default=4500, straight_default=False, Teff_cache="files/Teffs"):
+def get_Teffs(files, default=4500, skip_search=False, Teff_cache="files/Teffs"):
+    # def get_Teffs(exposures, default=4500, skip_search=False, Teff_cache="files/Teffs"):
     # Check whether the specified cache directory exists
     if not os.path.exists(Teff_cache):
         os.makedirs(Teff_cache)
@@ -226,7 +281,7 @@ def get_Teffs(files, default=4500, straight_default=False, Teff_cache="files/Tef
             continue
 
         # Temporary measure to get around gaia archive being dead
-        if straight_default:
+        if skip_search:
             Teffs[prop_name] = default
             print("Warning using default Teff")
             continue
@@ -269,21 +324,6 @@ def get_phases(exposures, dc=False):
         if key not in phases.keys():
             phases[key] = np.zeros(n)
     return phases
-
-
-# def get_coherence(exposures):
-#     coherences = {}
-#     for exp in exposures:
-#         coherences[exp.key] = np.zeros(7)
-#     return coherences
-
-
-# def find_position(psf, pixel_scale=0.065524085):
-#     origin = np.array(determine_origin(psf, verbose=False))
-#     origin -= (np.array(psf.shape) - 1) / 2
-#     origin += np.array([0.5, 0.5])
-#     position = origin * pixel_scale * np.array([1, -1])
-#     return position
 
 
 def get_exposures(files, ms_thresh=None, as_psf=False, key_fn=None):

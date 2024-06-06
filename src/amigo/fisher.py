@@ -4,10 +4,116 @@ import equinox as eqx
 import jax.numpy as np
 from jax import jit, grad, jvp, linearize, lax, vmap
 import jax.tree_util as jtu
-import dLux.utils as dlu
-from amigo.modelling import variance_model
-from amigo.stats import posterior
+from .modelling import variance_model
+from .stats import posterior
 import os
+
+
+def fisher_fn(model, exposure, params):
+    return FIM(model, params, posterior, exposure)
+
+
+def self_fisher_fn(model, exposure, params, read_noise=10, true_read_noise=False):
+    psf, variance = variance_model(
+        model, exposure, true_read_noise=true_read_noise, read_noise=read_noise
+    )
+    exposure = exposure.set(["data", "variance"], [psf, variance])
+    return fisher_fn(model, exposure, params)
+
+
+def calc_fisher(model, exposure, param, file_path, recalculate=False):
+    # Check that the param exists - caught later
+    try:
+        leaf = model.get(param)
+        if not isinstance(leaf, np.ndarray):
+            raise ValueError(f"Leaf at path '{param}' is not an array")
+        N = leaf.size
+    except ValueError:
+        return None
+
+    # Check for cached fisher mats
+    exists = os.path.exists(file_path)
+
+    # Check if we need to recalculate
+    if exists and not recalculate:
+        fisher = np.load(file_path)
+        if fisher.shape[0] != N:
+            raise ValueError(f"Shape mismatch for {param}")
+
+    # Calculate and save
+    else:
+        fisher = self_fisher_fn(model, exposure, [param])
+        np.save(file_path, fisher)
+    return fisher
+
+
+def key_mapper(model, exposure, param):
+    """
+    Takes in a model, exposure and param, returns the correct path to the model leaf
+    """
+    # Check for unique cases, like visibilities
+    if param in ["amplitudes", "phases"]:
+        # Visibilities are fit jointly from multiple observations, one per star per filter
+        vis_key = model.vis_model.get_key(exposure)
+        return f"{param}.{vis_key}"
+
+    # Check for local param
+    leaf = model.get(param)
+    if isinstance(leaf, dict):
+        if exposure.key in leaf.keys():
+            return f"{param}.{exposure.key}"
+
+    # Else its global
+    return param
+
+
+def calc_fishers(
+    model,
+    exposures,
+    parameters,
+    param_map_fn=None,
+    recalculate=False,
+    cache="files/fishers",
+):
+
+    if not os.path.exists(cache):
+        os.makedirs(cache)
+
+    # Iterate over exposures
+    fisher_exposures = {}
+    for exp in exposures:
+
+        # Iterate over params
+        fisher_params = {}
+        for param in parameters:
+
+            # Ensure the path to save to exists
+            save_path = f"{cache}/{exp.key}/"
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
+
+            # Path to the file
+            file_path = os.path.join(save_path, f"{param}.npy")
+
+            # Get path correct for parameters
+            param_path = key_mapper(model, exp, param)
+
+            # Allows for custom mapping of parameters
+            if param_map_fn is not None:
+                param_path = param_map_fn(model, exp, param)
+
+            # Calculate fisher for each exposure
+            fisher = calc_fisher(model, exp, param_path, file_path, recalculate)
+
+            # Store the fisher
+            if fisher is not None:
+                fisher_params[param] = fisher
+            else:
+                print(f"Could not calculate fisher for {param_path} - {exp.key}")
+
+        fisher_exposures[exp.key] = fisher_params
+
+    return fisher_exposures
 
 
 def hessian(f, x, fast=False):
@@ -208,143 +314,3 @@ class MatrixMapper(zdx.Base):
 
     def get_diagonal_terms(self):
         raise NotImplementedError("Method not implemented")
-
-
-def fisher_fn(model, exposure, params):
-    return FIM(model, params, posterior, exposure)
-
-
-def self_fisher_fn(model, exposure, params, read_noise=10, true_read_noise=False):
-    psf, variance = variance_model(
-        model, exposure, true_read_noise=true_read_noise, read_noise=read_noise
-    )
-    exposure = exposure.set(["data", "variance"], [psf, variance])
-    return fisher_fn(model, exposure, params)
-
-
-def calc_fisher(model, exposure, param, save_path, file_name, recalculate=False):
-
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
-
-    # Check that the param exists - caught later
-    try:
-        leaf = model.get(param)
-        if not isinstance(leaf, np.ndarray):
-            raise ValueError(f"Leaf at path '{param}' is not an array")
-        N = leaf.size
-    except ValueError:
-        return None
-
-    # Check for cached fisher mats
-    file_path = os.path.join(save_path, file_name)
-    exists = os.path.exists(file_path)
-
-    # Check if we need to recalculate
-    if exists and not recalculate:
-        fisher = np.load(file_path)
-        if fisher.shape[0] != N:
-            raise ValueError(f"Shape mismatch for {param}")
-    else:
-        fisher = self_fisher_fn(model, exposure, [param])
-        np.save(file_path, fisher)
-    return fisher
-
-
-def calc_fishers(
-    model,
-    exposures,
-    parameters,
-    local=False,
-    recalculate=False,
-    cache="files/fishers",
-):
-
-    if not os.path.exists(cache):
-        os.makedirs(cache)
-
-    fishers = {}
-
-    # Iterate over params
-    for param in parameters:
-
-        # Iterate over exposures
-        for exp in exposures:
-
-            # Get file and parameter path
-            save_path = f"{cache}/{exp.key}/"
-            file_name = f"{param}.npy"
-
-            # Get path correct for 'local' parameters
-            if local:
-                param_path = f"{param}.{exp.key}"
-            else:
-                param_path = param
-
-            # Calculate fisher for each exposure
-            fisher = calc_fisher(model, exp, param_path, save_path, file_name, recalculate)
-
-            # Store the fisher
-            if fisher is not None:
-                fishers[param_path] = fisher
-            else:
-                print(f"Could not calculate Fisher for {param_path}")
-
-    return fishers
-
-
-def load_fisher(fisher_path, value):
-    try:
-        fisher = np.load(fisher_path)
-    except FileNotFoundError:
-        # fisher = - np.eye(value.size)
-        fisher = np.zeros((value.size, value.size))
-
-        # Ensure sizes match
-        if len(fisher) != value.size:
-            raise ValueError(f"Shape mismatch for {fisher_path}")
-
-    return fisher
-
-
-def fisher_to_lr(fisher, value, order=1):
-    # Take negative inverse of diagonal (first order)
-    if order == 1:
-
-        # Take the negative inverse, ensure zeros are ones
-        lr = dlu.nandiv(-1, np.diag(fisher), 1).reshape(value.shape)
-    else:
-        raise NotImplementedError(
-            "Second order fishers not yet implemented, Code needs to be ported "
-            "from the MatrixMapper class"
-        )
-
-    return lr
-
-
-def calc_lrs(param_model, exposures, fisher_cache="files/fishers", order=1):
-
-    # Just work with a raw dict here for simplicity
-    fisher_dict = jtu.tree_map(lambda x: np.zeros((x.size, x.size)), param_model.params)
-
-    # Loop over parameters and get fishers
-    for param_key, value in param_model.params.items():
-        # print(param_key)
-
-        # Loop over exposures and accumulate fishers
-        for exp in exposures:
-            fisher_path = os.path.join(fisher_cache, exp.key, param_key) + ".npy"
-
-            # Dict case
-            if isinstance(value, dict):
-                fisher = load_fisher(fisher_path, value[exp.key])
-                fisher_dict[param_key][exp.key] += fisher
-
-            # Array case
-            else:
-                fisher = load_fisher(fisher_path, value)
-                fisher_dict[param_key] += fisher
-
-    lr_fn = lambda fisher, value: fisher_to_lr(fisher, value, order=order)
-    lr_params = jtu.tree_map(lr_fn, fisher_dict, param_model.params)
-    return param_model.set("params", lr_params)
