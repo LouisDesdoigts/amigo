@@ -7,7 +7,6 @@ import pkg_resources as pkg
 import numpy as onp
 from .interferometry import uv_hex_mask
 from webbpsf import mast_wss
-from xara.core import determine_origin
 from tqdm.notebook import tqdm
 
 
@@ -272,19 +271,19 @@ def get_phases(exposures, dc=False):
     return phases
 
 
-def get_coherence(exposures):
-    coherences = {}
-    for exp in exposures:
-        coherences[exp.key] = np.zeros(7)
-    return coherences
+# def get_coherence(exposures):
+#     coherences = {}
+#     for exp in exposures:
+#         coherences[exp.key] = np.zeros(7)
+#     return coherences
 
 
-def find_position(psf, pixel_scale=0.065524085):
-    origin = np.array(determine_origin(psf, verbose=False))
-    origin -= (np.array(psf.shape) - 1) / 2
-    origin += np.array([0.5, 0.5])
-    position = origin * pixel_scale * np.array([1, -1])
-    return position
+# def find_position(psf, pixel_scale=0.065524085):
+#     origin = np.array(determine_origin(psf, verbose=False))
+#     origin -= (np.array(psf.shape) - 1) / 2
+#     origin += np.array([0.5, 0.5])
+#     position = origin * pixel_scale * np.array([1, -1])
+#     return position
 
 
 def get_exposures(files, ms_thresh=None, as_psf=False, key_fn=None):
@@ -296,41 +295,11 @@ def get_exposures(files, ms_thresh=None, as_psf=False, key_fn=None):
         data, variance, support = prep_data(file, ms_thresh=ms_thresh, as_psf=as_psf)
         if key_fn is None:
             key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:4])
+        data = np.asarray(data, float)
+        variance = np.asarray(variance, float)
+        support = np.asarray(support, int)
         exposures.append(Exposure(file, data, variance, support, opd, key_fn))
     return exposures
-
-
-def initialise_params(exposures, optics, pre_calc_FDA=False, amp_order=1):
-    positions = {}
-    fluxes = {}
-    aberrations = {}
-    one_on_fs = {}
-    aberrations = {}
-    for exp in exposures:
-
-        im = exp.data[0]
-        psf = np.where(np.isnan(im), 0.0, im)
-        flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.data[0]))
-        position = find_position(psf, optics.psf_pixel_scale)
-        n_fda = optics.pupil.coefficients.shape[1]
-
-        if pre_calc_FDA:
-            file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
-            FDA = np.load(file_path)[:, :n_fda]
-        else:
-            FDA = np.zeros((7, n_fda))
-
-        positions[exp.key] = position
-        aberrations[exp.key] = FDA
-        fluxes[exp.key] = flux
-        one_on_fs[exp.key] = np.zeros((exp.ngroups, 80, amp_order + 1))
-
-    return {
-        "positions": positions,
-        "fluxes": fluxes,
-        "aberrations": aberrations,
-        "one_on_fs": one_on_fs,
-    }
 
 
 def full_to_SUB80(full_arr, npix_out=80, fill=0.0):

@@ -7,8 +7,13 @@ import dLux as dl
 import dLux.utils as dlu
 from jax.lax import dynamic_slice as lax_slice
 from .optics import AMIOptics
-from .detectors import SUB80Ramp
+from .detectors import LinearDetectorModel, ReadModel
+from .detectors import SimpleRamp
 from .modelling import planck
+from amigo.detectors import model_ramp
+from xara.core import determine_origin
+import pkg_resources as pkg
+from .files import get_Teffs, get_filters
 
 
 class BaseModeller(zdx.Base):
@@ -37,81 +42,141 @@ class BaseModeller(zdx.Base):
         return values
 
 
+def find_position(psf, pixel_scale=0.065524085):
+    origin = np.array(determine_origin(psf, verbose=False))
+    origin -= (np.array(psf.shape) - 1) / 2
+    origin += np.array([0.5, 0.5])
+    position = origin * pixel_scale * np.array([1, -1])
+    return position
+
+
+def initialise_params(exposures, optics, pre_calc_FDA=False, amp_order=1):
+    positions = {}
+    fluxes = {}
+    aberrations = {}
+    one_on_fs = {}
+    aberrations = {}
+    for exp in exposures:
+
+        im = exp.data[0]
+        psf = np.where(np.isnan(im), 0.0, im)
+        flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.data[0]))
+        position = find_position(psf, optics.psf_pixel_scale)
+        n_fda = optics.pupil.coefficients.shape[1]
+
+        if pre_calc_FDA:
+            file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
+            coeffs = np.load(file_path)[:, :n_fda]
+        else:
+            coeffs = np.zeros((7, n_fda))
+
+        positions[exp.key] = position
+        aberrations[exp.key] = coeffs
+        fluxes[exp.key] = flux
+        one_on_fs[exp.key] = np.zeros((exp.ngroups, 80, amp_order + 1))
+
+    return {
+        "positions": positions,
+        "fluxes": fluxes,
+        "aberrations": aberrations,
+        "one_on_fs": one_on_fs,
+    }
+
+
 class AmigoModel(BaseModeller):
     Teffs: dict
     filters: dict
     optics: AMIOptics
-    detector: SUB80Ramp
     vis_model: None
+    linear_detector: None
+    non_linear_detector: None
+    read_detector: None
 
-    def __init__(self, params, optics, detector, Teffs, filters, vis_model=None):
+    def __init__(
+        self,
+        files,
+        exposures,
+        optics=None,
+        non_linear_detector=None,
+        linear_detector=None,
+        read_detector=None,
+        vis_model=None,
+    ):
+
+        if optics is None:
+            optics = AMIOptics()
+        if linear_detector is None:
+            linear_detector = LinearDetectorModel()
+        if non_linear_detector is None:
+            non_linear_detector = SimpleRamp()
+        if read_detector is None:
+            read_detector = ReadModel()
+
+        params = initialise_params(exposures, optics)
         self.params = params
-        self.Teffs = Teffs
-        self.filters = filters
+        self.Teffs = get_Teffs(files)
+        self.filters = get_filters(files)
         self.optics = optics
-        self.detector = detector
+        self.linear_detector = linear_detector
+        self.non_linear_detector = non_linear_detector
+        self.read_detector = read_detector
         self.vis_model = vis_model
 
     def model(self, exposure, **kwargs):
         return self.model_exposure(exposure, **kwargs)
 
-    def model_psf(self, pos, wavels, weights):
+    def model_exposure(self, exposure, to_BFE=False, slopes=False):
+        # Get wavelengths and weights
+        wavels, filt_weights = self.filters[exposure.filter]
+        weights = filt_weights * planck(wavels, self.Teffs[exposure.star])
+        weights = weights / weights.sum()
 
-        wfs = self.optics.propagate(wavels, dlu.arcsec2rad(pos), weights, return_wf=True)
+        optics = self.optics.set(
+            ["pupil.coefficients", "pupil.opd"], [self.aberrations[exposure.key], exposure.opd]
+        )
+
+        if "coherence" in self.params.keys():
+            coherence = self.coherence[exposure.key]
+            optics = optics.set("holes.reflectivity", coherence)
+
+        # Model the optics
+        pos = dlu.arcsec2rad(self.positions[exposure.key])
+        wfs = optics.propagate(wavels, pos, weights, return_wf=True)
 
         psfs = wfs.psf
         if self.vis_model is not None:
             psf = self.vis_model(psfs)
         else:
             psf = psfs.sum(0)
-        return dl.PSF(psf, wfs.pixel_scale.mean(0))
 
-    def model_detector(self, psf, to_BFE=False):
+        # PSF is still unitary here
+        psf = self.linear_detector.apply(dl.PSF(psf, wfs.pixel_scale.mean(0)))
 
-        for key, layer in self.detector.layers.items():
-            if key == "EDM" and to_BFE:
-                return psf.data
-            psf = layer.apply(psf)
-        return psf.data
+        # Get the hyper-parameters for the non-linear model
+        flux = 10 ** self.fluxes[exposure.key]
+        oversample = optics.oversample
 
-    def model_exposure(self, exposure, to_BFE=False, slopes=False):
-        # Get exposure key
-        key = exposure.key
-
-        # Get wavelengths and weights
-        wavels, filt_weights = self.filters[exposure.filter]
-        weights = filt_weights * planck(wavels, self.Teffs[exposure.star])
-        weights = weights / weights.sum()
-
-        position = self.positions[key]
-        flux = 10 ** self.fluxes[key]
-        aberrations = self.aberrations[key]
-        one_on_fs = self.one_on_fs[key]
-        # dark_current = self.dark_current
-        opd = exposure.opd
-
-        optics = self.optics.set(["pupil.coefficients", "pupil.opd"], [aberrations, opd])
-
-        if "coherence" in self.params.keys():
-            coherence = self.coherence[key]
-            optics = optics.set("holes.reflectivity", coherence)
-
-        detector = self.detector.set(
-            ["EDM.ngroups", "EDM.flux", "EDM.filter", "one_on_fs"],
-            [exposure.ngroups, flux, exposure.filter, one_on_fs],
-        )  # , dark_current])
-
-        self = self.set(["optics", "detector"], [optics, detector])
-        psf = self.model_psf(position, wavels, weights)
-        ramp = self.model_detector(psf, to_BFE=to_BFE)
-
+        # Return the BFE and required meta-data
         if to_BFE:
-            return ramp
+            return psf, flux, oversample
 
+        # Non linear model always goes from unit psf, flux, oversample to an 80x80 ramp
+        if self.non_linear_detector is not None:
+            ramp = self.non_linear_detector.apply(psf, flux, exposure, oversample)
+        else:
+            psf_data = dlu.downsample(psf.data * flux, oversample, mean=False)
+            ramp = psf.set("data", model_ramp(psf_data, exposure.ngroups))
+
+        # Model the read effects
+        one_on_fs = self.one_on_fs[exposure.key]
+        ramp = self.read_detector.set("one_on_fs", one_on_fs).apply(ramp)
+
+        # Return the slopes if required
         if slopes:
-            return np.diff(ramp, axis=0)
+            return np.diff(ramp.data, axis=0)
 
-        return ramp
+        # Return the ramp
+        return ramp.data
 
     def __getattr__(self, key):
         if key in self.params:
@@ -121,13 +186,15 @@ class AmigoModel(BaseModeller):
                 return getattr(val, key)
         if hasattr(self.optics, key):
             return getattr(self.optics, key)
-        if hasattr(self.detector, key):
-            return getattr(self.detector, key)
+        if hasattr(self.linear_detector, key):
+            return getattr(self.linear_detector, key)
+        if hasattr(self.non_linear_detector, key):
+            return getattr(self.non_linear_detector, key)
+        if hasattr(self.read_detector, key):
+            return getattr(self.read_detector, key)
         if hasattr(self.vis_model, key):
             return getattr(self.vis_model, key)
-        raise AttributeError(
-            f"Attribute {key} not found in params of {self.__class__.__name__} object"
-        )
+        raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
 
 
 class Exposure(zdx.Base):
@@ -140,8 +207,8 @@ class Exposure(zdx.Base):
     data: jax.Array
     variance: jax.Array
     zero_point: jax.Array
-    support: jax.Array = eqx.field(static=True)
-    opd: jax.Array = eqx.field(static=True)
+    support: jax.Array
+    opd: jax.Array
     nints: int = eqx.field(static=True)
     ngroups: int = eqx.field(static=True)
     nslopes: int = eqx.field(static=True)
@@ -186,7 +253,7 @@ class ExposureFit(Exposure):
     one_on_fs: jax.Array
     coherence: jax.Array
 
-    def __init__(self, exposure, position, flux, FDA, one_on_fs, coherence):
+    def __init__(self, exposure, position, flux, aberrations, one_on_fs, coherence):
 
         self.data = exposure.data
         self.variance = exposure.variance
@@ -199,7 +266,7 @@ class ExposureFit(Exposure):
         self.filter = exposure.filter
         self.star = exposure.star
         self.zero_point = exposure.zero_point
-        self.aberrations = FDA
+        self.aberrations = aberrations
         self.position = position
         self.flux = flux
         self.one_on_fs = one_on_fs
@@ -248,14 +315,11 @@ class ModelParams(BaseModeller):
         return list(self.params.values())
 
     def __getattr__(self, key):
-        # print("In get attr")
         if key in self.keys:
             return self.params[key]
         for k, val in self.params.items():
-            # print(k)
             if hasattr(val, key):
                 return getattr(val, key)
-        # return self.get(key)
         raise AttributeError(
             f"Attribute {key} not found in params of {self.__class__.__name__} object"
         )
@@ -274,21 +338,16 @@ class ModelParams(BaseModeller):
     def __iadd__(self, values):
         return self.__add__(values)
 
+    def __mul__(self, values):
+        matched = self.replace(values)
+        return jax.tree_map(lambda x, y: x * y, self, matched)
+
+    def __imul__(self, values):
+        return self.__mul__(values)
+
     def inject(self, other):
         # Injects the values of this class into another class
         return other.set(self.keys, self.values)
-
-
-def _is_tree(x):
-    """
-    Here we check if the leaf is a leaf, or a tree. If it is a tree, we tree_map the
-    operation around the leaves of that tree. We use the eqx.is_array_like to check if
-    the leaf is a tree, but this could also be done with
-    `isinstance(leaf, (list, dict, tuple, eqx.Module))`. The differences between these
-    two methods needs to be investigated.
-    """
-    # return isinstance(x, (list, dict, tuple, eqx.Module))
-    return not eqx.is_array_like(x)
 
 
 class ModelHistory(ModelParams):
@@ -306,7 +365,7 @@ class ModelHistory(ModelParams):
         history = {}
         for param in tracked:
             leaf = model.get(param)
-            if _is_tree(leaf):
+            if not eqx.is_array_like(leaf):
                 history[param] = jtu.tree_map(lambda sub_leaf: [sub_leaf], leaf)
             else:
                 history[param] = [leaf]
@@ -322,7 +381,7 @@ class ModelHistory(ModelParams):
                 new_leaf = model.get(param)
 
             # Tree-like case
-            if _is_tree(new_leaf):
+            if not eqx.is_array_like(new_leaf):
                 append_fn = lambda history, value: history + [value]
                 leaf_fn = lambda leaf: isinstance(leaf, list)
                 new_leaf_history = jtu.tree_map(append_fn, leaf_history, new_leaf, is_leaf=leaf_fn)

@@ -8,6 +8,20 @@ from jax.scipy.signal import convolve
 from jax import Array
 from dLuxWebbpsf.utils.interpolation import _map_coordinates
 
+# from .modelling import model_dark_current, model_ramp
+
+
+def arr2pix(coords, pscale=1):
+    n = coords.shape[-1]
+    shift = (n - 1) / 2
+    return pscale * (coords - shift)
+
+
+def pix2arr(coords, pscale=1):
+    n = coords.shape[-1]
+    shift = (n - 1) / 2
+    return (coords / pscale) + shift
+
 
 # Amplifier/ramp modelling
 def model_amplifier(coeffs, axis=0):
@@ -43,18 +57,6 @@ def model_dark_current(dark_current, ngroups):
     """Models the dark current as a constant background value added cumulatively to
     each group. For now we assume that the dark current is a float."""
     return (dark_current * (np.arange(ngroups) + 1))[..., None, None]
-
-
-def arr2pix(coords, pscale=1):
-    n = coords.shape[-1]
-    shift = (n - 1) / 2
-    return pscale * (coords - shift)
-
-
-def pix2arr(coords, pscale=1):
-    n = coords.shape[-1]
-    shift = (n - 1) / 2
-    return (coords / pscale) + shift
 
 
 class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
@@ -166,11 +168,11 @@ class DarkCurrent(dl.detector_layers.DetectorLayer):
         return ramp.add("data", dark_current)
 
 
-class BuildRamp(dl.detector_layers.DetectorLayer):
-    ngroups: int
+# class BuildRamp(dl.detector_layers.DetectorLayer):
+#     ngroups: int
 
-    def __init__(self, ngroups):
-        self.ngroups = int(ngroups)
+#     def __init__(self, ngroups):
+#         self.ngroups = int(ngroups)
 
-    def apply(self, psf):
-        return Ramp(model_ramp(psf.data, self.ngroups), psf.pixel_scale)
+#     def apply(self, psf):
+#         return Ramp(model_ramp(psf.data, self.ngroups), psf.pixel_scale)

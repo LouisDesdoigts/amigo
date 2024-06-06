@@ -60,9 +60,6 @@ def prior(*args):
 def posterior(model, exposure, per_pix=True, return_im=False):
     # Get the model
     slopes = model.model(exposure, slopes=True)
-    # slopes = np.diff(ramp, axis=0)
-    # slopes = model_fn(model, exposure, **kwargs)
-
     posterior_vec = prior(model, slopes, exposure) + log_likelihood(slopes, exposure)
 
     # return image

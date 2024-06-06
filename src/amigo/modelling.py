@@ -1,12 +1,8 @@
 import pkg_resources as pkg
 import jax.numpy as np
-import jax.tree_util as jtu
-import equinox as eqx
 import dLux as dl
 import dLux.utils as dlu
-from jax import vmap
 from .interferometry import visibilities, uv_model
-from .detector_layers import model_ramp, model_amplifier
 
 
 def planck(wav, T):
@@ -122,98 +118,122 @@ def variance_model(model, exposure, true_read_noise=False, read_noise=10):
     return psf, variance
 
 
-def build_optical_inputs(model, exposures, zero_idx=-1):
+# def build_optical_inputs(model, exposures, zero_idx=-1):
 
-    wavels_in = []
-    weights_in = []
-    aberrations_in = []
-    opds_in = []
-    positions_in = []
-    for exposure in exposures:
-        # Get exposure key
-        key = exposure.key
+#     wavels_in = []
+#     weights_in = []
+#     aberrations_in = []
+#     opds_in = []
+#     positions_in = []
+#     for exposure in exposures:
+#         # Get exposure key
+#         key = exposure.key
 
-        # Get wavelengths and weights
-        wavels, filt_weights = model.filters[exposure.filter]
-        weights = filt_weights * planck(wavels, model.Teffs[exposure.star])
-        weights *= (10 ** model.fluxes[key]) / weights.sum()
+#         # Get wavelengths and weights
+#         wavels, filt_weights = model.filters[exposure.filter]
+#         weights = filt_weights * planck(wavels, model.Teffs[exposure.star])
+#         weights *= (10 ** model.fluxes[key]) / weights.sum()
 
-        wavels_in.append(wavels)
-        weights_in.append(weights)
+#         wavels_in.append(wavels)
+#         weights_in.append(weights)
 
-        # Apply correct aberrations
-        aberrations = model.aberrations[key]
-        if zero_idx != -1:
-            aberrations = aberrations.at[zero_idx, 0].set(0.0)  # Pin piston to zero
+#         # Apply correct aberrations
+#         aberrations = model.aberrations[key]
+#         if zero_idx != -1:
+#             aberrations = aberrations.at[zero_idx, 0].set(0.0)  # Pin piston to zero
 
-        aberrations_in.append(aberrations)
-        opds_in.append(exposure.opd)
+#         aberrations_in.append(aberrations)
+#         opds_in.append(exposure.opd)
 
-        # Make sure this has correct position units and get wavefronts
-        pos_rad = dlu.arcsec2rad(model.positions[key])
+#         # Make sure this has correct position units and get wavefronts
+#         pos_rad = dlu.arcsec2rad(model.positions[key])
 
-        positions_in.append(pos_rad)
+#         positions_in.append(pos_rad)
 
-    return wavels_in, weights_in, aberrations_in, opds_in, positions_in
-
-
-def rebuild_ramps(ramps, bled_images):
-    lengths = [len(ramp) for ramp in ramps]
-
-    n = 0
-    ramps = []
-    for length in lengths:
-        ramps.append(bled_images[n : n + length])
-        n += length
-    return ramps
+#     return wavels_in, weights_in, aberrations_in, opds_in, positions_in
 
 
-# TODO: can probably be improved here to calc all the one on fs ones, using
-# 'rebuild_ramps' function
-def add_noise(model, exposures, ramps):
-    coeffs = [model.one_on_fs[exp.key] for exp in exposures]
-    add_noise = lambda ramp, coeff: ramp + vmap(model_amplifier)(coeff)
-    return [add_noise(ramp, coeff) for ramp, coeff in zip(ramps, coeffs)]
+# def rebuild_ramps(ramps, bled_images):
+#     lengths = [len(ramp) for ramp in ramps]
+
+#     n = 0
+#     ramps = []
+#     for length in lengths:
+#         ramps.append(bled_images[n : n + length])
+#         n += length
+#     return ramps
 
 
-def fast_model_fn(model, exposures, with_BFE=True, to_BFE=False, zero_idx=-1, noise=True):
-    # Model optics
-    optical_inputs = build_optical_inputs(model, exposures)
-    is_leaf = lambda x: isinstance(x, list)
-    optical_model_fn = lambda *args: model_optics(model, *args)
-    PSFs = jtu.tree_map(optical_model_fn, optical_inputs, is_leaf=is_leaf)
+# # TODO: can probably be improved here to calc all the one on fs ones, using
+# # 'rebuild_ramps' function
+# def add_noise(model, exposures, ramps):
+#     coeffs = [model.one_on_fs[exp.key] for exp in exposures]
+#     add_noise = lambda ramp, coeff: ramp + vmap(model_amplifier)(coeff)
+#     return [add_noise(ramp, coeff) for ramp, coeff in zip(ramps, coeffs)]
 
-    # Model detector
-    is_leaf = lambda x: isinstance(x, dl.PSF)
-    # psfs = jtu.tree_map(model.detector.model, PSFs, is_leaf=is_leaf)
-    psfs = [model.detector.model(psf) for psf in PSFs]
 
-    # Model ramp
-    is_leaf = lambda x: isinstance(x, list)
-    ramp_fn = lambda x, ngroup: model_ramp(x, ngroup)
-    ngroups = [exp.ngroups for exp in exposures]
-    # ramps = jtu.tree_map(ramp_fn, psfs, ngroups, is_leaf=is_leaf)
-    ramps = [ramp_fn(psf, ngroup) for psf, ngroup in zip(psfs, ngroups)]
+# def fast_model_fn(model, exposures, with_BFE=True, to_BFE=False, zero_idx=-1, noise=True):
+#     # Model optics
+#     optical_inputs = build_optical_inputs(model, exposures)
+#     is_leaf = lambda x: isinstance(x, list)
+#     optical_model_fn = lambda *args: model_optics(model, *args)
+#     PSFs = jtu.tree_map(optical_model_fn, optical_inputs, is_leaf=is_leaf)
 
-    # Return non-BFEd
-    if to_BFE:
-        return ramps
+#     # Model detector
+#     is_leaf = lambda x: isinstance(x, dl.PSF)
+#     # psfs = jtu.tree_map(model.detector.model, PSFs, is_leaf=is_leaf)
+#     psfs = [model.detector.model(psf) for psf in PSFs]
 
-    # Apply BFE (or not)
-    images = np.concatenate(ramps, axis=0)
-    if with_BFE:
-        images = eqx.filter_vmap(model.BFE.apply_array)(images)
-    else:
-        dsample_fn = lambda x: dlu.downsample(x, 4, mean=False)
-        images = vmap(dsample_fn)(images)
-    images = vmap(dlu.resize, (0, None))(images, 80)
+#     # Model ramp
+#     is_leaf = lambda x: isinstance(x, list)
+#     ramp_fn = lambda x, ngroup: model_ramp(x, ngroup)
+#     ngroups = [exp.ngroups for exp in exposures]
+#     # ramps = jtu.tree_map(ramp_fn, psfs, ngroups, is_leaf=is_leaf)
+#     ramps = [ramp_fn(psf, ngroup) for psf, ngroup in zip(psfs, ngroups)]
 
-    # Rebuild into per-exposure ramps
-    ramps = rebuild_ramps(ramps, images)
+#     # Return non-BFEd
+#     if to_BFE:
+#         return ramps
 
-    # Apply bias and one of F correction
-    if noise:
-        ramps = add_noise(model, exposures, ramps)
+#     # Apply BFE (or not)
+#     images = np.concatenate(ramps, axis=0)
+#     if with_BFE:
+#         images = eqx.filter_vmap(model.BFE.apply_array)(images)
+#     else:
+#         dsample_fn = lambda x: dlu.downsample(x, 4, mean=False)
+#         images = vmap(dsample_fn)(images)
+#     images = vmap(dlu.resize, (0, None))(images, 80)
 
-    # return ramp
-    return jtu.tree_map(lambda x: np.diff(x, axis=0), ramps)
+#     # Rebuild into per-exposure ramps
+#     ramps = rebuild_ramps(ramps, images)
+
+#     # Apply bias and one of F correction
+#     if noise:
+#         ramps = add_noise(model, exposures, ramps)
+
+
+#     # return ramp
+#     return jtu.tree_map(lambda x: np.diff(x, axis=0), ramps)
+
+
+# # Amplifier/ramp modelling
+# def model_amplifier(coeffs, axis=0):
+#     """
+#     Models the amplifier noise as a polynomial along one axis of the detector.
+#     Assumes Detector is square and coeffs has shape (npix, order + 1).
+#     """
+
+#     def read_fn(coeffs):
+#         # Evaluation function
+#         xs = np.linspace(-1, 1, coeffs.shape[0])
+#         eval_fn = lambda coeffs: np.polyval(coeffs, xs)
+
+#         # Vectorise over each column
+#         vals = vmap(eval_fn, 0)(coeffs)
+
+#         if axis == 0:
+#             return np.rot90(vals)
+#         return vals
+
+#     # vmap over each group
+#     return vmap(read_fn)(coeffs)

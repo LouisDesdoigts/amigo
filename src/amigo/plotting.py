@@ -444,7 +444,7 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.plot(epochs, norm_phases, **kwargs)
             ax.set(ylabel="Visibility Phase (deg)")
 
-        case "EDM.values":
+        case "EDM.conv.values":
             norm_weights = arr - arr[0]
             ax.plot(epochs, norm_weights, **kwargs)
             ax.set(ylabel="$\Delta$ Convolutional Values")

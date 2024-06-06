@@ -115,6 +115,10 @@ def uv_hex_mask(
 
     # Apply the mask transformations
     tf = tf.set("translation", np.zeros(2))  # Enforce paraxial splodges (since they are)
+
+    # NOTE/WARNING FOR PR OR MERGE: The way the hex mask is generate no longer uses
+    # tf.apply, but calls the transformations in a specific order - This needs to
+    # be matched here
     uv_coords = tf.apply(uv_coords)
 
     # Do this outside so we can scatter plot the baseline vectors over the psf splodges
