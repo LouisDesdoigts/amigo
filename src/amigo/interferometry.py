@@ -228,16 +228,7 @@ def splodge_mask(basis, vis):
         dc = np.array([vis[0]])
         coeffs = np.concatenate([dc, vis[1:], vis[1:].conj()])
     elif n_vis == 21:
-        dc = np.array(
-            [
-                1,
-            ]
-            + (n_zernikes - 1)
-            * [
-                0,
-            ],
-            complex,
-        )[None]
+        dc = np.array([1] + (n_zernikes - 1) * [0], complex)[None]
         coeffs = np.concatenate([dc, vis, vis.conj()])
 
     return dlu.eval_basis(basis, coeffs)
