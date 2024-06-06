@@ -373,9 +373,12 @@ def get_uv_hexikes(
         print("Warning: Both radial_orders and noll_indices provided. Using noll_indices.")
         radial_orders = None
 
-    # # Check whether the specified cache directory exists
-    # if not os.path.exists(hexike_cache):
-    #     os.makedirs(hexike_cache)
+    if noll_indices is None:
+        noll_indices = get_noll_indices(radial_orders, noll_indices)
+
+    # Check whether the specified cache directory exists
+    if not os.path.exists(hexike_cache):
+        os.makedirs(hexike_cache)
 
     # defining known desired array sizes for different filters
     crop_dict = {
@@ -403,26 +406,32 @@ def get_uv_hexikes(
         looper = tqdm(wavels) if verbose else wavels
         for wavelength in looper:
             wl_key = f"{int(wavelength*1e9)}"  # The nearest nm
-            file_key = f"{hexike_cache}/{wl_key}_{optics.oversample}"
-            # try:
-            #     mask = np.load(f"{file_key}.npy")
+            noll_key = "".join([str(n) for n in noll_indices])  # recording the noll indices
+            file_key = f"{hexike_cache}/{wl_key}_{optics.oversample}_{noll_key}"
+            try:
+                basis = np.load(f"{file_key}_basis.npy")
+                weight = np.load(f"{file_key}_weight.npy")
+                support = np.load(f"{file_key}_support.npy")
 
-            # except FileNotFoundError:
-            basis, weight, support = build_hexikes(
-                optics.pupil_mask.holes,
-                optics.pupil_mask.f2f,
-                optics.pupil_mask.transformation,
-                wavelength,
-                optics.psf_pixel_scale,
-                optics.psf_npixels,
-                optics.oversample,
-                uv_pad,
-                calc_pad,
-                radial_orders=radial_orders,
-                noll_indices=noll_indices,
-                crop_npix=crop_npix,
-            )
-            # np.save(f"{file_key}.npy", mask)
+            except FileNotFoundError:
+                basis, weight, support = build_hexikes(
+                    optics.pupil_mask.holes,
+                    optics.pupil_mask.f2f,
+                    optics.pupil_mask.transformation,
+                    wavelength,
+                    optics.psf_pixel_scale,
+                    optics.psf_npixels,
+                    optics.oversample,
+                    uv_pad,
+                    calc_pad,
+                    radial_orders=radial_orders,
+                    noll_indices=noll_indices,
+                    crop_npix=crop_npix,
+                )
+                np.save(f"{file_key}_basis.npy", basis)
+                np.save(f"{file_key}_weight.npy", weight)
+                np.save(f"{file_key}_support.npy", support)
+
             _bases.append(basis)
             _weights.append(weight)
             _supports.append(support)
