@@ -56,6 +56,7 @@ class AmigoModel(BaseModeller):
         detector=None,
         read=None,
         visibilities=None,
+        Teff_cache="files/Teff_cache",
     ):
 
         if optics is None:
@@ -67,7 +68,7 @@ class AmigoModel(BaseModeller):
         if read is None:
             read = ReadModel()
 
-        self.Teffs = get_Teffs(files)
+        self.Teffs = get_Teffs(files, Teff_cache=Teff_cache)
         self.filters = get_filters(files)
         self.optics = optics
         self.detector = detector

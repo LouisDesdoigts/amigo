@@ -21,7 +21,7 @@ def self_fisher_fn(model, exposure, params, read_noise=10, true_read_noise=False
     return fisher_fn(model, exposure, params)
 
 
-def calc_fisher(model, exposure, param, file_path, recalculate=False):
+def calc_fisher(model, exposure, param, file_path, recalculate=False, save=True):
     # Check that the param exists - caught later
     try:
         leaf = model.get(param)
@@ -43,7 +43,8 @@ def calc_fisher(model, exposure, param, file_path, recalculate=False):
     # Calculate and save
     else:
         fisher = self_fisher_fn(model, exposure, [param])
-        np.save(file_path, fisher)
+        if save:
+            np.save(file_path, fisher)
     return fisher
 
 
@@ -73,6 +74,7 @@ def calc_fishers(
     parameters,
     param_map_fn=None,
     recalculate=False,
+    save=True,
     cache="files/fishers",
 ):
 
@@ -103,7 +105,7 @@ def calc_fishers(
                 param_path = param_map_fn(model, exp, param)
 
             # Calculate fisher for each exposure
-            fisher = calc_fisher(model, exp, param_path, file_path, recalculate)
+            fisher = calc_fisher(model, exp, param_path, file_path, recalculate, save)
 
             # Store the fisher
             if fisher is not None:

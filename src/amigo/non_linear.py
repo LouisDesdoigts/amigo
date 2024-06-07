@@ -22,7 +22,7 @@ def build_image_basis(image):
     return np.array([image, rgrads, xyrgrads, xxyygrads])
 
 
-def build_basis(image, powers=[1, 2], norm=1900.0):
+def build_basis(image, powers=[1], norm=1.0):
     image /= norm
     safe_pow = lambda x, p: np.where(x < 0, -np.abs(np.pow(-x, p)), np.pow(x, p))
     images = [safe_pow(image, pow) for pow in powers]
@@ -107,34 +107,68 @@ def calc_rfield(layers):
 class NonLinCNN(dl.detectors.BaseDetector):
     conv: None
     amplitude: float
-    steps = 20
-    filter_norm: dict = eqx.field(static=True)
+    steps: int = eqx.field(static=True)
+    max_flux: dict = eqx.field(static=True)
+    basis_norm: float = eqx.field(static=True)
+    powers: list = eqx.field(static=True)
 
     def __init__(
         self,
+        model,
         layers=None,
         widths=None,
-        amplitude=1e-2,
+        amplitude=1e-1,
         key=jr.PRNGKey(0),
         powers=[1, 2],
         zero_bias=True,
+        max_pixel_depth=30e3,
+        steps=25,
     ):
+
+        # Calibrate filters - model an idealised psf
+        basis_norm = 1.0
+        max_flux = {}
+        psfs = {}
+        for filter in model.filters.keys():
+            # Get wavelengths and weights
+            wavels, weights = model.filters[filter]
+            weights = weights / weights.sum()
+            psf = model.optics.propagate(wavels, np.zeros(2), weights, return_psf=True)
+            psf = model.detector.apply(psf).data
+            psfs[filter] = psf
+
+            # Now we rasterize over the oversample to find the peak flux
+            max_depth = 0.0
+            oversample = model.optics.oversample
+            for i in range(oversample):
+                for j in range(oversample):
+                    roll = (i - (oversample - 1) // 2, j - (oversample - 1) // 2)
+                    rolled = np.roll(psf, roll, axis=(0, 1))
+                    downsampled = dlu.downsample(rolled, oversample, mean=False)
+                    max_depth = np.maximum(max_depth, downsampled.max())
+
+            # Calculate required values
+            total_charge = (psf * max_pixel_depth / (max_depth * psf.sum())).sum()
+            max_charge = total_charge * psf
+            if max_charge.max() > basis_norm:
+                basis_norm = max_charge.max()
+            max_flux[filter] = total_charge
+
+        self.basis_norm = float(basis_norm)
+        self.max_flux = max_flux
+        self.steps = int(steps)
+        self.amplitude = np.array(amplitude, float)
+        self.powers = powers
 
         if layers is None:
             subkeys = jr.split(key, 5)
             use_bias = True
 
-            in_size = 8 * len(powers)
-
-            # in_size = 2 * len(basis)
-            # print(in_size)
-            # widths = [32, 16, 8, 4]
-            # widths = [16, 8, 4, 4]
-            # widths = [8, 8, 4, 4]
-            # widths = [2, 2, 1, 1]
+            basis = build_basis(np.ones((320, 320)), powers=self.powers)
+            in_size = 2 * len(basis)
 
             if widths is None:
-                widths = [1, 1, 1, 1]
+                widths = [8, 8, 4, 4]
 
             if len(widths) != 4:
                 raise ValueError("Widths must be of length 4")
@@ -194,12 +228,6 @@ class NonLinCNN(dl.detectors.BaseDetector):
         from amigo.core import NNWrapper
 
         self.conv = NNWrapper(layers)
-        self.amplitude = np.array(amplitude, float)
-        self.filter_norm = {
-            "F380M": 6.5e4,
-            "F430M": 7.5e4,
-            "F480M": 9e4,
-        }
 
     def __getattr__(self, key):
         if hasattr(self.conv, key):
@@ -214,7 +242,8 @@ class NonLinCNN(dl.detectors.BaseDetector):
 
     def bleeding_model(self, psf, filter):
 
-        photons = psf * self.filter_norm[filter]
+        # photons = psf * self.filter_norm[filter] / self.steps
+        photons = psf * self.max_flux[filter] / self.steps
         charge, bleed = np.zeros(psf.shape), np.zeros(psf.shape)
 
         ramp, bleed_ramp = [], []
@@ -223,8 +252,8 @@ class NonLinCNN(dl.detectors.BaseDetector):
             # Build basis
             basis = np.concatenate(
                 [
-                    build_basis(charge),
-                    build_basis(photons),
+                    build_basis(charge, norm=self.basis_norm, powers=self.powers),
+                    build_basis(photons, norm=self.basis_norm, powers=self.powers),
                     # build_basis(bleeding),
                 ],
                 0,
@@ -250,14 +279,11 @@ class NonLinCNN(dl.detectors.BaseDetector):
         return np.array(ramp), np.array(bleed_ramp)
 
     def sample_ramp(self, ramp, flux, filter, ngroups):
-
-        photons_in = self.filter_norm[filter] * self.steps
-
         # Pre-pend a zeroth group to allow interpolation for low values
         ramp = np.concatenate([np.zeros((1, *ramp.shape[1:])), ramp], axis=0)
 
         # Generate the coordinates up the ramp
-        flux_coords = photons_in * np.arange(self.steps + 1) / self.steps
+        flux_coords = self.max_flux[filter] * np.arange(self.steps + 1) / self.steps
         group_coords = flux * (np.arange(ngroups) + 1) / ngroups
 
         # Check for fluxes exceeding the total flux
