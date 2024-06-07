@@ -127,6 +127,7 @@ def optimise(
     batch_params=[],
     save_every=None,
     save_path="",
+    save_ext="",
 ):
 
     # Define an update function to improve step speed
@@ -246,9 +247,11 @@ def optimise(
 
         # Save progress along the way
         if save_every is not None and ((idx + 1) % save_every) == 0:
-            np.save(save_path + f"losses_{idx+1}.npy", losses)
-            serialise(save_path + f"reg_history_{idx+1}.zdx", reg_history)
-            serialise(save_path + f"batch_history_{idx+1}.zdx", batch_history)
+            if save_ext != "":
+                save_ext = f"_{save_ext}"
+            np.save(save_path + f"losses_{idx+1}{save_ext}.npy", losses)
+            serialise(save_path + f"reg_history_{idx+1}{save_ext}.zdx", reg_history)
+            serialise(save_path + f"batch_history_{idx+1}{save_ext}.zdx", batch_history)
 
         # Print helpful things
         if idx == 0:
