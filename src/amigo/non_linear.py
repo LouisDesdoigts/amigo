@@ -9,15 +9,6 @@ from jax import vmap
 from .detector_layers import model_ramp, Ramp
 
 
-class SimpleRamp(dl.detectors.BaseDetector):
-
-    def apply(self, psf, flux, exposure, oversample):
-        return model_ramp(dlu.downsample(psf * flux, oversample, mean=False), exposure.ngroups)
-
-    def model(self, psf):
-        raise NotImplementedError
-
-
 def build_image_basis(image):
     ygrads, xgrads = np.gradient(image)
     rgrads = np.hypot(xgrads, ygrads)
@@ -105,7 +96,6 @@ def calc_rfield(layers):
     Equations from here: https://theaisummer.com/receptive-field/
     """
     conv_layers = [layer for layer in layers if isinstance(layer, eqx.nn.Conv2d)]
-    # for layer in conv_layers:
     vals = []
     for i in range(len(conv_layers)):
         size_fn = lambda layer: layer.stride[0] * layer.dilation[0]
@@ -120,12 +110,11 @@ class NonLinCNN(dl.detectors.BaseDetector):
     steps = 20
     filter_norm: dict = eqx.field(static=True)
 
-    # def __init__(self, layers, amplitude=1):
     def __init__(
         self,
         layers=None,
         widths=None,
-        amplitude=1,
+        amplitude=1e-2,
         key=jr.PRNGKey(0),
         powers=[1, 2],
         zero_bias=True,
@@ -196,15 +185,12 @@ class NonLinCNN(dl.detectors.BaseDetector):
             ]
             print(f"Field of Regard: {calc_rfield(layers)}")
 
-        # def zero_bias(layer):
         if zero_bias:
-            # zero_bias_fn = lambda layer: eqx.tree_at(
-            #     lambda x: x.bias, layer, np.zeros_like(layer.bias)
-            # )
             layers = [
                 eqx.tree_at(lambda x: x.bias, layer, np.zeros_like(layer.bias)) for layer in layers
             ]
 
+        # Import here to avoid circular imports
         from amigo.core import NNWrapper
 
         self.conv = NNWrapper(layers)
@@ -214,6 +200,11 @@ class NonLinCNN(dl.detectors.BaseDetector):
             "F430M": 7.5e4,
             "F480M": 9e4,
         }
+
+    def __getattr__(self, key):
+        if hasattr(self.conv, key):
+            return getattr(self.conv, key)
+        raise AttributeError(f"NonLinCNN has no attribute {key}")
 
     def apply(self, psf, flux, exposure, oversample):
         ramp = self.bleeding_model(psf.data, exposure.filter)[0]

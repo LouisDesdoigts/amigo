@@ -7,10 +7,10 @@ import jax.random as jr
 import jax.tree_util as jtu
 import equinox as eqx
 import dLux.utils as dlu
-from jax import vmap
-from .core import ModelParams, ModelHistory
-from .stats import batch_loss_fn
+from jax import vmap, config
 from datetime import timedelta
+from amigo.core import ModelParams, ModelHistory
+from amigo.stats import batch_loss_fn
 
 # import tqdm appropriately
 from IPython import get_ipython
@@ -32,6 +32,15 @@ def debug_nan_check(grads):
 
 def zero_nan_check(grads):
     return jax.tree_map(lambda x: np.where(np.isnan(x), 0.0, x), grads)
+
+
+def set_array(pytree, parameters):
+    # WARNING: Presently statically set to 64bit
+    # Enforce everything to be a float (of the same precision)
+    dtype = np.float64 if config.x64_enabled else np.float32
+    floats, other = eqx.partition(pytree, eqx.is_inexact_array_like)
+    floats = jtu.tree_map(lambda x: np.array(x, dtype=dtype), floats)
+    return eqx.combine(floats, other)
 
 
 def get_optimiser(pytree, optimisers, parameters=None):
@@ -77,13 +86,15 @@ def calc_lrs(model, exposures, fishers, params=None, order=1):
     fisher_model = jtu.tree_map(lambda x: np.zeros((x.size, x.size)), grad_model)
 
     # Loop over exposures
-    # for exp_key, fisher_dict in fishers.items():
     for exp in exposures:
 
         # Loop over parameters
-        # for param in fisher_dict.keys():
-        for param in fishers[exp.key]:
+        for param in params:
             leaf = model.get(param)
+
+            # Check if the parameter is in the fisher
+            if param not in fishers[exp.key].keys():
+                continue
 
             # Handle dict case
             if isinstance(leaf, dict):
@@ -98,15 +109,6 @@ def calc_lrs(model, exposures, fishers, params=None, order=1):
     return lr_model
 
 
-# def set_array(pytree: Base(), parameters: Params) -> Base():
-def set_array(pytree, parameters):
-    # WARNING: Presently statically set to 64bit
-    # Enforce everything to be a float (of the same precision)
-    floats, other = eqx.partition(pytree, eqx.is_inexact_array_like)
-    floats = jtu.tree_map(lambda x: np.array(x, dtype=np.float64), floats)
-    return eqx.combine(floats, other)
-
-
 def optimise(
     model,
     exposures,
@@ -118,7 +120,7 @@ def optimise(
     args={},
     grad_fn=lambda model, grads, args, key: (grads, key),
     norm_fn=lambda model, model_params, args, key: (model_params, key),
-    args_fn=lambda model, args, key: (model, args, key),
+    args_fn=lambda model, args, key, epoch: (model, args, key),
     print_grads=False,
     no_history=[],
     batch_params=[],
@@ -215,12 +217,17 @@ def optimise(
             model, batch_model, batch_state, key = update_batch(
                 model, batch_grads, batch_model, batch_state, args, key
             )
-            batch_history = batch_history.append(batch_model)  # could be JIT'd with work
+            batch_history = batch_history.append(batch_model)
 
             # Check for NaNs
             if np.isnan(_loss):
                 print(f"Loss is NaN on {idx} th epoch, exiting loop")
-                return model, losses, (reg_history, batch_history), (reg_state, batch_state)
+                return (
+                    model,
+                    losses,
+                    (reg_history, batch_history),
+                    (reg_state, batch_state),
+                )
 
         # Update the reg params
         model, reg_model, reg_state, key = update_reg(

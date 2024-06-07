@@ -16,7 +16,6 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         opd=None,
         normalise=True,
         coherence=None,
-        # free_space_locations=[],
         psf_npixels=80,
         oversample=4,
         pixel_scale=0.065524085,
@@ -71,30 +70,6 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
 
         # Set the layers
         self.layers = dlu.list2dictionary(layers, ordered=True)
-
-    # def model(self, exposure, wavels, weights, to_BFE=False, slopes=False):
-    #     # Get exposure key
-    #     key = exposure.key
-
-    #     position = self.positions[key]
-    #     flux = 10 ** self.fluxes[key]
-    #     aberrations = self.aberrations[key]
-    #     one_on_fs = self.one_on_fs[key]
-    #     opd = exposure.opd
-
-    #     optics = self.optics.set(["pupil.coefficients", "pupil.opd"], [aberrations, opd])
-
-    #     if "coherence" in self.params.keys():
-    #         coherence = self.coherence[key]
-    #         optics = optics.set("holes.reflectivity", coherence)
-
-    #     detector = self.detector.set(
-    #         ["EDM.ngroups", "EDM.flux", "EDM.filter", "one_on_fs"],
-    #         [exposure.ngroups, flux, exposure.filter, one_on_fs],
-    #     )
-
-    #     self = self.set(["optics", "detector"], [optics, detector])
-    #     psf = self.model_psf(position, wavels, weights)
 
 
 class DynamicAMI(dl.layers.optical_layers.OpticalLayer):

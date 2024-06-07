@@ -10,6 +10,7 @@ from .detector_layers import (
     IPC,
     Amplifier,
     Rotate,
+    model_ramp,
 )
 
 
@@ -67,6 +68,15 @@ class LinearDetectorModel(LayeredDetector):
         layers.append(("sensitivity", ApplySensitivities(FF, SRF)))
 
         self.layers = dlu.list2dictionary(layers, ordered=True)
+
+
+class SimpleRamp(dl.detectors.BaseDetector):
+
+    def apply(self, psf, flux, exposure, oversample):
+        return model_ramp(dlu.downsample(psf * flux, oversample, mean=False), exposure.ngroups)
+
+    def model(self, psf):
+        raise NotImplementedError
 
 
 class ReadModel(LayeredDetector):

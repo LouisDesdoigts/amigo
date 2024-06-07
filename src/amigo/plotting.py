@@ -3,6 +3,7 @@ import jax.scipy as jsp
 import dLux.utils as dlu
 import matplotlib.pyplot as plt
 from matplotlib import colormaps, colors
+from .stats import posterior
 
 inferno = colormaps["inferno"]
 seismic = colormaps["seismic"]
@@ -24,9 +25,6 @@ def plot_losses(losses, start, stop=-1):
 
     plt.tight_layout()
     plt.show()
-
-
-from .stats import posterior
 
 
 def summarise_fit(
