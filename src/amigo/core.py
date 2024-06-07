@@ -5,8 +5,7 @@ import equinox as eqx
 import zodiax as zdx
 from jax.lax import dynamic_slice as lax_slice
 from .optics import AMIOptics
-from .detectors import LinearDetectorModel, ReadModel
-from .ramps import SimpleRamp
+from .detectors import LinearDetectorModel, ReadModel, SimpleRamp
 from .modelling import model_exposure
 from .files import get_Teffs, get_filters
 
