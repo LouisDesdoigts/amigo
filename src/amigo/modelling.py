@@ -64,6 +64,8 @@ def model_exposure(model, exposure, to_BFE=False, slopes=False):
 
     # Model the optics
     pos = dlu.arcsec2rad(model.positions[exposure.key])
+
+    # TODO: Jit this sub-function for improved compile times
     wfs = optics.propagate(wavels, pos, weights, return_wf=True)
 
     psfs = wfs.psf
@@ -73,6 +75,7 @@ def model_exposure(model, exposure, to_BFE=False, slopes=False):
         psf = psfs.sum(0)
 
     # PSF is still unitary here
+    # TODO: Jit this sub-function for improved compile times
     psf = model.detector.apply(dl.PSF(psf, wfs.pixel_scale.mean(0)))
 
     # Get the hyper-parameters for the non-linear model

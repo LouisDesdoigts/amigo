@@ -11,6 +11,7 @@ from jax import vmap, config
 from datetime import timedelta
 from amigo.core import ModelParams, ModelHistory
 from amigo.stats import batch_loss_fn
+from zodiax.experimental import serialise
 
 # import tqdm appropriately
 from IPython import get_ipython
@@ -124,6 +125,8 @@ def optimise(
     print_grads=False,
     no_history=[],
     batch_params=[],
+    save_every=None,
+    save_path="",
 ):
 
     # Define an update function to improve step speed
@@ -240,6 +243,12 @@ def optimise(
         looper.set_description(f"Loss: {epoch_loss:,.2f}, Change: {batch_loss - epoch_loss:,.2f}")
         losses.append(batch_losses)
         epoch_loss = batch_loss
+
+        # Save progress along the way
+        if save_every is not None and ((idx + 1) % save_every) == 0:
+            np.save(save_path + f"losses_{idx+1}.npy", losses)
+            serialise(save_path + f"reg_history_{idx+1}.zdx", reg_history)
+            serialise(save_path + f"batch_history_{idx+1}.zdx", batch_history)
 
         # Print helpful things
         if idx == 0:
