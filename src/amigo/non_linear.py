@@ -77,9 +77,8 @@ class PolyNonLin(dl.detectors.BaseDetector):
         return Ramp(ramp, psf.pixel_scale)
 
     def calculate_bleeding(self, image):
-        basis = build_basis(image, norm=1.0, powers=self.orders)
+        basis = build_basis(image, powers=self.orders)
         full_kernels = vmap(lambda im: self.conv(im[None]))(basis)
-        # basis_length = np.prod(np.array(full_kernels.shape[:2]))
         true_kernels = full_kernels.reshape(len(self.coeffs), *full_kernels.shape[2:])
         return dlu.eval_basis(true_kernels, self.coeffs)
 
