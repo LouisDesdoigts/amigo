@@ -33,7 +33,6 @@ def planck(wav, T):
         )
         - 1.0
     )
-
     return np.power(10, logA + logB)
 
 
@@ -65,7 +64,6 @@ def model_exposure(model, exposure, to_BFE=False, slopes=False):
         optics = optics.set("holes.reflectivity", coherence)
 
     if exposure.type == "binary":
-
         # Convert binary parameters to positions parameters
         position = model.positions[exposure.key]
 

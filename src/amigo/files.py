@@ -5,7 +5,8 @@ from astroquery.simbad import Simbad
 import pyia
 import pkg_resources as pkg
 import numpy as onp
-from .interferometry import uv_hex_mask
+from .interferometry import build_hexikes, UVHexikes
+from dLuxWebbpsf.basis import get_noll_indices
 from webbpsf import mast_wss
 from tqdm.notebook import tqdm
 from xara.core import determine_origin
@@ -185,7 +186,6 @@ def initialise_params(
 
 
 def get_filters(files, nwavels=9):
-
     filters = {}
     for file in files:
         filt = file[0].header["FILTER"]
@@ -298,8 +298,12 @@ def get_Teffs(files, default=4500, skip_search=False, Teff_cache="files/Teffs"):
     return Teffs
 
 
-def get_amplitudes(exposures, dc=False):
-    """If dc is True, an extra value for the dc term is included"""
+def get_amplitudes(exposures, radial_orders=None, noll_indices=None, dc=False):
+    """If dc is True, an extra value for the dc term is included.
+    Returns amplitudes of the shape (n_hexes, n_zernikes)."""
+
+    n_zernikes = len(get_noll_indices(radial_orders, noll_indices))
+
     if dc:
         n = 22
     else:
@@ -308,12 +312,18 @@ def get_amplitudes(exposures, dc=False):
     for exp in exposures:
         key = "_".join([exp.star, exp.filter])
         if key not in amplitudes.keys():
-            amplitudes[key] = np.ones(n)
+            pistons = np.ones((n, 1))  # ones for pistons
+            higher_orders = np.zeros((n, n_zernikes - 1))  # zeros elsewhere
+            amplitudes[key] = np.hstack([pistons, higher_orders])
     return amplitudes
 
 
-def get_phases(exposures, dc=False):
-    """If dc is True, an extra value for the dc term is included"""
+def get_phases(exposures, radial_orders=None, noll_indices=None, dc=False):
+    """If dc is True, an extra value for the dc term is included.
+    Returns phases of the shape (n_hexes, n_zernikes)"""
+
+    n_zernikes = len(get_noll_indices(radial_orders, noll_indices))
+
     if dc:
         n = 22
     else:
@@ -322,7 +332,7 @@ def get_phases(exposures, dc=False):
     for exp in exposures:
         key = "_".join([exp.star, exp.filter])
         if key not in phases.keys():
-            phases[key] = np.zeros(n)
+            phases[key] = np.zeros((n, n_zernikes))
     return phases
 
 
@@ -361,35 +371,67 @@ def full_to_SUB80(full_arr, npix_out=80, fill=0.0):
     return SUB80
 
 
-def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=False):
+def get_uv_hexikes(
+    files,
+    optics,
+    filters,
+    radial_orders=None,
+    noll_indices=None,
+    hexike_cache="files/uv_hexikes",
+    verbose=False,
+):
     """
     Note caches masks to disk for faster loading. The cache is indexed _relative_ to
     where the file is run from.
     """
 
-    # Check whether the specified cache directory exists
-    if not os.path.exists(mask_cache):
-        os.makedirs(mask_cache)
+    # Dealing with the radial_orders and noll_indices arguments
+    if radial_orders is not None and noll_indices is not None:
+        print("Warning: Both radial_orders and noll_indices provided. Using noll_indices.")
+        radial_orders = None
 
-    masks = {}
+    if noll_indices is None:
+        noll_indices = get_noll_indices(radial_orders, noll_indices)
+
+    # Check whether the specified cache directory exists
+    if not os.path.exists(hexike_cache):
+        os.makedirs(hexike_cache)
+
+    # defining known desired array sizes for different filters
+    crop_dict = {
+        "F277W": 714,
+        "F380M": 486,
+        "F430M": 426,
+        "F480M": 384,
+    }
+
+    hexikes = {}
     for file in files:
         filt = file[0].header["FILTER"]
-        if filt in masks.keys():
+        if filt in hexikes.keys():
             continue
         wavels = filters[filt][0]
 
         calc_pad = 3  # 3x oversample on the mask calculation for soft edges
         uv_pad = 2  # 2x oversample on the UV transform
+        crop_npix = crop_dict[filt]  # cropping masks
 
-        _masks = []
+        _bases = []
+        _weights = []
+        _supports = []
+
         looper = tqdm(wavels) if verbose else wavels
         for wavelength in looper:
             wl_key = f"{int(wavelength*1e9)}"  # The nearest nm
-            file_key = f"{mask_cache}/{wl_key}_{optics.oversample}"
+            noll_key = "".join([str(n) for n in noll_indices])  # recording the noll indices
+            file_key = f"{hexike_cache}/{wl_key}_{optics.oversample}_{noll_key}"
             try:
-                mask = np.load(f"{file_key}.npy")
+                basis = np.load(f"{file_key}_basis.npy")
+                weight = np.load(f"{file_key}_weight.npy")
+                support = np.load(f"{file_key}_support.npy")
+
             except FileNotFoundError:
-                mask = uv_hex_mask(
+                basis, weight, support = build_hexikes(
                     optics.pupil_mask.holes,
                     optics.pupil_mask.f2f,
                     optics.pupil_mask.transformation,
@@ -399,9 +441,18 @@ def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=Fa
                     optics.oversample,
                     uv_pad,
                     calc_pad,
+                    radial_orders=radial_orders,
+                    noll_indices=noll_indices,
+                    crop_npix=crop_npix,
                 )
-                np.save(f"{file_key}.npy", mask)
-            _masks.append(mask)
+                np.save(f"{file_key}_basis.npy", basis)
+                np.save(f"{file_key}_weight.npy", weight)
+                np.save(f"{file_key}_support.npy", support)
 
-        masks[filt] = np.array(_masks)
-    return masks
+            _bases.append(basis)
+            _weights.append(weight)
+            _supports.append(support)
+
+        hexikes[filt] = UVHexikes(np.array(_bases), np.array(_weights), np.array(_supports))
+
+    return hexikes
