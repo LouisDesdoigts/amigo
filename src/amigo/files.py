@@ -5,13 +5,11 @@ from astroquery.simbad import Simbad
 import pyia
 import pkg_resources as pkg
 import numpy as onp
-from .misc import slope_im
 from .interferometry import build_hexikes, UVHexikes
-from webbpsf import mast_wss
-from xara.core import determine_origin
 from dLuxWebbpsf.basis import get_noll_indices
+from webbpsf import mast_wss
 from tqdm.notebook import tqdm
-import amigo
+from xara.core import determine_origin
 
 
 def summarise_files(files, extra_keys=[]):
@@ -134,6 +132,59 @@ def get_Teff(targ_name):
     return -1
 
 
+def find_position(psf, pixel_scale=0.065524085):
+    origin = np.array(determine_origin(psf, verbose=False))
+    origin -= (np.array(psf.shape) - 1) / 2
+    origin += np.array([0.5, 0.5])
+    position = origin * pixel_scale * np.array([1, -1])
+    return position
+
+
+def initialise_params(
+    exposures,
+    optics,
+    pre_calc_FDA=False,
+    amp_order=1,
+    fit_one_on_fs=True,
+    fit_coherence=False,
+):
+    positions = {}
+    fluxes = {}
+    aberrations = {}
+    one_on_fs = {}
+    aberrations = {}
+    coherence = {}
+    for exp in exposures:
+
+        im = exp.data[0]
+        psf = np.where(np.isnan(im), 0.0, im)
+        flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.data[0]))
+        position = find_position(psf, optics.psf_pixel_scale)
+        n_fda = optics.pupil.coefficients.shape[1]
+
+        if pre_calc_FDA:
+            file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
+            coeffs = np.load(file_path)[:, :n_fda]
+        else:
+            coeffs = np.zeros((7, n_fda))
+
+        positions[exp.key] = position
+        aberrations[exp.key] = coeffs
+        fluxes[exp.key] = flux
+        one_on_fs[exp.key] = np.zeros((exp.ngroups, 80, amp_order + 1))
+        coherence[exp.key] = np.zeros_like(optics.reflectivity)
+
+    params = {"positions": positions, "fluxes": fluxes, "aberrations": aberrations}
+
+    if fit_one_on_fs:
+        params["one_on_fs"] = one_on_fs
+
+    if fit_coherence:
+        params["coherence"] = coherence
+
+    return params
+
+
 def get_filters(files, nwavels=9):
     filters = {}
     for file in files:
@@ -166,14 +217,6 @@ def get_filters(files, nwavels=9):
     return filters
 
 
-def estimate_psf_and_bias(data):
-    ngroups = len(data)
-    ramp_bottom = data[:2]
-    ramp_bottom = np.where(np.isnan(ramp_bottom), 0, ramp_bottom)
-    psf, bias = slope_im(ramp_bottom)  # Estimate from the bottom of the ramp
-    return psf * ngroups, bias
-
-
 def prep_data(file, ms_thresh=None, as_psf=False):
     data = np.asarray(file["SCI"].data, float)
     var = np.asarray(file["SCI_VAR"].data, float)
@@ -195,7 +238,7 @@ def prep_data(file, ms_thresh=None, as_psf=False):
     supp_mask = ~np.isnan(data.sum(0)) & ~dq
 
     # Nan the bad pixels
-    support = np.where(supp_mask)
+    support = np.array(np.where(supp_mask))
     data = data.at[:, ~supp_mask].set(np.nan)
     var = var.at[..., ~supp_mask].set(np.nan)
 
@@ -217,7 +260,8 @@ def get_wss_ops(files):
     return opd_files
 
 
-def get_Teffs(files, default=4500, straight_default=False, Teff_cache="files/Teffs"):
+def get_Teffs(files, default=4500, skip_search=False, Teff_cache="files/Teffs"):
+    # def get_Teffs(exposures, default=4500, skip_search=False, Teff_cache="files/Teffs"):
     # Check whether the specified cache directory exists
     if not os.path.exists(Teff_cache):
         os.makedirs(Teff_cache)
@@ -237,7 +281,7 @@ def get_Teffs(files, default=4500, straight_default=False, Teff_cache="files/Tef
             continue
 
         # Temporary measure to get around gaia archive being dead
-        if straight_default:
+        if skip_search:
             Teffs[prop_name] = default
             print("Warning using default Teff")
             continue
@@ -292,47 +336,20 @@ def get_phases(exposures, radial_orders=None, noll_indices=None, dc=False):
     return phases
 
 
-def get_coherence(exposures):
-    coherences = {}
-    for exp in exposures:
-        coherences[exp.key] = np.zeros(7)
-    return coherences
+def get_exposures(files, ms_thresh=None, as_psf=False, key_fn=None, exp_type="point"):
+    from amigo.core import ExposureModel
 
-
-def find_position(psf, pixel_scale=0.065524085):
-    origin = np.array(determine_origin(psf, verbose=False))
-    origin -= (np.array(psf.shape) - 1) / 2
-    position = origin * pixel_scale * np.array([1, -1])
-    return position
-
-
-# def get_exposures(files, add_read_noise=False):
-def get_exposures(files, optics, ms_thresh=None, as_psf=False):
-    print("Prepping exposures...")
     opds = get_wss_ops(files)
-    return [
-        amigo.core.ExposureFit(file, optics, opd=opd, ms_thresh=ms_thresh)
-        for file, opd in zip(files, opds)
-    ]
-
-
-def initialise_params(exposures):
-    positions = {}
-    fluxes = {}
-    aberrations = {}
-    one_on_fs = {}
-    aberrations = {}
-    for exp in exposures:
-        positions[exp.key] = exp.position
-        aberrations[exp.key] = exp.aberrations
-        fluxes[exp.key] = exp.flux
-        one_on_fs[exp.key] = exp.one_on_fs
-    return {
-        "positions": positions,
-        "fluxes": fluxes,
-        "aberrations": aberrations,
-        "one_on_fs": one_on_fs,
-    }
+    exposures = []
+    for file, opd in zip(files, opds):
+        data, variance, support = prep_data(file, ms_thresh=ms_thresh, as_psf=as_psf)
+        if key_fn is None:
+            key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:4])
+        data = np.asarray(data, float)
+        variance = np.asarray(variance, float)
+        support = np.asarray(support, int)
+        exposures.append(ExposureModel(file, data, variance, support, opd, key_fn, exp_type))
+    return exposures
 
 
 def full_to_SUB80(full_arr, npix_out=80, fill=0.0):

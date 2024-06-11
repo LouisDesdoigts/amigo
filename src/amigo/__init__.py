@@ -3,27 +3,33 @@ import importlib.metadata
 __version__ = importlib.metadata.version("amigo")
 
 from . import core
-from . import BFE
-from . import CNN
+from . import detector_layers
+from . import detectors
 from . import files
-from . import FIM
+from . import fisher
 from . import fitting
 from . import interferometry
-from . import misc
-from . import optical_layers
-from . import detector_layers
+from . import jitter
+from . import modelling
+from . import non_linear
+from . import optics
+from . import pipelines
+from . import plotting
 from . import stats
 
 __all__ = [
     core,
-    BFE,
-    CNN,
+    detector_layers,
+    detectors,
     files,
-    FIM,
+    fisher,
     fitting,
     interferometry,
-    misc,
-    optical_layers,
-    detector_layers,
+    jitter,
+    modelling,
+    non_linear,
+    optics,
+    pipelines,
+    plotting,
     stats,
 ]

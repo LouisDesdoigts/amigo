@@ -1,200 +1,170 @@
+import pkg_resources as pkg
+import jax.numpy as np
+import dLux as dl
 import equinox as eqx
 import dLux.utils as dlu
 from jax import vmap
-from amigo.misc import planck
-from amigo.stats import total_amplifier_noise
-from amigo.interferometry import visibilities, uv_model
-from amigo.detector_layers import model_ramp, model_amplifier, model_dark_current
-import jax.numpy as np
-import jax.tree_util as jtu
 
 
-def model_fn(model, exposure, with_BFE=True, to_BFE=False, zero_idx=-1, noise=True):
-    # Get exposure key
-    key = exposure.key
+def planck(wav, T):
+    """
+    Planck's Law:
+    I(W, T) = (2hc^2 / W^5) * (1 / (exp{hc/WkT} - 1))
+    where
+    h = Planck's constant
+    c = speed of light
+    k = Boltzmann's constant
 
+    W = wavelength array
+    T = effective temperature
+
+    Here A is the first fraction and B is the second fraction.
+    The calculation is (sort of) performed in log space.
+    """
+    logW = np.log10(wav)  # wavelength array
+    logT = np.log10(T)  # effective temperature
+
+    # -15.92... is [log2 + logh + 2*logc]
+    logA = -15.92347606 - 5 * logW
+    logB = -np.log10(
+        np.exp(
+            # -1.84...is logh + logc - logk
+            np.power(10, -1.8415064 - logT - logW)
+        )
+        - 1.0
+    )
+    return np.power(10, logA + logB)
+
+
+def model_ramp(psf, ngroups):
+    """Applies an 'up the ramp' model of the input 'optical' PSF. Input PSF.data
+    should have shape (npix, npix) and return shape (ngroups, npix, npix)"""
+    lin_ramp = (np.arange(ngroups) + 1) / ngroups
+    return psf[None, ...] * lin_ramp[..., None, None]
+
+
+def model_dark_current(dark_current, ngroups):
+    """Models the dark current as a constant background value added cumulatively to
+    each group. For now we assume that the dark current is a float."""
+    return (dark_current * (np.arange(ngroups) + 1))[..., None, None]
+
+
+def model_exposure(model, exposure, to_BFE=False, slopes=False):
     # Get wavelengths and weights
     wavels, filt_weights = model.filters[exposure.filter]
     weights = filt_weights * planck(wavels, model.Teffs[exposure.star])
-    weights *= (10 ** model.fluxes[key]) / weights.sum()
-    # weights *= model.fluxes[key] / weights.sum()
-
-    # Apply correct aberrations
-    aberrations = model.aberrations[key]
-    if zero_idx != -1:
-        aberrations = aberrations.at[zero_idx, 0].set(0.0)  # Pin piston to zero
+    weights = weights / weights.sum()
 
     optics = model.optics.set(
-        ["coefficients", "pupil.opd"],
-        [aberrations, exposure.opd],
+        ["pupil.coefficients", "pupil.opd"], [model.aberrations[exposure.key], exposure.opd]
     )
 
-    # Per exposure mirror coherence
-    if hasattr(model, "coherence"):
-        optics = optics.set("holes.reflectivity", model.coherence[key])
+    if "coherence" in model.params.keys():
+        coherence = model.coherence[exposure.key]
+        optics = optics.set("holes.reflectivity", coherence)
 
-    # Make sure this has correct position units and get wavefronts
-    pos_rad = dlu.arcsec2rad(model.positions[key])
-    # PSF = optics.propagate(wavels, pos_rad, weights, return_psf=True)
-    wfs = optics.propagate(wavels, pos_rad, weights, return_wf=True)
+    if exposure.type == "binary":
+        # Convert binary parameters to positions parameters
+        position = model.positions[exposure.key]
 
-    if hasattr(model, "hexikes"):
-        # Get visibilities and final psfs
-        vis_key = "_".join([exposure.star, exposure.filter])
-        hexikes = model.hexikes[exposure.filter]
-        amplitudes = model.amplitudes[vis_key]
-        phases = model.phases[vis_key]
-        vis = visibilities(amplitudes, phases)
-        psf = uv_model(vis, wfs.psf, hexikes).sum(0)
-        PSF = dl.PSF(psf, wfs.pixel_scale.mean(0))
+        #
+        pos_angle = dlu.deg2rad(model.position_angles[exposure.star])
+        r = model.separations[exposure.star] / 2
+        sep_vec = np.array([r * np.sin(pos_angle), r * np.cos(pos_angle)])
+        positions = np.array([position + sep_vec, position - sep_vec])
+
+        # Convert to radians
+        poses = vmap(dlu.arcsec2rad)(positions)
+
+        prop_fn = lambda pos: optics.propagate(wavels, pos, weights, return_wf=True)
+        wfs = eqx.filter_jit(eqx.filter_vmap(prop_fn))(poses)
+
+        # Get the fluxes - use unit flux here to simply get normalised relative fluxes
+        contrast = 10 ** model.contrasts[exposure.star]
+        flux_weights = np.array([contrast * 1, 1]) / (1 + contrast)
+
+        # Wfs is vectorised now, so all attributes will have an extra dimension
+        # Also need to divide by 2 to keep it a unit psf
+        psf = (flux_weights[:, None, None] * wfs.psf.sum(1)).sum(0)
+        pixel_scale = wfs.pixel_scale.mean((0, 1))
+
     else:
-        PSF = dl.PSF(wfs.psf.sum(0), wfs.pixel_scale.mean(0))
 
-    # Apply the detector model and turn it into a ramp
-    psf = model.detector.model(PSF)
+        # Model the optics
+        pos = dlu.arcsec2rad(model.positions[exposure.key])
 
-    # Model the ramp
-    ramp = model_ramp(psf, exposure.ngroups)
+        # TODO: Jit this sub-function for improved compile times
+        # wfs = optics.propagate(wavels, pos, weights, return_wf=True)
+        wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
 
-    # # Add the bias - Method 1, estimate from model
-    # first_group_est = ramp[0]
-    # bias_est = exposure.zero_point - dlu.downsample(first_group_est, 4, mean=False)
-    # bias_est = np.repeat(np.repeat(bias_est, 4, axis=0), 4, axis=1)
-    # bias_est /= 16 # Normalise the subsampling
-    # bias_est = np.where(np.isnan(bias_est), 0.0, bias_est)
+        # Convolutions done here
+        psfs = wfs.psf
+        pixel_scale = wfs.pixel_scale.mean(0)
+        if model.visibilities is not None:
+            psf = model.visibilities(psfs, exposure)
+        else:
+            psf = psfs.sum(0)
 
-    # Add the bias - Method 2, estimate from data
-    bias_est = exposure.zero_point - exposure.data[0]
-    bias_est = np.repeat(np.repeat(bias_est, 4, axis=0), 4, axis=1) / 16
-    bias_est = np.where(np.isnan(bias_est), 0.0, bias_est)
+    # PSF is still unitary here
+    # TODO: Jit this sub-function for improved compile times
+    # psf = model.detector.apply(dl.PSF(psf, wfs.pixel_scale.mean(0)))
+    psf = eqx.filter_jit(model.detector.apply)(dl.PSF(psf, pixel_scale))
 
-    # Add the estimated bias to the ramp
-    ramp += bias_est[None, ...]
+    # Get the hyper-parameters for the non-linear model
+    flux = 10 ** model.fluxes[exposure.key]
+    oversample = optics.oversample
 
+    # Return the BFE and required meta-data
     if to_BFE:
-        return ramp
+        return psf, flux, oversample
 
-    # Now apply the CNN BFE and downsample
-    if with_BFE:
-        ramp = eqx.filter_vmap(model.BFE.apply_array)(ramp)
+    # Non linear model always goes from unit psf, flux, oversample to an 80x80 ramp
+    if model.ramp is not None:
+        # ramp = model.ramp.apply(psf, flux, exposure, oversample)
+        ramp = eqx.filter_jit(model.ramp.apply)(psf, flux, exposure, oversample)
     else:
-        dsample_fn = lambda x: dlu.downsample(x, 4, mean=False)
-        ramp = vmap(dsample_fn)(ramp)
-    ramp = vmap(dlu.resize, (0, None))(ramp, 80)
+        psf_data = dlu.downsample(psf.data * flux, oversample, mean=False)
+        ramp = psf.set("data", model_ramp(psf_data, exposure.ngroups))
 
-    # Model the dark current
-    ramp = model_dark_current(ramp, model.detector.dark_current)
+    # Model the read effects
+    if "one_on_fs" in model.params.keys():
+        one_on_fs = model.one_on_fs[exposure.key]
+        ramp = model.read.set("one_on_fs", one_on_fs).apply(ramp)
 
-    # Apply one of F model
-    if noise:
-        ramp += total_amplifier_noise(model.one_on_fs[key])
+    # Return the slopes if required
+    if slopes:
+        return np.diff(ramp.data, axis=0)
 
-    # return ramp
-    return np.diff(ramp, axis=0)
-
-
-def build_optical_inputs(model, exposures, zero_idx=-1):
-    wavels_in = []
-    weights_in = []
-    aberrations_in = []
-    opds_in = []
-    positions_in = []
-    for exposure in exposures:
-        # Get exposure key
-        key = exposure.key
-
-        # Get wavelengths and weights
-        wavels, filt_weights = model.filters[exposure.filter]
-        weights = filt_weights * planck(wavels, model.Teffs[exposure.star])
-        weights *= (10 ** model.fluxes[key]) / weights.sum()
-
-        wavels_in.append(wavels)
-        weights_in.append(weights)
-
-        # Apply correct aberrations
-        aberrations = model.aberrations[key]
-        if zero_idx != -1:
-            aberrations = aberrations.at[zero_idx, 0].set(0.0)  # Pin piston to zero
-
-        aberrations_in.append(aberrations)
-        opds_in.append(exposure.opd)
-
-        # Make sure this has correct position units and get wavefronts
-        pos_rad = dlu.arcsec2rad(model.positions[key])
-
-        positions_in.append(pos_rad)
-
-    return wavels_in, weights_in, aberrations_in, opds_in, positions_in
+    # Return the ramp
+    return ramp.data
 
 
-def model_optics(model, wavels, weights, aberrations, opd, position):
-    optics = model.optics.set(["coefficients", "pupil.opd"], [aberrations, opd])
-    return optics.propagate(wavels, position, weights, return_psf=True)
+def variance_model(model, exposure, true_read_noise=False, read_noise=10):
+    """
+    True read noise will use the CRDS read noise array, else it will use a constant
+    value as determined by the input. true_read_noise therefore supersedes read_noise.
+    Using a flat value of 10 seems to be more accurate that the CRDS array.
 
+    That said I think the data has overly ambitious variances as a consequence of the
+    sigma clipping that is performed. We could determine the variance analytically from
+    the variance of the individual pixel values, but we will look at this later.
+    """
 
-def rebuild_ramps(ramps, bled_images):
-    lengths = [len(ramp) for ramp in ramps]
+    nan_mask = np.isnan(exposure.data)
 
-    n = 0
-    ramps = []
-    for length in lengths:
-        ramps.append(bled_images[n : n + length])
-        n += length
-    return ramps
+    # Estimate the photon covariance
+    # psf = model_fn(model, exposure)
+    psf = model.model(exposure, slopes=True)
 
+    psf = psf.at[np.where(nan_mask)].set(np.nan)
+    variance = psf / exposure.nints
 
-import dLux as dl
-
-
-# TODO: can probably be improved here to calc all the one on fs ones, using
-# 'rebuild_ramps' function
-def add_noise(model, exposures, ramps):
-    coeffs = [model.one_on_fs[exp.key] for exp in exposures]
-    add_noise = lambda ramp, coeff: ramp + vmap(model_amplifier)(coeff)
-    return [add_noise(ramp, coeff) for ramp, coeff in zip(ramps, coeffs)]
-
-
-def fast_model_fn(model, exposures, with_BFE=True, to_BFE=False, zero_idx=-1, noise=True):
-    # Model optics
-    optical_inputs = build_optical_inputs(model, exposures)
-    is_leaf = lambda x: isinstance(x, list)
-    optical_model_fn = lambda *args: model_optics(model, *args)
-    PSFs = jtu.tree_map(optical_model_fn, optical_inputs, is_leaf=is_leaf)
-
-    # Model detector
-    is_leaf = lambda x: isinstance(x, dl.PSF)
-    # psfs = jtu.tree_map(model.detector.model, PSFs, is_leaf=is_leaf)
-    psfs = [model.detector.model(psf) for psf in PSFs]
-
-    # Model ramp
-    is_leaf = lambda x: isinstance(x, list)
-    ramp_fn = lambda x, ngroup: model_ramp(x, ngroup)
-    ngroups = [exp.ngroups for exp in exposures]
-    # ramps = jtu.tree_map(ramp_fn, psfs, ngroups, is_leaf=is_leaf)
-    ramps = [ramp_fn(psf, ngroup) for psf, ngroup in zip(psfs, ngroups)]
-
-    # Return non-BFEd
-    if to_BFE:
-        return ramps
-
-    # Apply BFE (or not)
-    images = np.concatenate(ramps, axis=0)
-    if with_BFE:
-        images = eqx.filter_vmap(model.BFE.apply_array)(images)
+    # Read noise covariance
+    if true_read_noise:
+        rn = np.load(pkg.resource_filename(__name__, "data/SUB80_readnoise.npy"))
     else:
-        dsample_fn = lambda x: dlu.downsample(x, 4, mean=False)
-        images = vmap(dsample_fn)(images)
-    images = vmap(dlu.resize, (0, None))(images, 80)
+        rn = read_noise
+    read_variance = (rn**2) * np.ones((80, 80)) / exposure.nints
+    variance += read_variance[None, ...]
 
-    # Rebuild into per-exposure ramps
-    ramps = rebuild_ramps(ramps, images)
-
-    # Apply bias and one of F correction
-    if noise:
-        ramps = add_noise(model, exposures, ramps)
-
-    # return ramp
-    return jtu.tree_map(lambda x: np.diff(x, axis=0), ramps)
-
-
-#
+    return psf, variance
