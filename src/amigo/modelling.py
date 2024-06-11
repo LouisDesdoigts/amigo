@@ -1,7 +1,9 @@
 import pkg_resources as pkg
 import jax.numpy as np
 import dLux as dl
+import equinox as eqx
 import dLux.utils as dlu
+from jax import vmap
 
 
 def planck(wav, T):
@@ -62,21 +64,53 @@ def model_exposure(model, exposure, to_BFE=False, slopes=False):
         coherence = model.coherence[exposure.key]
         optics = optics.set("holes.reflectivity", coherence)
 
-    # Model the optics
-    pos = dlu.arcsec2rad(model.positions[exposure.key])
+    if exposure.type == "binary":
 
-    # TODO: Jit this sub-function for improved compile times
-    wfs = optics.propagate(wavels, pos, weights, return_wf=True)
+        # Convert binary parameters to positions parameters
+        position = model.positions[exposure.key]
 
-    psfs = wfs.psf
-    if model.visibilities is not None:
-        psf = model.visibilities(psfs, exposure)
+        #
+        pos_angle = dlu.deg2rad(model.position_angles[exposure.star])
+        r = model.separations[exposure.star] / 2
+        sep_vec = np.array([r * np.sin(pos_angle), r * np.cos(pos_angle)])
+        positions = np.array([position + sep_vec, position - sep_vec])
+
+        # Convert to radians
+        poses = vmap(dlu.arcsec2rad)(positions)
+
+        prop_fn = lambda pos: optics.propagate(wavels, pos, weights, return_wf=True)
+        wfs = eqx.filter_jit(eqx.filter_vmap(prop_fn))(poses)
+
+        # Get the fluxes - use unit flux here to simply get normalised relative fluxes
+        contrast = 10 ** model.contrasts[exposure.star]
+        flux_weights = np.array([contrast * 1, 1]) / (1 + contrast)
+
+        # Wfs is vectorised now, so all attributes will have an extra dimension
+        # Also need to divide by 2 to keep it a unit psf
+        psf = (flux_weights[:, None, None] * wfs.psf.sum(1)).sum(0)
+        pixel_scale = wfs.pixel_scale.mean((0, 1))
+
     else:
-        psf = psfs.sum(0)
+
+        # Model the optics
+        pos = dlu.arcsec2rad(model.positions[exposure.key])
+
+        # TODO: Jit this sub-function for improved compile times
+        # wfs = optics.propagate(wavels, pos, weights, return_wf=True)
+        wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
+
+        # Convolutions done here
+        psfs = wfs.psf
+        pixel_scale = wfs.pixel_scale.mean(0)
+        if model.visibilities is not None:
+            psf = model.visibilities(psfs, exposure)
+        else:
+            psf = psfs.sum(0)
 
     # PSF is still unitary here
     # TODO: Jit this sub-function for improved compile times
-    psf = model.detector.apply(dl.PSF(psf, wfs.pixel_scale.mean(0)))
+    # psf = model.detector.apply(dl.PSF(psf, wfs.pixel_scale.mean(0)))
+    psf = eqx.filter_jit(model.detector.apply)(dl.PSF(psf, pixel_scale))
 
     # Get the hyper-parameters for the non-linear model
     flux = 10 ** model.fluxes[exposure.key]
@@ -88,7 +122,8 @@ def model_exposure(model, exposure, to_BFE=False, slopes=False):
 
     # Non linear model always goes from unit psf, flux, oversample to an 80x80 ramp
     if model.ramp is not None:
-        ramp = model.ramp.apply(psf, flux, exposure, oversample)
+        # ramp = model.ramp.apply(psf, flux, exposure, oversample)
+        ramp = eqx.filter_jit(model.ramp.apply)(psf, flux, exposure, oversample)
     else:
         psf_data = dlu.downsample(psf.data * flux, oversample, mean=False)
         ramp = psf.set("data", model_ramp(psf_data, exposure.ngroups))

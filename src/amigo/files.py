@@ -326,8 +326,8 @@ def get_phases(exposures, dc=False):
     return phases
 
 
-def get_exposures(files, ms_thresh=None, as_psf=False, key_fn=None):
-    from amigo.core import Exposure
+def get_exposures(files, ms_thresh=None, as_psf=False, key_fn=None, exp_type="point"):
+    from amigo.core import ExposureModel
 
     opds = get_wss_ops(files)
     exposures = []
@@ -338,7 +338,7 @@ def get_exposures(files, ms_thresh=None, as_psf=False, key_fn=None):
         data = np.asarray(data, float)
         variance = np.asarray(variance, float)
         support = np.asarray(support, int)
-        exposures.append(Exposure(file, data, variance, support, opd, key_fn))
+        exposures.append(ExposureModel(file, data, variance, support, opd, key_fn, exp_type))
     return exposures
 
 

@@ -11,6 +11,7 @@ from .detector_layers import (
     Amplifier,
     Rotate,
     model_ramp,
+    Ramp,
 )
 
 
@@ -73,7 +74,9 @@ class LinearDetectorModel(LayeredDetector):
 class SimpleRamp(dl.detectors.BaseDetector):
 
     def apply(self, psf, flux, exposure, oversample):
-        return model_ramp(dlu.downsample(psf * flux, oversample, mean=False), exposure.ngroups)
+        image = psf.data * flux
+        ramp = model_ramp(dlu.downsample(image, oversample, mean=False), exposure.ngroups)
+        return Ramp(ramp, psf.pixel_scale)
 
     def model(self, psf):
         raise NotImplementedError

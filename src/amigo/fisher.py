@@ -7,6 +7,7 @@ import jax.tree_util as jtu
 from .modelling import variance_model
 from .stats import posterior
 import os
+from tqdm.notebook import tqdm
 
 
 def fisher_fn(model, exposure, params):
@@ -83,11 +84,14 @@ def calc_fishers(
 
     # Iterate over exposures
     fisher_exposures = {}
-    for exp in exposures:
+    for exp in tqdm(exposures):
 
         # Iterate over params
         fisher_params = {}
-        for param in parameters:
+        looper = tqdm(range(0, len(parameters)), leave=False, desc="")
+        for idx in looper:
+            param = parameters[idx]
+            looper.set_description(param)
 
             # Ensure the path to save to exists
             save_path = f"{cache}/{exp.key}/"
@@ -128,6 +132,10 @@ def hessian(f, x, fast=False):
         hvp = jit(hvp)
 
         # Compile on first input
+        # TODO: I Think this needs to be re-worked so that we call the vmapped jit fn,
+        # not the function, then the vmapped version. ie
+        # hvp = vmap(jit(hvp))
+        # first = hvp(np.array([(basis[0])]))
         first = np.array([hvp(basis[0])])  # Add empty dim for concatenation
 
         # Vmap others

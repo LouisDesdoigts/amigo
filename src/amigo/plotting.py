@@ -437,10 +437,21 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.set(ylabel="Visibility Amplitude")
 
         case "phases":
-            arr = dlu.rad2deg(arr)
-            norm_phases = arr
+            norm_phases = dlu.rad2deg(arr)
             ax.plot(epochs, norm_phases, **kwargs)
             ax.set(ylabel="Visibility Phase (deg)")
+
+        case "separations":
+            ax.plot(epochs, arr, **kwargs)
+            ax.set(ylabel="Binary Separation (arcsec)")
+
+        case "position_angles":
+            ax.plot(epochs, arr, **kwargs)
+            ax.set(ylabel="Position Angle (deg)")
+
+        case "contrasts":
+            ax.plot(epochs, arr, **kwargs)
+            ax.set(ylabel="Log Contrast")
 
         case "EDM.conv.values":
             norm_weights = arr - arr[0]
