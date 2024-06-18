@@ -1,24 +1,23 @@
 import jax.numpy as np
 from tqdm.notebook import tqdm
 import dLux.utils as dlu
-from jax import vmap, Array
-import zodiax as zdx
+from jax import vmap
 from dLuxWebbpsf.basis import get_noll_indices
 
 
-class UVHexikes(zdx.Base):
-    basis: Array
-    weight: Array
-    support: Array
-    inv_support: Array
+# class UVHexikes(zdx.Base):
+#     basis: Array
+#     weight: Array
+#     support: Array
+#     inv_support: Array
 
-    def __init__(self, basis, weight, support):
-        self.basis = basis
-        self.weight = weight
-        self.support = support
+#     def __init__(self, basis, weight, support):
+#         self.basis = basis
+#         self.weight = weight
+#         self.support = support
 
-        # calculating the inverse support mask
-        self.inv_support = 1.0 - support
+#         # calculating the inverse support mask
+#         self.inv_support = 1.0 - support
 
 
 # Mask generation and baselines
@@ -151,7 +150,12 @@ def build_hexikes(
     # NOTE/WARNING FOR PR OR MERGE: The way the hex mask is generate no longer uses
     # tf.apply, but calls the transformations in a specific order - This needs to
     # be matched here
-    uv_coords = tf.apply(uv_coords)
+    # uv_coords = tf.apply(uv_coords)
+    # Rotate, shear and compress coordinates
+    uv_coords = dlu.translate_coords(uv_coords, tf.translation)
+    uv_coords = dlu.rotate_coords(uv_coords, tf.rotation)
+    uv_coords = dlu.compress_coords(uv_coords, tf.compression)
+    uv_coords = dlu.shear_coords(uv_coords, tf.shear)
 
     # Do this outside so we can scatter plot the baseline vectors over the psf splodges
     hbls, inds = get_baselines_and_inds(holes)
@@ -253,6 +257,7 @@ def apply_visibilities(psf, vis, basis, weights, inv_support, pad_to=None):
 
     # We dont use np.where here because we have soft edges on the boundary of the mask
     return from_uv(to_uv(psf) * (splodge_mask(basis, vis) + inv_support))
+
 
 def visibilities(amplitudes, phases):
     return amplitudes * np.exp(1j * phases)

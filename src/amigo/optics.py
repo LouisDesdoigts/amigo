@@ -1,6 +1,7 @@
 import pkg_resources as pkg
 import jax
 import jax.numpy as np
+import equinox as eqx
 from jax import vmap
 import dLux as dl
 import dLux.utils as dlu
@@ -85,21 +86,45 @@ class DynamicAMI(dl.layers.optical_layers.OpticalLayer):
         pixel_scale = diameter / wf_npixels
         shift_pix = (+21, -13)
         shift = np.array(shift_pix) * pixel_scale
-        self.transformation = dl.CoordTransform(shift, 0.0, (1.0, 1.0), (0.0, 0.0))
+        # self.transformation = dl.CoordTransform(shift, 0.0, (1.0, 1.0), (0.0, 0.0))
+        make_transform = lambda x: dl.CoordTransform(shift, 0.0, (1.0, 1.0), (0.0, 0.0))
+        self.transformation = eqx.filter_vmap(make_transform)(np.arange(7))
         self.normalise = normalise
+
+    # def gen_AMI(self, npix, diameter):
+    #     rmax = self.f2f / np.sqrt(3)
+    #     coords = dlu.pixel_coords(npix, diameter)
+
+    #     # Rotate, shear and compress coordinates
+    #     coords = dlu.translate_coords(coords, self.translation)
+    #     coords = dlu.rotate_coords(coords, self.rotation)
+    #     coords = dlu.compress_coords(coords, self.compression)
+    #     coords = dlu.shear_coords(coords, self.shear)
+
+    #     # Shift the coordinates for each hole
+    #     coords = vmap(dlu.translate_coords, (None, 0))(coords, self.holes)
+
+    #     # Generate the hexagons
+    #     pscale = diameter / npix
+    #     hex_fn = lambda coords: dlu.soft_reg_polygon(coords, rmax, 6, pscale)
+    #     return vmap(hex_fn)(coords).sum(0)
 
     def gen_AMI(self, npix, diameter):
         rmax = self.f2f / np.sqrt(3)
-        coords = dlu.pixel_coords(npix, diameter)
+        # coords = dlu.pixel_coords(npix, diameter)
 
-        # Rotate, shear and compress coordinates
-        coords = dlu.translate_coords(coords, self.translation)
-        coords = dlu.rotate_coords(coords, self.rotation)
-        coords = dlu.compress_coords(coords, self.compression)
-        coords = dlu.shear_coords(coords, self.shear)
+        #
+        make_coords = lambda x: dlu.pixel_coords(npix, diameter)
+        coords = eqx.filter_vmap(make_coords)(np.arange(7))
 
         # Shift the coordinates for each hole
-        coords = vmap(dlu.translate_coords, (None, 0))(coords, self.holes)
+        coords = vmap(dlu.translate_coords, (0, 0))(coords, self.holes)
+
+        #
+        coords = vmap(dlu.translate_coords, (0, 0))(coords, self.translation)
+        coords = vmap(dlu.rotate_coords, (0, 0))(coords, self.rotation)
+        coords = vmap(dlu.compress_coords, (0, 0))(coords, self.compression)
+        coords = vmap(dlu.shear_coords, (0, 0))(coords, self.shear)
 
         # Generate the hexagons
         pscale = diameter / npix

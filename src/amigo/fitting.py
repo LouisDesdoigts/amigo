@@ -97,8 +97,12 @@ def calc_lrs(model, exposures, fishers, params=None, order=1):
             if param not in fishers[exp.key].keys():
                 continue
 
+            if param == "dispersion":
+                leaf_param = f"{param}.{exp.filter}"
+                fisher_model = fisher_model.add(leaf_param, fishers[exp.key][param])
+
             # Handle dict case
-            if isinstance(leaf, dict):
+            elif isinstance(leaf, dict):
                 leaf_param = f"{param}.{exp.key}"
                 fisher_model = fisher_model.add(leaf_param, fishers[exp.key][param])
             else:

@@ -56,7 +56,8 @@ def key_mapper(model, exposure, param):
     # Check for unique cases, like visibilities
     if param in ["amplitudes", "phases"]:
         # Visibilities are fit jointly from multiple observations, one per star per filter
-        vis_key = model.vis_model.get_key(exposure)
+        # vis_key = model.vis_model.get_key(exposure)
+        vis_key = "_".join([exposure.star, exposure.filter])
         return f"{param}.{vis_key}"
 
     # Check for local param

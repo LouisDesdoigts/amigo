@@ -6,11 +6,13 @@ import zodiax as zdx
 import dLux as dl
 import dLux.utils as dlu
 from abc import abstractmethod
+from jax import Array, vmap
 from jax.lax import dynamic_slice as lax_slice
 from .optics import AMIOptics
 from .detectors import LinearDetectorModel, ReadModel, SimpleRamp
 from .modelling import model_exposure, planck
 from .files import get_Teffs, get_filters
+from .interferometry import visibilities, apply_visibilities
 
 
 class BaseModeller(zdx.Base):
@@ -42,6 +44,8 @@ class BaseModeller(zdx.Base):
 class AmigoModel(BaseModeller):
     Teffs: dict
     filters: dict
+    dispersion: dict
+    contrast: float
     optics: AMIOptics
     visibilities: None
     detector: None
@@ -58,6 +62,8 @@ class AmigoModel(BaseModeller):
         detector=None,
         read=None,
         visibilities=None,
+        dispersion_mag=0.0,  # arcseconds
+        contrast=-2,
         Teff_cache="files/Teff_cache",
     ):
 
@@ -72,6 +78,25 @@ class AmigoModel(BaseModeller):
 
         self.Teffs = get_Teffs(files, Teff_cache=Teff_cache)
         self.filters = get_filters(files)
+
+        # Dispersion hacking - randomly perturb the position of each wavelength
+        if dispersion_mag > 0.0:
+            self.dispersion = {}
+
+            # # This one is free-floating value per wavelength
+            # for filt, (wavels, weights) in self.filters.items():
+            #     rand_positions = jr.normal(jr.PRNGKey(0), (len(wavels), 2))
+            #     self.dispersion[filt] = dispersion_mag * rand_positions
+
+            # This one is parameterised by (x, y) - the point at which the longest
+            # wavelength reaches
+            for filt in self.filters.keys():
+                self.dispersion[filt] = np.array([dispersion_mag, dispersion_mag])
+
+        else:
+            self.dispersion = None
+        self.contrast = np.asarray(contrast, float)
+
         self.optics = optics
         self.detector = detector
         self.ramp = ramp
@@ -99,6 +124,47 @@ class AmigoModel(BaseModeller):
         if hasattr(self.visibilities, key):
             return getattr(self.visibilities, key)
         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
+
+
+class VisModel(zdx.Base):
+    pass
+
+
+class HexikeVis(VisModel):
+    basis: Array
+    weight: Array
+    support: Array
+    inv_support: Array
+
+    def __init__(self, basis, weight, support):
+        self.basis = basis
+        self.weight = weight
+        self.support = support
+
+        # calculating the inverse support mask
+        self.inv_support = jtu.tree_map(lambda x: 1.0 - x, support)
+
+    def uv_model(self, psfs, amplitudes, phases, filter, cplx=False, pad=2):
+        # Get the sizes
+        npix = psfs.shape[-1]
+        npix_pad = pad * npix  # array size to pad mask and psfs to
+
+        # unpacking from hexikes
+        basis = self.basis[filter]
+        weights = self.weight[filter]
+        inv_support = self.inv_support[filter]
+
+        # Pad, apply the splodges, and crop
+        vis = visibilities(amplitudes, phases)
+        psfs_pad = vmap(lambda x: dlu.resize(x, npix_pad))(psfs)
+        vis_applyer = vmap(apply_visibilities, (0, None, 0, 0, 0, None))
+        cplx_psfs_pad = vis_applyer(psfs_pad, vis, basis, weights, inv_support, npix_pad)
+        cplx_psfs = vmap(lambda x: dlu.resize(x, npix))(cplx_psfs_pad)
+
+        # Return complex or magnitude
+        if cplx:
+            return cplx_psfs
+        return np.abs(cplx_psfs)
 
 
 class Exposure(zdx.Base):

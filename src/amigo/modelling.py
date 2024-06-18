@@ -93,15 +93,47 @@ def model_exposure(model, exposure, to_BFE=False, slopes=False):
         # Model the optics
         pos = dlu.arcsec2rad(model.positions[exposure.key])
 
-        # TODO: Jit this sub-function for improved compile times
-        # wfs = optics.propagate(wavels, pos, weights, return_wf=True)
-        wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
+        # NOTE: Dispersion only implemented for point source right now
+        if model.dispersion is not None:
+            # Dispersion contrast
+            contrast = 10**model.contrast
+            flux_weights = np.array([contrast * 1, 1]) / (1 + contrast)
+
+            # Model the proper psf
+            wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True).psf
+            primary_psfs = flux_weights[0] * wfs.psf
+
+            wf_prop = lambda *args: optics.propagate_mono(*args, return_wf=True)
+            prop_fn = lambda wav, disp: wf_prop(wav, pos + disp)
+
+            # # This one does free-floating (x, y)
+            # dispersion = dlu.arcsec2rad(model.dispersion[exposure.filter])
+
+            # This one does furthest point (x, y)
+            xmax, ymax = dlu.arcsec2rad(model.dispersion[exposure.filter])
+            xs = np.linspace(-xmax, xmax, len(wavels))
+            ys = np.linspace(-ymax, ymax, len(wavels))
+            dispersion = np.array([xs, ys]).T
+
+            # Apply it
+            wfs = eqx.filter_jit(eqx.filter_vmap(prop_fn))(wavels, dispersion)
+            wfs = wfs.multiply("amplitude", weights[:, None, None] ** 0.5)
+            secondary_psfs = flux_weights[1] * wfs.psf
+            psfs = primary_psfs + secondary_psfs
+
+        else:
+            wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
+            psfs = wfs.psf
 
         # Convolutions done here
-        psfs = wfs.psf
+        # psfs = wfs.psf
         pixel_scale = wfs.pixel_scale.mean(0)
         if model.visibilities is not None:
-            psf = model.visibilities(psfs, exposure)
+            vis_key = "_".join([exposure.star, exposure.filter])
+            amplitudes = model.amplitudes[vis_key]
+            phases = model.phases[vis_key]
+            jit_fn = eqx.filter_jit(model.visibilities.uv_model)
+            psf = jit_fn(psfs, amplitudes, phases, exposure.filter).sum(0)
         else:
             psf = psfs.sum(0)
 

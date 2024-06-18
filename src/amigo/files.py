@@ -5,7 +5,7 @@ from astroquery.simbad import Simbad
 import pyia
 import pkg_resources as pkg
 import numpy as onp
-from .interferometry import build_hexikes, UVHexikes
+from .interferometry import build_hexikes
 from dLuxWebbpsf.basis import get_noll_indices
 from webbpsf import mast_wss
 from tqdm.notebook import tqdm
@@ -372,7 +372,7 @@ def full_to_SUB80(full_arr, npix_out=80, fill=0.0):
 
 
 def get_uv_hexikes(
-    files,
+    exposures,
     optics,
     filters,
     radial_orders=None,
@@ -405,10 +405,14 @@ def get_uv_hexikes(
         "F480M": 384,
     }
 
-    hexikes = {}
-    for file in files:
-        filt = file[0].header["FILTER"]
-        if filt in hexikes.keys():
+    # hexikes = {}
+    bases = {}
+    weights = {}
+    supports = {}
+    # for file in files:
+    for exp in exposures:
+        filt = exp.filter
+        if filt in bases.keys():
             continue
         wavels = filters[filt][0]
 
@@ -453,6 +457,11 @@ def get_uv_hexikes(
             _weights.append(weight)
             _supports.append(support)
 
-        hexikes[filt] = UVHexikes(np.array(_bases), np.array(_weights), np.array(_supports))
+        bases[filt] = np.array(_bases)
+        weights[filt] = np.array(_weights)
+        supports[filt] = np.array(_supports)
 
-    return hexikes
+    # Import here to avoid circular imports
+    from amigo.core import HexikeVis
+
+    return HexikeVis(bases, weights, supports)
