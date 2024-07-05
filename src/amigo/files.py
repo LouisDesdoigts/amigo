@@ -10,6 +10,7 @@ from dLuxWebbpsf.basis import get_noll_indices
 from webbpsf import mast_wss
 from tqdm.notebook import tqdm
 from xara.core import determine_origin
+import jax.tree_util as jtu
 
 
 def summarise_files(files, extra_keys=[]):
@@ -185,35 +186,41 @@ def initialise_params(
 
 
 def get_filters(files, nwavels=9):
-    filters = {}
-    for file in files:
-        filt = file[0].header["FILTER"]
-        if filt in filters.keys():
-            continue
+    filters = list(set([file[0].header["FILTER"] for file in files]))
+    filter_dict = {}
+    # for file in files:
+    # filt = file[0].header["FILTER"]
+    # if filt in filters.keys():
+    # continue
+    for filt in filters:
+        filter_dict[filt] = calc_throughput(filt, nwavels=nwavels)
+    return filter_dict
 
-        if filt not in ["F380M", "F430M", "F480M", "F277W"]:
-            raise ValueError("Supported filters are F380M, F430M, F480M, F277W.")
 
-        # filter_path = os.path.join()
-        file_path = pkg.resource_filename(__name__, f"/data/filters/{filt}.dat")
-        wl_array, throughput_array = np.array(onp.loadtxt(file_path, unpack=True))
+def calc_throughput(filt, nwavels=9):
 
-        edges = np.linspace(wl_array.min(), wl_array.max(), nwavels + 1)
-        wavels = np.linspace(wl_array.min(), wl_array.max(), 2 * nwavels + 1)[1::2]
+    if filt not in ["F380M", "F430M", "F480M", "F277W"]:
+        raise ValueError("Supported filters are F380M, F430M, F480M, F277W.")
 
-        areas = []
-        for i in range(nwavels):
-            cond1 = edges[i] < wl_array
-            cond2 = wl_array < edges[i + 1]
-            throughput = np.where(cond1 & cond2, throughput_array, 0)
-            areas.append(jsp.integrate.trapezoid(y=throughput, x=wl_array))
+    # filter_path = os.path.join()
+    file_path = pkg.resource_filename(__name__, f"/data/filters/{filt}.dat")
+    wl_array, throughput_array = np.array(onp.loadtxt(file_path, unpack=True))
 
-        areas = np.array(areas)
-        weights = areas / areas.sum()
+    edges = np.linspace(wl_array.min(), wl_array.max(), nwavels + 1)
+    wavels = np.linspace(wl_array.min(), wl_array.max(), 2 * nwavels + 1)[1::2]
 
-        wavels *= 1e-10
-        filters[filt] = np.array([wavels, weights])
-    return filters
+    areas = []
+    for i in range(nwavels):
+        cond1 = edges[i] < wl_array
+        cond2 = wl_array < edges[i + 1]
+        throughput = np.where(cond1 & cond2, throughput_array, 0)
+        areas.append(jsp.integrate.trapezoid(y=throughput, x=wl_array))
+
+    areas = np.array(areas)
+    weights = areas / areas.sum()
+
+    wavels *= 1e-10
+    return np.np.array([wavels, weights])
 
 
 def prep_data(file, ms_thresh=None, as_psf=False):
@@ -384,19 +391,173 @@ def full_to_SUB80(full_arr, npix_out=80, fill=0.0):
     return SUB80
 
 
-def get_uv_hexikes(
+# bases, weights, supports, inv_supports
+# def get_uv_hexikes(
+#     exposures,
+#     optics,
+#     # filters,
+#     radial_orders=None,
+#     noll_indices=None,
+#     hexike_cache="files/uv_hexikes",
+#     verbose=False,
+#     nwavels=9,
+# ):
+#     """
+#     Note caches masks to disk for faster loading. The cache is indexed _relative_ to
+#     where the file is run from.
+#     """
+
+#     # # Get the filter dictionary (wavels and weights)
+#     # filters = get_filters(files)
+
+#     filters = {}
+#     for filt in list(set([exp.filter for exp in exposures])):
+#         filters[filt] = calc_throughput(filt) #, nwavels=nwavels)
+
+#     # Dealing with the radial_orders and noll_indices arguments
+#     if radial_orders is not None and noll_indices is not None:
+#         print("Warning: Both radial_orders and noll_indices provided. Using noll_indices.")
+#         radial_orders = None
+
+#     if noll_indices is None:
+#         noll_indices = get_noll_indices(radial_orders, noll_indices)
+
+#     # Check whether the specified cache directory exists
+#     if not os.path.exists(hexike_cache):
+#         os.makedirs(hexike_cache)
+
+#     # defining known desired array sizes for different filters
+#     # TODO: This should scale with optical oversample
+#     crop_dict = {
+#         "F277W": 714,
+#         "F380M": 486,
+#         "F430M": 426,
+#         "F480M": 384,
+#     }
+
+#     # hexikes = {}
+#     bases = {}
+#     weights = {}
+#     supports = {}
+#     # for file in files:
+#     for exp in exposures:
+#         filt = exp.filter
+#         if filt in bases.keys():
+#             continue
+#         wavels = filters[filt][0]
+
+#         calc_pad = 3  # 3x oversample on the mask calculation for soft edges
+#         uv_pad = 2  # 2x oversample on the UV transform
+#         crop_npix = crop_dict[filt]  # cropping masks
+
+#         _bases = []
+#         _weights = []
+#         _supports = []
+
+#         looper = tqdm(wavels) if verbose else wavels
+#         for wavelength in looper:
+#             wl_key = f"{int(wavelength*1e9)}"  # The nearest nm
+#             noll_key = "".join([str(n) for n in noll_indices])  # recording the noll indices
+#             file_key = f"{hexike_cache}/{wl_key}_{optics.oversample}_{noll_key}"
+#             try:
+#                 basis = np.load(f"{file_key}_basis.npy")
+#                 weight = np.load(f"{file_key}_weight.npy")
+#                 support = np.load(f"{file_key}_support.npy")
+
+#             except FileNotFoundError:
+#                 basis, weight, support = build_hexikes(
+#                     optics.pupil_mask.holes,
+#                     optics.pupil_mask.f2f,
+#                     optics.pupil_mask.transformation,
+#                     wavelength,
+#                     optics.psf_pixel_scale,
+#                     optics.psf_npixels,
+#                     optics.oversample,
+#                     uv_pad,
+#                     calc_pad,
+#                     radial_orders=radial_orders,
+#                     noll_indices=noll_indices,
+#                     crop_npix=crop_npix,
+#                 )
+#                 np.save(f"{file_key}_basis.npy", basis)
+#                 np.save(f"{file_key}_weight.npy", weight)
+#                 np.save(f"{file_key}_support.npy", support)
+
+#             _bases.append(basis)
+#             _weights.append(weight)
+#             _supports.append(support)
+
+#         bases[filt] = np.array(_bases)
+#         weights[filt] = np.array(_weights)
+#         supports[filt] = np.array(_supports)
+#     inv_supports = jtu.tree_map(lambda x: 1.0 - x, supports)
+
+#     return VisModel(bases, weights, supports, inv_supports)
+
+# # Import here to avoid circular imports
+# from amigo.core import HexikeVis
+
+# return HexikeVis(bases, weights, supports)
+
+
+def calc_splodge_masks(
     exposures,
     optics,
-    filters,
+    # wavels,
+    uv_pad=2,
+    calc_pad=3,
+    crop_npix=None,
     radial_orders=None,
     noll_indices=None,
     hexike_cache="files/uv_hexikes",
     verbose=False,
 ):
-    """
-    Note caches masks to disk for faster loading. The cache is indexed _relative_ to
-    where the file is run from.
-    """
+
+    # _bases = []
+    # _weights = []
+    # _supports = []
+
+    # looper = tqdm(wavels) if verbose else wavels
+    # for wavelength in looper:
+    #     wl_key = f"{int(wavelength*1e9)}"  # The nearest nm
+    #     noll_key = "".join([str(n) for n in noll_indices])  # recording the noll indices
+    #     file_key = f"{hexike_cache}/{wl_key}_{optics.oversample}_{noll_key}"
+    #     try:
+    #         basis = np.load(f"{file_key}_basis.npy")
+    #         weight = np.load(f"{file_key}_weight.npy")
+    #         support = np.load(f"{file_key}_support.npy")
+
+    #     except FileNotFoundError:
+    #         basis, weight, support = build_hexikes(
+    #             optics.pupil_mask.holes,
+    #             optics.pupil_mask.f2f,
+    #             optics.pupil_mask.transformation,
+    #             wavelength,
+    #             optics.psf_pixel_scale,
+    #             optics.psf_npixels,
+    #             optics.oversample,
+    #             uv_pad,
+    #             calc_pad,
+    #             radial_orders=radial_orders,
+    #             noll_indices=noll_indices,
+    #             crop_npix=crop_npix,
+    #         )
+    #         np.save(f"{file_key}_basis.npy", basis)
+    #         np.save(f"{file_key}_weight.npy", weight)
+    #         np.save(f"{file_key}_support.npy", support)
+
+    #     _bases.append(basis)
+    #     _weights.append(weight)
+    #     _supports.append(support)
+
+    # return np.array(_bases), np.array(_weights), np.array(_supports)
+
+    # # Get the filter dictionary (wavels and weights)
+    # filters = get_filters(files)
+
+    filters = {}
+    for filt in list(set([exp.filter for exp in exposures])):
+        filters[filt] = calc_throughput(filt)  # , nwavels=nwavels)
 
     # Dealing with the radial_orders and noll_indices arguments
     if radial_orders is not None and noll_indices is not None:
@@ -411,6 +572,7 @@ def get_uv_hexikes(
         os.makedirs(hexike_cache)
 
     # defining known desired array sizes for different filters
+    # TODO: This should scale with optical oversample
     crop_dict = {
         "F277W": 714,
         "F380M": 486,
@@ -429,8 +591,8 @@ def get_uv_hexikes(
             continue
         wavels = filters[filt][0]
 
-        calc_pad = 3  # 3x oversample on the mask calculation for soft edges
-        uv_pad = 2  # 2x oversample on the UV transform
+        # calc_pad = 3  # 3x oversample on the mask calculation for soft edges
+        # uv_pad = 2  # 2x oversample on the UV transform
         crop_npix = crop_dict[filt]  # cropping masks
 
         _bases = []
@@ -473,8 +635,5 @@ def get_uv_hexikes(
         bases[filt] = np.array(_bases)
         weights[filt] = np.array(_weights)
         supports[filt] = np.array(_supports)
-
-    # Import here to avoid circular imports
-    from amigo.core import HexikeVis
-
-    return HexikeVis(bases, weights, supports)
+    inv_supports = jtu.tree_map(lambda x: 1.0 - x, supports)
+    return bases, weights, supports, inv_supports

@@ -100,9 +100,10 @@ class ModelFit(zdx.Base):
 
         # Return the BFE and required meta-data
         if to_BFE:
-            return psf, flux, oversample
+            return psf.data, flux, oversample
 
         # Non linear model always goes from unit psf, flux, oversample to an 80x80 ramp
+        # NOTE: Should be able to remove this if statement and just use SimpleRamp
         if model.ramp is not None:
             ramp = eqx.filter_jit(model.ramp.apply)(psf, flux, exposure, oversample)
         else:
@@ -139,6 +140,9 @@ class PointFit(ModelFit):
 class VisFit(ModelFit):
     pad: int = eqx.field(static=True)
 
+    def __init__(self, pad=2):
+        self.pad = int(pad)
+
     def model_vis(self, wfs, model, exposure, cplx=False):
         # Get the bits we need
         basis = self.basis[exposure.filter]
@@ -162,7 +166,7 @@ class VisFit(ModelFit):
         if cplx:
             return cplx_psfs
         return np.abs(cplx_psfs)
-        return dl.PSF(np.abs(cplx_psfs), wfs.pixel_scale.mean(0))
+        # return dl.PSF(np.abs(cplx_psfs), wfs.pixel_scale.mean(0))
 
     def model_psf(self, model, exposure):
         wfs = self.model_wfs(model, exposure)

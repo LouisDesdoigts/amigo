@@ -7,7 +7,7 @@ from jax.lax import dynamic_slice as lax_slice
 from .optics import AMIOptics
 from .detectors import LinearDetectorModel, ReadModel, SimpleRamp
 from .modelling import model_exposure
-from .files import get_Teffs, get_filters
+from .files import get_Teffs, get_filters, calc_splodge_masks
 
 
 class BaseModeller(zdx.Base):
@@ -121,45 +121,43 @@ class AmigoModel(BaseModeller):
         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
 
 
-# class VisModel(zdx.Base):
-#     pass
+class VisModel(zdx.Base):
+    basis: jax.Array
+    weight: jax.Array
+    support: jax.Array
+    inv_support: jax.Array
 
+    def __init__(
+        self,
+        exposures,
+        optics,
+        uv_pad=2,
+        calc_pad=3,
+        crop_npix=None,
+        radial_orders=None,
+        hexike_cache="files/uv_hexikes",
+        verbose=False,
+        nwavels=9,
+    ):
+        """
+        Note caches masks to disk for faster loading. The cache is indexed _relative_ to
+        where the file is run from.
+        """
+        bases, weights, supports, inv_supports = calc_splodge_masks(
+            exposures,
+            optics,
+            uv_pad=uv_pad,
+            calc_pad=calc_pad,
+            crop_npix=crop_npix,
+            radial_orders=radial_orders,
+            hexike_cache=hexike_cache,
+            verbose=verbose,
+        )
 
-# class HexikeVis(VisModel):
-#     basis: Array
-#     weight: Array
-#     support: Array
-#     inv_support: Array
-
-#     def __init__(self, basis, weight, support):
-#         self.basis = basis
-#         self.weight = weight
-#         self.support = support
-
-#         # calculating the inverse support mask
-#         self.inv_support = jtu.tree_map(lambda x: 1.0 - x, support)
-
-#     def uv_model(self, psfs, amplitudes, phases, filter, cplx=False, pad=2):
-#         # Get the sizes
-#         npix = psfs.shape[-1]
-#         npix_pad = pad * npix  # array size to pad mask and psfs to
-
-#         # unpacking from hexikes
-#         basis = self.basis[filter]
-#         weights = self.weight[filter]
-#         inv_support = self.inv_support[filter]
-
-#         # Pad, apply the splodges, and crop
-#         vis = visibilities(amplitudes, phases)
-#         psfs_pad = vmap(lambda x: dlu.resize(x, npix_pad))(psfs)
-#         vis_applyer = vmap(apply_visibilities, (0, None, 0, 0, 0, None))
-#         cplx_psfs_pad = vis_applyer(psfs_pad, vis, basis, weights, inv_support, npix_pad)
-#         cplx_psfs = vmap(lambda x: dlu.resize(x, npix))(cplx_psfs_pad)
-
-#         # Return complex or magnitude
-#         if cplx:
-#             return cplx_psfs
-#         return np.abs(cplx_psfs)
+        self.basis = bases
+        self.weight = weights
+        self.support = supports
+        self.inv_support = inv_supports
 
 
 class Exposure(zdx.Base):
@@ -196,11 +194,6 @@ class Exposure(zdx.Base):
     #
     calibrator: bool = eqx.field(static=True)
 
-    # # Keys for flux and aberration dictionaries
-    # flux_key: str = eqx.field(static=True)
-    # abb_key: str = eqx.field(static=True)
-    # amp_key: str = eqx.field(static=True)
-
     def __init__(self, file, slopes, variance, support, opd, key_fn):
 
         # self.data = data
@@ -230,11 +223,6 @@ class Exposure(zdx.Base):
         #
         self.calibrator = bool(file[0].header["IS_PSF"])
 
-        # #
-        # self.flux_key = "_".join([self.star, self.filter])
-        # self.abb_key = "_".join([self.program])
-        # self.amp_key = "_".join([self.program])
-
     def print_summary(self):
         print(
             f"File {self.key}\n"
@@ -249,179 +237,6 @@ class Exposure(zdx.Base):
 
     def from_vec(self, vec, fill=np.nan):
         return (fill * np.ones((80, 80))).at[*self.support].set(vec)
-
-
-# # TODO: This class is superseded by ModelFit classes
-# class ExposureModel(Exposure):
-#     """An class to hold the model type for an exposure, so that different models can
-#     be fit to the same data."""
-
-#     type: str = eqx.field(static=True)
-
-#     def __init__(self, file, data, variance, support, opd, key_fn, exp_type="point"):
-
-#         # self.data = data
-#         # self.variance = variance
-#         # self.support = support
-#         # self.opd = opd
-#         # self.key = key_fn(file)
-#         # self.nints = file[0].header["NINTS"]
-#         # self.ngroups = file[0].header["NGROUPS"]
-#         # self.nslopes = file[0].header["NGROUPS"] - 1
-#         # self.filter = file[0].header["FILTER"]
-#         # self.star = file[0].header["TARGPROP"]
-#         # self.zero_point = np.asarray(file["ZPOINT"].data, float)
-
-#         self.data = data
-#         self.variance = variance
-#         self.support = support
-#         self.opd = opd
-#         self.zero_point = np.asarray(file["ZPOINT"].data, float)
-
-#         #
-#         self.nints = file[0].header["NINTS"]
-#         self.ngroups = file[0].header["NGROUPS"]
-#         self.nslopes = file[0].header["NGROUPS"] - 1
-
-#         #
-#         self.filter = file[0].header["FILTER"]
-#         self.star = file[0].header["TARGPROP"]
-
-#         #
-#         self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
-#         self.key = key_fn(file)
-#         self.program = file[0].header["PROGRAM"]
-#         self.observation = file[0].header["OBSERVTN"]
-#         self.act_id = file[0].header["ACT_ID"]
-#         self.dither = file[0].header["EXPOSURE"]
-
-#         #
-#         self.flux_key = "_".join([self.star, self.filter])
-#         self.abb_key = "_".join([self.program])
-#         self.amp_key = "_".join([self.program])
-
-
-#         if exp_type not in ["point", "binary", "visibility", "convolved"]:
-#             raise ValueError(
-#                 f"Exposure type {exp_type} not recognised, must be one of 'point',"
-#                 " 'binary', 'visibility', 'convolved'"
-#             )
-#         self.type = str(exp_type)
-
-
-# class ExposureFit(Exposure):
-#     position: jax.Array
-#     aberrations: jax.Array
-#     flux: jax.Array  # Log now
-#     one_on_fs: jax.Array
-#     coherence: jax.Array
-
-#     def __init__(self, exposure, position, flux, aberrations, one_on_fs, coherence):
-
-#         self.data = exposure.data
-#         self.variance = exposure.variance
-#         self.support = exposure.support
-#         self.opd = exposure.opd
-#         self.key = exposure.key
-#         self.nints = exposure.nints
-#         self.ngroups = exposure.ngroups
-#         self.nslopes = exposure.nslopes
-#         self.filter = exposure.filter
-#         self.star = exposure.star
-#         self.zero_point = exposure.zero_point
-#         self.aberrations = aberrations
-#         self.position = position
-#         self.flux = flux
-#         self.one_on_fs = one_on_fs
-#         self.coherence = coherence
-
-
-# class ModelFit(zdx.Base):
-#     key: str
-
-#     def __init__(self, key):
-#         self.key = key
-
-#     @abstractmethod
-#     def model_exposure(self, model, exposure):
-#         return
-
-
-# class PointFit(ModelFit):
-
-#     def model_wfs(self, model, exposure):
-
-#         # Get wavelengths and weights
-#         wavels, filt_weights = model.filters[exposure.filter]
-#         weights = filt_weights * planck(wavels, model.Teffs[exposure.star])
-#         weights = weights / weights.sum()
-
-#         optics = model.optics.set(
-#             ["pupil.coefficients", "pupil.opd"],
-#             [model.aberrations[exposure.key], exposure.opd],
-#         )
-
-#         # Model the optics
-#         pos = dlu.arcsec2rad(model.positions[exposure.key])
-#         return eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
-
-#     def model_exposure(self, model, exposure):
-#         wfs = self.model_wfs(model, exposure)
-#         return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale.mean(0))
-
-
-# class PointVisFit(ModelFit):
-
-#     def model_vis(self, model, exposure, wfs):
-#         vis_key = "_".join([exposure.star, exposure.filter])
-#         model.masks[exposure.filter]
-#         model.amplitudes[vis_key]
-#         model.phases[vis_key]
-#         # return uv_model(amplitudes, phases, wfs.psf, mask).sum(0)
-
-#     def model_exposure(self, model, exposure):
-#         wfs = self.model_wfs(model, exposure)
-#         psf = self.model_vis(model, exposure, wfs)
-#         return dl.PSF(psf, wfs.pixel_scale.mean(0))
-
-
-# class BinaryFit(ModelFit):
-#     key: str
-
-#     def __init__(self, key):
-#         self.key = key
-
-#     def model_exposure(self, model, exposure):
-
-#         # Get wavelengths and weights
-#         wavels, filt_weights = model.filters[exposure.filter]
-#         weights = filt_weights * planck(wavels, model.Teffs[exposure.star])
-#         weights = weights / weights.sum()
-
-#         optics = model.optics.set(
-#             ["pupil.coefficients", "pupil.opd"], [model.aberrations[exposure.key], exposure.opd]
-#         )
-
-#         if "coherence" in model.params.keys():
-#             coherence = model.coherence[exposure.key]
-#             optics = optics.set("holes.reflectivity", coherence)
-
-#         # Model the optics
-#         pos = dlu.arcsec2rad(model.positions[exposure.key])
-
-#         # TODO: Jit this sub-function for improved compile times
-#         # wfs = optics.propagate(wavels, pos, weights, return_wf=True)
-#         wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
-
-#         # Convolutions done here
-#         psfs = wfs.psf
-#         pixel_scale = wfs.pixel_scale.mean(0)
-#         if model.visibilities is not None:
-#             psf = model.visibilities(psfs, exposure)
-#         else:
-#             psf = psfs.sum(0)
-
-#         return dl.PSF(psf, pixel_scale)
 
 
 class NNWrapper(zdx.Base):

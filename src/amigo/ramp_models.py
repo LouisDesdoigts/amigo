@@ -6,7 +6,8 @@ import equinox as eqx
 import dLux as dl
 import dLux.utils as dlu
 from jax import vmap
-from .detector_layers import model_ramp, Ramp
+
+# from .detector_layers import model_ramp, Ramp
 
 
 def build_image_basis(image):
@@ -30,11 +31,24 @@ def build_basis(image, powers=[1], norm=1.0):
     return np.concatenate(basis)
 
 
+def model_ramp(psf, ngroups):
+    """Applies an 'up the ramp' model of the input 'optical' PSF. Input PSF.data
+    should have shape (npix, npix) and return shape (ngroups, npix, npix)"""
+    lin_ramp = (np.arange(ngroups) + 1) / ngroups
+    return psf[None, ...] * lin_ramp[..., None, None]
+
+
+class Ramp(dl.PSF):
+    pass
+
+
 class SimpleRamp(dl.detectors.BaseDetector):
 
     def apply(self, psf, flux, exposure, oversample):
-        image = psf.data * flux
-        ramp = model_ramp(dlu.downsample(image, oversample, mean=False), exposure.ngroups)
+        # lin_ramp = (np.arange(exposure.ngroups) + 1) / exposure.ngroups
+        image = dlu.downsample(psf.data * flux, oversample, mean=False)
+        # ramp = image[None, ...] * lin_ramp[..., None, None]
+        ramp = model_ramp(image, exposure.ngroups)
         return Ramp(ramp, psf.pixel_scale)
 
     def model(self, psf):
