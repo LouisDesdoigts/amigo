@@ -193,6 +193,9 @@ class Exposure(zdx.Base):
     act_id: str = eqx.field(static=True)
     dither: str = eqx.field(static=True)
 
+    #
+    calibrator: bool = eqx.field(static=True)
+
     # # Keys for flux and aberration dictionaries
     # flux_key: str = eqx.field(static=True)
     # abb_key: str = eqx.field(static=True)
@@ -223,6 +226,9 @@ class Exposure(zdx.Base):
         self.observation = file[0].header["OBSERVTN"]
         self.act_id = file[0].header["ACT_ID"]
         self.dither = file[0].header["EXPOSURE"]
+
+        #
+        self.calibrator = bool(file[0].header["IS_PSF"])
 
         # #
         # self.flux_key = "_".join([self.star, self.filter])

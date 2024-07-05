@@ -30,6 +30,17 @@ def build_basis(image, powers=[1], norm=1.0):
     return np.concatenate(basis)
 
 
+class SimpleRamp(dl.detectors.BaseDetector):
+
+    def apply(self, psf, flux, exposure, oversample):
+        image = psf.data * flux
+        ramp = model_ramp(dlu.downsample(image, oversample, mean=False), exposure.ngroups)
+        return Ramp(ramp, psf.pixel_scale)
+
+    def model(self, psf):
+        raise NotImplementedError
+
+
 class PolyNonLin(dl.detectors.BaseDetector):
     coeffs: jax.Array
     conv: None

@@ -6,12 +6,12 @@ from .jitter import GaussianJitter
 from .detector_layers import (
     PixelAnisotropy,
     ApplySensitivities,
-    DarkCurrent,
-    IPC,
-    Amplifier,
+    # DarkCurrent,
+    # IPC,
+    # Amplifier,
     Rotate,
-    model_ramp,
-    Ramp,
+    # model_ramp,
+    # Ramp,
 )
 
 
@@ -68,35 +68,4 @@ class LinearDetectorModel(LayeredDetector):
 
         layers.append(("sensitivity", ApplySensitivities(FF, SRF)))
 
-        self.layers = dlu.list2dictionary(layers, ordered=True)
-
-
-class SimpleRamp(dl.detectors.BaseDetector):
-
-    def apply(self, psf, flux, exposure, oversample):
-        image = psf.data * flux
-        ramp = model_ramp(dlu.downsample(image, oversample, mean=False), exposure.ngroups)
-        return Ramp(ramp, psf.pixel_scale)
-
-    def model(self, psf):
-        raise NotImplementedError
-
-
-class ReadModel(LayeredDetector):
-
-    def __init__(
-        self,
-        dark_current=0.0,
-        ipc=True,
-        one_on_fs=None,
-    ):
-        layers = []
-        layers.append(("read", DarkCurrent(dark_current)))
-        if ipc:
-            file_path = pkg.resource_filename(__name__, "data/SUB80_ipc.npy")
-            ipc = np.load(file_path)
-        else:
-            ipc = np.array([[1.0]])
-        layers.append(("IPC", IPC(ipc)))
-        layers.append(("amplifier", Amplifier(one_on_fs)))
         self.layers = dlu.list2dictionary(layers, ordered=True)

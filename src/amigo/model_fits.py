@@ -10,11 +10,6 @@ from amigo.interferometry import apply_vis
 
 
 class ModelFit(zdx.Base):
-    calibrator: bool
-    key: str = eqx.field(static=True)
-
-    def __init__(self, calibrator=True):
-        self.calibrator = bool(calibrator)
 
     @abstractmethod
     def __call__(self, model, exposure):
@@ -63,7 +58,7 @@ class ModelFit(zdx.Base):
             coefficients = model.aberrations[self.map_param(exposure, "aberrations")]
 
             # Stop gradient for science targets
-            if not self.calibrator:
+            if exposure.calibrator:
                 coefficients = lax.stop_gradient(coefficients)
             optics = optics.set("pupil_mask.abb_coeffs", model.coefficients)
 
@@ -71,7 +66,7 @@ class ModelFit(zdx.Base):
             coefficients = model.aberrations[self.map_param(exposure, "reflectivity")]
 
             # Stop gradient for science targets
-            if not self.calibrator:
+            if exposure.calibrator:
                 coefficients = lax.stop_gradient(coefficients)
             optics = optics.set("pupil_mask.amp_coeffs", model.coefficients)
         return optics
@@ -193,7 +188,7 @@ class BinaryFit(ModelFit):
         # Update the weights for each binary component
         contrast = 10 ** model.contrasts[self.map_param(exposure, "contrasts")]
         flux_weights = np.array([contrast * 1, 1]) / (1 + contrast)
-        weights = flux_weights[:, None] * weights[None, :] / 2  # 2 div to to stay unitary
+        weights = flux_weights[:, None] * weights[None, :]
 
         # Get the binary positions
         position = dlu.arcsec2rad(model.positions[exposure.key])
@@ -203,7 +198,7 @@ class BinaryFit(ModelFit):
         positions = np.array([position + sep_vec, position - sep_vec])
         positions = vmap(dlu.arcsec2rad)(positions)
 
-        # Model the optics
+        # Model the optics - unit weights to apply each flux
         optics = self.update_optics(model, exposure)
         prop_fn = lambda pos: optics.propagate(wavels, pos, return_wf=True)
         wfs = eqx.filter_jit(eqx.filter_vmap(prop_fn))(positions)

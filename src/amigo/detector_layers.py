@@ -3,9 +3,6 @@ import jax.numpy as np
 import dLux as dl
 import dLuxWebbpsf as dlw
 import dLux.utils as dlu
-from jax import vmap
-from jax.scipy.signal import convolve
-from jax import Array
 from dLuxWebbpsf.utils.interpolation import _map_coordinates
 
 
@@ -21,40 +18,11 @@ def pix2arr(coords, pscale=1):
     return (coords / pscale) + shift
 
 
-# Amplifier/ramp modelling
-def model_amplifier(coeffs, axis=0):
-    """
-    Models the amplifier noise as a polynomial along one axis of the detector.
-    Assumes Detector is square and coeffs has shape (npix, order + 1).
-    """
-
-    def read_fn(coeffs):
-        # Evaluation function
-        xs = np.linspace(-1, 1, coeffs.shape[0])
-        eval_fn = lambda coeffs: np.polyval(coeffs, xs)
-
-        # Vectorise over each column
-        vals = vmap(eval_fn, 0)(coeffs)
-
-        if axis == 0:
-            return np.rot90(vals)
-        return vals
-
-    # vmap over each group
-    return vmap(read_fn)(coeffs)
-
-
-def model_ramp(psf, ngroups):
-    """Applies an 'up the ramp' model of the input 'optical' PSF. Input PSF.data
-    should have shape (npix, npix) and return shape (ngroups, npix, npix)"""
-    lin_ramp = (np.arange(ngroups) + 1) / ngroups
-    return psf[None, ...] * lin_ramp[..., None, None]
-
-
-def model_dark_current(dark_current, ngroups):
-    """Models the dark current as a constant background value added cumulatively to
-    each group. For now we assume that the dark current is a float."""
-    return (dark_current * (np.arange(ngroups) + 1))[..., None, None]
+# def model_ramp(psf, ngroups):
+#     """Applies an 'up the ramp' model of the input 'optical' PSF. Input PSF.data
+#     should have shape (npix, npix) and return shape (ngroups, npix, npix)"""
+#     lin_ramp = (np.arange(ngroups) + 1) / ngroups
+#     return psf[None, ...] * lin_ramp[..., None, None]
 
 
 class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
@@ -117,55 +85,12 @@ class PixelAnisotropy(dl.layers.detector_layers.DetectorLayer):
         return PSF.set("data", interp_fn(PSF.data))
 
 
-class Ramp(dl.PSF):
-    pass
+# class Ramp(dl.PSF):
+#     pass
 
 
-class DownsampleRamp(dl.detector_layers.Downsample):
+# class DownsampleRamp(dl.detector_layers.Downsample):
 
-    def apply(self, ramp):
-        dsample_fn = lambda x: dlu.downsample(x, self.kernel_size, mean=False)
-        return ramp.set("data", vmap(dsample_fn)(ramp))
-
-
-class EmptyLayer(dl.detector_layers.Downsample):
-
-    def apply(self, ramp):
-        return ramp
-
-
-class IPC(dl.detector_layers.DetectorLayer):
-    ipc: Array
-
-    def __init__(self, ipc):
-        self.ipc = np.array(ipc, float)
-
-    def apply(self, ramp):
-        conv_fn = lambda x: convolve(x, self.ipc, mode="same")
-        return ramp.set("data", vmap(conv_fn)(ramp.data))
-
-
-class Amplifier(dl.detector_layers.DetectorLayer):
-    one_on_fs: Array
-
-    def __init__(self, one_on_fs=None):
-        if one_on_fs is not None:
-            self.one_on_fs = np.array(one_on_fs, float)
-        else:
-            self.one_on_fs = None
-
-    def apply(self, ramp):
-        if self.one_on_fs is not None:
-            return ramp.add("data", model_amplifier(self.one_on_fs))
-        return ramp
-
-
-class DarkCurrent(dl.detector_layers.DetectorLayer):
-    dark_current: Array
-
-    def __init__(self, dark_current):
-        self.dark_current = np.array(dark_current, float)
-
-    def apply(self, ramp):
-        dark_current = model_dark_current(self.dark_current, len(ramp.data))
-        return ramp.add("data", dark_current)
+#     def apply(self, ramp):
+#         dsample_fn = lambda x: dlu.downsample(x, self.kernel_size, mean=False)
+#         return ramp.set("data", vmap(dsample_fn)(ramp))
