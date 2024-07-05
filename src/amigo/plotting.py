@@ -88,12 +88,12 @@ def summarise_fit(
 
             plt.figure(figsize=(15, 4))
             plt.subplot(1, 3, 1)
-            plt.title(f"Data $^{str(pow)}$")
+            plt.title(f"Data $^{{{str(pow)}}}$")
             plt.imshow(effective_data, cmap=inferno, norm=norm)
             plt.colorbar()
 
             plt.subplot(1, 3, 2)
-            plt.title(f"Effective PSF $^{str(pow)}$")
+            plt.title(f"Effective PSF $^{{{str(pow)}}}$")
             plt.imshow(effective_psf, cmap=inferno, norm=norm)
             plt.colorbar()
 
@@ -146,10 +146,11 @@ def summarise_fit(
         FF = dlu.resize(model.detector.sensitivity.FF, 80)
         nan_mask = np.where(np.isnan(data.mean(0)))
         FF = FF.at[nan_mask].set(np.nan)
+        v = np.max(np.abs(FF - 1))
 
         plt.subplot(1, 3, 2)
         plt.title("Flat Field")
-        plt.imshow(FF, vmin=0, vmax=2, cmap=seismic)
+        plt.imshow(FF, vmin=1 - v, vmax=1 + v, cmap=seismic)
         plt.colorbar()
 
         plt.subplot(1, 3, 3)

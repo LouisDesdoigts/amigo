@@ -38,7 +38,7 @@ class PolyNonLin(dl.detectors.BaseDetector):
     oversample: int = eqx.field(static=True)
 
     def __init__(self, ksize=3, oversample=4, orders=[1, 2], basis_length=4):
-        self.ksize = int(3)
+        self.ksize = int(ksize)
         self.oversample = int(oversample)
         self.orders = orders
 

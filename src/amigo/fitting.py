@@ -36,8 +36,6 @@ def zero_nan_check(grads):
 
 
 def set_array(pytree, parameters):
-    # WARNING: Presently statically set to 64bit
-    # Enforce everything to be a float (of the same precision)
     dtype = np.float64 if config.x64_enabled else np.float32
     floats, other = eqx.partition(pytree, eqx.is_inexact_array_like)
     floats = jtu.tree_map(lambda x: np.array(x, dtype=dtype), floats)

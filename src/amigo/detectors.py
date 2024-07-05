@@ -88,7 +88,7 @@ class ReadModel(LayeredDetector):
         self,
         dark_current=0.0,
         ipc=True,
-        one_on_fs=np.zeros((2, 80, 2)),
+        one_on_fs=None,
     ):
         layers = []
         layers.append(("read", DarkCurrent(dark_current)))

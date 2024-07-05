@@ -63,6 +63,10 @@ def key_mapper(model, exposure, param):
     # Check for local param
     leaf = model.get(param)
     if isinstance(leaf, dict):
+        if exposure.flux_key in leaf.keys():
+            return f"{param}.{exposure.flux_key}"
+        if exposure.abb_key in leaf.keys():
+            return f"{param}.{exposure.abb_key}"
         if exposure.key in leaf.keys():
             return f"{param}.{exposure.key}"
 
@@ -95,7 +99,7 @@ def calc_fishers(
             looper.set_description(param)
 
             # Ensure the path to save to exists
-            save_path = f"{cache}/{exp.key}/"
+            save_path = f"{cache}/{exp.filename}/"
             if not os.path.exists(save_path):
                 os.makedirs(save_path)
 

@@ -148,11 +148,16 @@ class IPC(dl.detector_layers.DetectorLayer):
 class Amplifier(dl.detector_layers.DetectorLayer):
     one_on_fs: Array
 
-    def __init__(self, one_on_fs):
-        self.one_on_fs = np.array(one_on_fs, float)
+    def __init__(self, one_on_fs=None):
+        if one_on_fs is not None:
+            self.one_on_fs = np.array(one_on_fs, float)
+        else:
+            self.one_on_fs = None
 
     def apply(self, ramp):
-        return ramp.add("data", model_amplifier(self.one_on_fs))
+        if self.one_on_fs is not None:
+            return ramp.add("data", model_amplifier(self.one_on_fs))
+        return ramp
 
 
 class DarkCurrent(dl.detector_layers.DetectorLayer):

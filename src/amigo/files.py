@@ -143,44 +143,43 @@ def find_position(psf, pixel_scale=0.065524085):
 def initialise_params(
     exposures,
     optics,
-    pre_calc_FDA=False,
+    # pre_calc_FDA=False,
     amp_order=1,
     fit_one_on_fs=True,
-    fit_coherence=False,
+    fit_reflectivity=True,
 ):
     positions = {}
     fluxes = {}
     aberrations = {}
     one_on_fs = {}
     aberrations = {}
-    coherence = {}
+    reflectivity = {}
     for exp in exposures:
 
         im = exp.data[0]
         psf = np.where(np.isnan(im), 0.0, im)
         flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.data[0]))
         position = find_position(psf, optics.psf_pixel_scale)
-        n_fda = optics.pupil.coefficients.shape[1]
 
-        if pre_calc_FDA:
-            file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
-            coeffs = np.load(file_path)[:, :n_fda]
-        else:
-            coeffs = np.zeros((7, n_fda))
+        # if pre_calc_FDA:
+        #     file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
+        #     coeffs = np.load(file_path)[:, :n_fda]
+        # else:
+        #     coeffs = np.zeros((7, n_fda))
 
         positions[exp.key] = position
-        aberrations[exp.key] = coeffs
-        fluxes[exp.key] = flux
+        aberrations[exp.abb_key] = np.zeros_like(optics.pupil_mask.abb_coeffs)
+        reflectivity[exp.amp_key] = np.zeros_like(optics.pupil_mask.amp_coeffs)
+        fluxes[exp.flux_key] = flux
         one_on_fs[exp.key] = np.zeros((exp.ngroups, 80, amp_order + 1))
-        coherence[exp.key] = np.zeros_like(optics.reflectivity)
 
     params = {"positions": positions, "fluxes": fluxes, "aberrations": aberrations}
 
     if fit_one_on_fs:
         params["one_on_fs"] = one_on_fs
 
-    if fit_coherence:
-        params["coherence"] = coherence
+    if fit_reflectivity:
+        params["reflectivity"] = reflectivity
 
     return params
 
@@ -336,19 +335,33 @@ def get_phases(exposures, radial_orders=None, noll_indices=None, dc=False):
     return phases
 
 
-def get_exposures(files, ms_thresh=None, as_psf=False, key_fn=None, exp_type="point"):
-    from amigo.core import ExposureModel
+def get_exposures(files, ms_thresh=None, as_psf=False, key_fn=None):  # , exp_type="point"):
+    # from amigo.core import ExposureModel
+    from amigo.core import Exposure  # I think I can import this at the start now
 
     opds = get_wss_ops(files)
     exposures = []
     for file, opd in zip(files, opds):
         data, variance, support = prep_data(file, ms_thresh=ms_thresh, as_psf=as_psf)
         if key_fn is None:
-            key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:4])
+
+            key_fn = lambda file: "_".join(
+                [
+                    file[0].header[k]
+                    for k in [
+                        "PROGRAM",
+                        "OBSERVTN",
+                        "ACT_ID",
+                        "EXPOSURE",
+                    ]
+                ]
+            )
+            # key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:4])
         data = np.asarray(data, float)
         variance = np.asarray(variance, float)
         support = np.asarray(support, int)
-        exposures.append(ExposureModel(file, data, variance, support, opd, key_fn, exp_type))
+        # exposures.append(ExposureModel(file, data, variance, support, opd, key_fn, exp_type))
+        exposures.append(Exposure(file, data, variance, support, opd, key_fn))
     return exposures
 
 

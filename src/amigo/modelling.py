@@ -2,6 +2,7 @@ import pkg_resources as pkg
 import jax.numpy as np
 import dLux as dl
 import equinox as eqx
+import zodiax as zdx
 import dLux.utils as dlu
 from jax import vmap
 
@@ -55,13 +56,25 @@ def model_exposure(model, exposure, to_BFE=False, slopes=False):
     weights = filt_weights * planck(wavels, model.Teffs[exposure.star])
     weights = weights / weights.sum()
 
-    optics = model.optics.set(
-        ["pupil.coefficients", "pupil.opd"], [model.aberrations[exposure.key], exposure.opd]
-    )
+    # optics = model.optics.set(
+    #     ["pupil.coefficients", "pupil.opd"], [model.aberrations[exposure.abb_key], exposure.opd]
+    # )
 
-    if "coherence" in model.params.keys():
-        coherence = model.coherence[exposure.key]
-        optics = optics.set("holes.reflectivity", coherence)
+    # optics = model.optics.set(
+    #     ["pupil_mask.abb_coeffs", "pupil.opd"],
+    #     [model.aberrations[exposure.abb_key], exposure.opd],
+    # )
+
+    optics = model.optics.set("pupil_mask.abb_coeffs", model.aberrations[exposure.abb_key])
+
+    # print(optics.pupil_mask.abb_coeffs)
+
+    if "reflectivity" in model.params.keys():
+        optics = optics.set(["pupil_mask.amp_coeffs"], [model.reflectivity[exposure.amp_key]])
+
+    # if "coherence" in model.params.keys():
+    #     coherence = model.coherence[exposure.key]
+    #     optics = optics.set("holes.reflectivity", coherence)
 
     if exposure.type == "binary":
         # Convert binary parameters to positions parameters
@@ -121,13 +134,49 @@ def model_exposure(model, exposure, to_BFE=False, slopes=False):
             secondary_psfs = flux_weights[1] * wfs.psf
             psfs = primary_psfs + secondary_psfs
 
+        elif hasattr(model, "is_polarised") and model.is_polarised:
+
+            polarisation_keys = [
+                "pupil.coefficients",
+                "coherence.reflectivity",
+                "pupil_mask.holes",
+                "pupil_mask.f2f",
+                "pupil_mask.transformation",
+            ]
+
+            # Partition the optics - assumed the model is already partition-vectorised
+            filter_spec = zdx.boolean_filter(optics, polarisation_keys)
+            polarised, unpolarised = eqx.partition(optics, filter_spec)
+
+            # Ensemble
+            @eqx.filter_jit
+            @eqx.filter_vmap(in_axes=(0, None))
+            def eval_polarised(polar_optics, null_optics):
+                optics = eqx.combine(polar_optics, null_optics)
+                wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
+                return wfs
+
+            wfs = eval_polarised(polarised, unpolarised)
+
+            from jax.nn import sigmoid
+
+            contrast = sigmoid(model.contrasts[exposure.filter])
+            contrasts = np.array([contrast, 1 - contrast])[:, None, None, None]
+            psfs = (contrasts * wfs.psf).sum(0)
+            pixel_scale = wfs.pixel_scale.mean((0, 1))
+
         else:
             wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
+            pixel_scale = wfs.pixel_scale.mean(0)
             psfs = wfs.psf
+
+        # Deal with potential unit issues from cartesian optical system required for fresnel
+        if wfs.units == "Cartesian":
+            pixel_scale /= optics.focal_length
 
         # Convolutions done here
         # psfs = wfs.psf
-        pixel_scale = wfs.pixel_scale.mean(0)
+        # pixel_scale = wfs.pixel_scale.mean(0)
         if model.visibilities is not None:
             vis_key = "_".join([exposure.star, exposure.filter])
             amplitudes = model.amplitudes[vis_key]
@@ -138,12 +187,11 @@ def model_exposure(model, exposure, to_BFE=False, slopes=False):
             psf = psfs.sum(0)
 
     # PSF is still unitary here
-    # TODO: Jit this sub-function for improved compile times
     # psf = model.detector.apply(dl.PSF(psf, wfs.pixel_scale.mean(0)))
     psf = eqx.filter_jit(model.detector.apply)(dl.PSF(psf, pixel_scale))
 
     # Get the hyper-parameters for the non-linear model
-    flux = 10 ** model.fluxes[exposure.key]
+    flux = 10 ** model.fluxes[exposure.flux_key]
     oversample = optics.oversample
 
     # Return the BFE and required meta-data
@@ -160,8 +208,8 @@ def model_exposure(model, exposure, to_BFE=False, slopes=False):
 
     # Model the read effects
     if "one_on_fs" in model.params.keys():
-        one_on_fs = model.one_on_fs[exposure.key]
-        ramp = model.read.set("one_on_fs", one_on_fs).apply(ramp)
+        model = model.set("read.one_on_fs", model.one_on_fs[exposure.key])
+    ramp = model.read.apply(ramp)
 
     # Return the slopes if required
     if slopes:

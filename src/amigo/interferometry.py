@@ -287,3 +287,27 @@ def uv_model(vis, psfs, hexikes, cplx=False, pad=2):
 
 def applied_splodges(masks, vis):
     return vmap(splodge_mask, (0, None))(masks, vis)
+
+
+def apply_vis(vis, psf, basis, weights, inv_support):
+    # normalise the basis - Do we need to do this?
+    # What does this achieve?? - Test commenting this out
+    # basis = dlu.nandiv(basis, weights, 0.0)
+
+    # # Get npix out
+    npix = psf.shape[-1]
+
+    # zero padding to correct size
+    # TODO: should this just be vmapped along a specific axis?
+    shape_out = (*basis.shape[:2], npix, npix)
+    pad_fn = lambda arr: dlu.resize(arr, npix)
+    basis = vmap(pad_fn)(basis.reshape(-1, *basis.shape[2:])).reshape(shape_out)
+    # basis = basis.reshape(*basis.shape[:2], *basis.shape[1:])  # reshaping back
+    # basis = basis  # reshaping back
+
+    # padding inverse support mask with ones
+    total_padding = (npix - inv_support.shape[0]) // 2
+    inv_support = np.pad(inv_support, total_padding, constant_values=1.0)
+
+    # We dont use np.where here because we have soft edges on the boundary of the mask
+    return from_uv(to_uv(psf) * (splodge_mask(basis, vis) + inv_support))
