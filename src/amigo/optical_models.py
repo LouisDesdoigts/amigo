@@ -3,7 +3,7 @@ import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
 from jax import Array
-from .ami_mask import DynamicAMIStaticAbb
+from .mask_models import DynamicAMIStaticAbb
 
 
 class AMIOptics(dl.optical_systems.AngularOpticalSystem):
