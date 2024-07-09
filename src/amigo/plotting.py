@@ -44,8 +44,7 @@ def summarise_fit(
     seismic = colormaps["seismic"]
 
     # slopes = model_fn(model, exposure)
-    # slopes = model.model(exposure, slopes=True)
-    slopes = model.model(exposure)
+    slopes = model.model(exposure)  # , slopes=True)
     data = exposure.slopes
 
     residual = data - slopes
@@ -147,7 +146,7 @@ def summarise_fit(
         FF = dlu.resize(model.detector.sensitivity.FF, 80)
         nan_mask = np.where(np.isnan(data.mean(0)))
         FF = FF.at[nan_mask].set(np.nan)
-        v = np.max(np.abs(FF - 1))
+        v = np.nanmax(np.abs(FF - 1))
 
         plt.subplot(1, 3, 2)
         plt.title("Flat Field")
@@ -158,6 +157,76 @@ def summarise_fit(
         plt.title("Flat Field Histogram")
         plt.hist(FF.flatten(), bins=100)
         # plt.xlim(0, 2)
+        plt.show()
+
+    if full_bias:
+        coeffs = model.one_on_fs[exposure.get_key("one_on_fs")]
+        nan_mask = 1 + (np.nan * np.isnan(data.sum(0)))
+        bias = nan_mask * model.biases[exposure.get_key("bias")]
+
+        plt.figure(figsize=(15, 4))
+        plt.subplot(1, 2, 1)
+        plt.title("Pixel Bias")
+        plt.imshow(bias, cmap=inferno)
+        plt.colorbar()
+
+        plt.subplot(2, 4, (3, 4))
+        plt.title("1/f Gradient")
+        plt.imshow(coeffs[..., 0])
+        plt.colorbar()
+        plt.xlabel("x-pixel")
+        plt.ylabel("Group")
+
+        plt.subplot(2, 4, (7, 8))
+        plt.title("1/f Bias")
+        plt.imshow(coeffs[..., 1])
+        plt.colorbar()
+        plt.xlabel("x-pixel")
+        plt.ylabel("Group")
+
+        plt.tight_layout()
+        plt.show()
+
+    if aberrations:
+        # Get the AMI mask and applied mask
+        pupil_mask = model.optics.pupil_mask
+        pupil_mask = pupil_mask.set(
+            "abb_coeffs", model.aberrations[exposure.get_key("aberrations")]
+        )
+        pupil_mask = pupil_mask.set(
+            "amp_coeffs", model.reflectivity[exposure.get_key("reflectivity")]
+        )
+
+        optics = model.optics
+        mask, amp, abb = pupil_mask.calculate(optics.wf_npixels, optics.diameter)
+        amp_in = np.where(mask < 1.0, np.nan, mask * amp)
+        abb_in = np.where(mask < 1.0, np.nan, 1e9 * abb)
+
+        # # Get the applied opds in nm and flip to match the mask
+        static_opd = np.flipud(exposure.opd) * 1e9
+        total_opd = np.where(mask < 1.0, np.nan, static_opd + abb_in)
+
+        plt.figure(figsize=(15, 4))
+
+        v = np.nanmax(amp_in - 1)
+        plt.subplot(1, 3, 1)
+        plt.title("Applied mask")
+        plt.imshow(amp_in, cmap=inferno)
+        plt.colorbar(label="Transmission")
+
+        v = np.nanmax(np.abs(abb_in))
+        plt.subplot(1, 3, 2)
+        plt.title("Applied OPD")
+        plt.imshow(abb_in, cmap=seismic, vmin=-v, vmax=v)
+        plt.colorbar(label="OPD (nm)")
+
+        v = np.nanmax(np.abs(total_opd))
+        plt.subplot(1, 3, 3)
+        plt.title("Total OPD")
+        plt.imshow(total_opd, cmap=seismic, vmin=-v, vmax=v)
+        plt.colorbar(label="OPD (nm)")
+
+        plt.tight_layout()
         plt.show()
 
     if up_the_ramp:
@@ -192,71 +261,6 @@ def summarise_fit(
             v = np.nanmax(np.abs(norm_res_slope[i]))
             plt.imshow(norm_res_slope[i], cmap=seismic, vmin=-v, vmax=v)
             plt.colorbar()
-        plt.show()
-
-    if full_bias:
-        coeffs = model.one_on_fs[exposure.get_key("one_on_fs")]
-        nan_mask = 1 + (np.nan * np.isnan(data.sum(0)))
-        bias = nan_mask * model.biases[exposure.get_key("bias")]
-
-        plt.figure(figsize=(15, 4))
-        plt.subplot(1, 2, 1)
-        plt.title("Pixel Bias")
-        plt.imshow(bias, cmap=inferno)
-        plt.colorbar()
-
-        plt.subplot(2, 4, (3, 4))
-        plt.title("1/f Gradient")
-        plt.imshow(coeffs[..., 0])
-        plt.colorbar()
-        plt.xlabel("x-pixel")
-        plt.ylabel("Group")
-
-        plt.subplot(2, 4, (7, 8))
-        plt.title("1/f Bias")
-        plt.imshow(coeffs[..., 1])
-        plt.colorbar()
-        plt.xlabel("x-pixel")
-        plt.ylabel("Group")
-
-        plt.tight_layout()
-        plt.show()
-
-    if aberrations:
-        # Get the AMI mask and applied mask
-        optics = model.optics.set(
-            "coefficients", model.aberrations[exposure.get_key("aberrations")]
-        )
-        applied_mask = optics.pupil_mask.gen_AMI(optics.wf_npixels, optics.diameter)
-
-        # Get the applied opds in nm and flip to match the mask
-        static_opd = np.flipud(exposure.opd) * 1e9
-        added_opd = np.flipud(optics.basis_opd) * 1e9
-        static_opd = static_opd.at[np.where(~(applied_mask > 1e-6))].set(np.nan)
-        added_opd = added_opd.at[np.where(~(applied_mask > 1e-6))].set(np.nan)
-        mirror_opd = static_opd + added_opd
-
-        plt.figure(figsize=(15, 4))
-
-        v = np.nanmax(np.abs(static_opd))
-        plt.subplot(1, 3, 1)
-        plt.title("Static OPD")
-        plt.imshow(static_opd, cmap=seismic, vmin=-v, vmax=v)
-        plt.colorbar()
-
-        v = np.nanmax(np.abs(added_opd))
-        plt.subplot(1, 3, 2)
-        plt.title("Added OPD")
-        plt.imshow(added_opd, cmap=seismic, vmin=-v, vmax=v)
-        plt.colorbar()
-
-        v = np.nanmax(np.abs(mirror_opd))
-        plt.subplot(1, 3, 3)
-        plt.title("Total OPD")
-        plt.imshow(mirror_opd, cmap=seismic, vmin=-v, vmax=v)
-        plt.colorbar()
-
-        plt.tight_layout()
         plt.show()
 
 

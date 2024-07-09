@@ -60,7 +60,6 @@ def get_optimiser(pytree, optimisers, parameters=None):
 
 
 def calc_lrs(model, exposures, fishers, params=None, order=1):
-
     # Get the parameters from the fishers
     if params is None:
         params = []
@@ -81,34 +80,32 @@ def calc_lrs(model, exposures, fishers, params=None, order=1):
         bool_model = bool_model.set(param, true_leaf)
 
     # Make an empty fisher model
+    # Flag and deal with large arrays
+    grad_model = eqx.filter(model, bool_model)
+    is_large = jtu.tree_map(lambda x: x.size > 1e4, grad_model)
+    bool_model = jtu.tree_map(lambda x, y: x and not y, bool_model, is_large)
     grad_model = eqx.filter(model, bool_model)
     fisher_model = jtu.tree_map(lambda x: np.zeros((x.size, x.size)), grad_model)
+    large_grad_model = eqx.filter(model, is_large)
+    large_lr_model = jtu.tree_map(lambda x: np.ones(x.shape), large_grad_model)
 
     # Loop over exposures
     for exp in exposures:
 
         # Loop over parameters
         for param in params:
-            leaf = model.get(param)
 
             # Check if the parameter is in the fisher
             if param not in fishers[exp.key].keys():
                 continue
 
-            if param == "dispersion":
-                leaf_param = f"{param}.{exp.filter}"
-                fisher_model = fisher_model.add(leaf_param, fishers[exp.key][param])
-
-            # Handle dict case
-            elif isinstance(leaf, dict):
-                leaf_param = f"{param}.{exp.key}"
-                fisher_model = fisher_model.add(leaf_param, fishers[exp.key][param])
-            else:
-                fisher_model = fisher_model.add(param, fishers[exp.key][param])
+            param_path = exp.map_param(param)
+            fisher_model = fisher_model.add(param_path, fishers[exp.key][param])
 
     # Convert fisher to lr model
     inv_fn = lambda fmat, leaf: dlu.nandiv(-1, np.diag(fmat), 1).reshape(leaf.shape)
     lr_model = jtu.tree_map(inv_fn, fisher_model, model)
+    lr_model = eqx.combine(lr_model, large_lr_model)
     return lr_model
 
 
@@ -149,8 +146,9 @@ def optimise(
     model = set_array(model, opt_params)
 
     # Get the LR normalisation from the fisher matrices
+    # print("calcing lrs")
     lr_model = calc_lrs(model, exposures, fishers, params=opt_params)
-
+    # print("done")
     # Get the parameter classes and the optimisers
     reg_params = [p for p in opt_params if p not in batch_params]
     batch_params = [p for p in batch_params if p in opt_params]
@@ -182,7 +180,9 @@ def optimise(
 
         # Optionally print the final gradients
         if print_grads:
-            jax.debug.print("{x}", x=jtu.tree_leaves(grads))
+            for param in opt_params:
+                print(param)
+                jax.debug.print("{x}", x=jtu.tree_leaves(grads.get(param)))
         return loss, grads
 
     # Create model history
