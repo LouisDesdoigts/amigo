@@ -12,6 +12,8 @@ from tqdm.notebook import tqdm
 from xara.core import determine_origin
 import jax.tree_util as jtu
 
+# from .core_models import Exposure
+
 
 def summarise_files(files, extra_keys=[]):
     main_keys = []
@@ -157,9 +159,9 @@ def initialise_params(
     reflectivity = {}
     for exp in exposures:
 
-        im = exp.data[0]
+        im = exp.slopes[0]
         psf = np.where(np.isnan(im), 0.0, im)
-        flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.data[0]))
+        flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.slopes[0]))
         position = find_position(psf, optics.psf_pixel_scale)
 
         # if pre_calc_FDA:
@@ -168,11 +170,24 @@ def initialise_params(
         # else:
         #     coeffs = np.zeros((7, n_fda))
 
-        positions[exp.key] = position
-        aberrations[exp.abb_key] = np.zeros_like(optics.pupil_mask.abb_coeffs)
-        reflectivity[exp.amp_key] = np.zeros_like(optics.pupil_mask.amp_coeffs)
-        fluxes[exp.flux_key] = flux
-        one_on_fs[exp.key] = np.zeros((exp.ngroups, 80, amp_order + 1))
+        pos_key = exp.fit.get_key(exp, "positions")
+        positions[pos_key] = position
+
+        #
+        abb_key = exp.fit.get_key(exp, "aberrations")
+        aberrations[abb_key] = np.zeros_like(optics.pupil_mask.abb_coeffs)
+
+        #
+        amp_key = exp.fit.get_key(exp, "reflectivity")
+        reflectivity[amp_key] = np.zeros_like(optics.pupil_mask.amp_coeffs)
+
+        #
+        flux_key = exp.fit.get_key(exp, "fluxes")
+        fluxes[flux_key] = flux
+
+        #
+        one_on_fs_key = exp.fit.get_key(exp, "one_on_fs")
+        one_on_fs[one_on_fs_key] = np.zeros((exp.ngroups, 80, amp_order + 1))
 
     params = {"positions": positions, "fluxes": fluxes, "aberrations": aberrations}
 
@@ -220,7 +235,7 @@ def calc_throughput(filt, nwavels=9):
     weights = areas / areas.sum()
 
     wavels *= 1e-10
-    return np.np.array([wavels, weights])
+    return np.array([wavels, weights])
 
 
 def prep_data(file, ms_thresh=None, as_psf=False):
@@ -342,33 +357,35 @@ def get_phases(exposures, radial_orders=None, noll_indices=None, dc=False):
     return phases
 
 
-def get_exposures(files, ms_thresh=None, as_psf=False, key_fn=None):  # , exp_type="point"):
+def get_exposures(
+    files, fit, ms_thresh=None, as_psf=False
+):  # , key_fn=None):  # , exp_type="point"):
     # from amigo.core import ExposureModel
-    from amigo.core import Exposure  # I think I can import this at the start now
+    from amigo.core_models import Exposure  # I think I can import this at the start now
 
     opds = get_wss_ops(files)
     exposures = []
     for file, opd in zip(files, opds):
         data, variance, support = prep_data(file, ms_thresh=ms_thresh, as_psf=as_psf)
-        if key_fn is None:
+        # if key_fn is None:
 
-            key_fn = lambda file: "_".join(
-                [
-                    file[0].header[k]
-                    for k in [
-                        "PROGRAM",
-                        "OBSERVTN",
-                        "ACT_ID",
-                        "EXPOSURE",
-                    ]
-                ]
-            )
-            # key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:4])
+        #     key_fn = lambda file: "_".join(
+        #         [
+        #             file[0].header[k]
+        #             for k in [
+        #                 "PROGRAM",
+        #                 "OBSERVTN",
+        #                 "ACT_ID",
+        #                 "EXPOSURE",
+        #             ]
+        #         ]
+        #     )
+        # key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:4])
         data = np.asarray(data, float)
         variance = np.asarray(variance, float)
         support = np.asarray(support, int)
         # exposures.append(ExposureModel(file, data, variance, support, opd, key_fn, exp_type))
-        exposures.append(Exposure(file, data, variance, support, opd, key_fn))
+        exposures.append(Exposure(file, data, variance, support, opd, fit))  # key_fn, fit))
     return exposures
 
 

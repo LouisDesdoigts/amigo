@@ -226,14 +226,14 @@ def variance_model(model, exposure, true_read_noise=False, read_noise=10):
     the variance of the individual pixel values, but we will look at this later.
     """
 
-    nan_mask = np.isnan(exposure.data)
+    nan_mask = np.isnan(exposure.slopes)
 
     # Estimate the photon covariance
     # psf = model_fn(model, exposure)
-    psf = model.model(exposure, slopes=True)
+    slopes = model.model(exposure)  # , slopes=True)
 
-    psf = psf.at[np.where(nan_mask)].set(np.nan)
-    variance = psf / exposure.nints
+    slopes = slopes.at[np.where(nan_mask)].set(np.nan)
+    variance = slopes / exposure.nints
 
     # Read noise covariance
     if true_read_noise:
@@ -243,4 +243,4 @@ def variance_model(model, exposure, true_read_noise=False, read_noise=10):
     read_variance = (rn**2) * np.ones((80, 80)) / exposure.nints
     variance += read_variance[None, ...]
 
-    return psf, variance
+    return slopes, variance

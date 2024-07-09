@@ -44,8 +44,9 @@ def summarise_fit(
     seismic = colormaps["seismic"]
 
     # slopes = model_fn(model, exposure)
-    slopes = model.model(exposure, slopes=True)
-    data = exposure.data
+    # slopes = model.model(exposure, slopes=True)
+    slopes = model.model(exposure)
+    data = exposure.slopes
 
     residual = data - slopes
     # loglike_im = exposure.loglike_im(slope)
@@ -194,9 +195,9 @@ def summarise_fit(
         plt.show()
 
     if full_bias:
-        coeffs = model.one_on_fs[exposure.key]
+        coeffs = model.one_on_fs[exposure.get_key("one_on_fs")]
         nan_mask = 1 + (np.nan * np.isnan(data.sum(0)))
-        bias = nan_mask * model.biases[exposure.key]
+        bias = nan_mask * model.biases[exposure.get_key("bias")]
 
         plt.figure(figsize=(15, 4))
         plt.subplot(1, 2, 1)
@@ -223,7 +224,9 @@ def summarise_fit(
 
     if aberrations:
         # Get the AMI mask and applied mask
-        optics = model.optics.set("coefficients", model.aberrations[exposure.key])
+        optics = model.optics.set(
+            "coefficients", model.aberrations[exposure.get_key("aberrations")]
+        )
         applied_mask = optics.pupil_mask.gen_AMI(optics.wf_npixels, optics.diameter)
 
         # Get the applied opds in nm and flip to match the mask

@@ -39,7 +39,7 @@ def log_likelihood(slope, exposure, read_noise=0):
 
     # Get the model, data, and variances
     slope_vec = exposure.to_vec(slope)
-    data_vec = exposure.to_vec(exposure.data)
+    data_vec = exposure.to_vec(exposure.slopes)
     var_vec = exposure.to_vec(exposure.variance)
 
     # Get th build we need to deal with the covariance terms
@@ -59,7 +59,7 @@ def prior(*args):
 
 def posterior(model, exposure, per_pix=True, return_im=False):
     # Get the model
-    slopes = model.model(exposure, slopes=True)
+    slopes = model.model(exposure)  # , slopes=True)
     posterior_vec = prior(model, slopes, exposure) + log_likelihood(slopes, exposure)
 
     # return image

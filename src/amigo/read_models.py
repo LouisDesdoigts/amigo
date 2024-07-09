@@ -26,7 +26,7 @@ class IPC(dl.detector_layers.DetectorLayer):
 
 class Amplifier(dl.detector_layers.DetectorLayer):
     one_on_fs: Array
-    axis: int = eqx.field(staic=True)
+    axis: int = eqx.field(static=True)
 
     def __init__(self, one_on_fs=None, axis=1):
         if one_on_fs is not None:
@@ -36,6 +36,9 @@ class Amplifier(dl.detector_layers.DetectorLayer):
         self.axis = int(axis)
 
     def apply(self, ramp):
+
+        if self.one_on_fs is None:
+            return ramp
 
         def read_fn(coeffs):
             xs = np.linspace(-1, 1, coeffs.shape[0])
@@ -56,7 +59,25 @@ class DarkCurrent(dl.detector_layers.DetectorLayer):
         return ramp.add("data", dark_current[..., None, None])
 
 
-class ReadModel(dl.detectors.LayeredDetector):
+class LayeredDetector(dl.detectors.LayeredDetector):
+
+    def __getattr__(self, key: str):
+        if key in self.layers.keys():
+            return self.layers[key]
+        for layer in list(self.layers.values()):
+            if hasattr(layer, key):
+                return getattr(layer, key)
+        raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
+
+    def apply(self, psf):
+        for layer in list(self.layers.values()):
+            if layer is None:
+                continue
+            psf = layer.apply(psf)
+        return psf
+
+
+class ReadModel(LayeredDetector):
 
     def __init__(
         self,

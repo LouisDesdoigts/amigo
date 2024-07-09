@@ -9,8 +9,8 @@ import equinox as eqx
 import dLux.utils as dlu
 from jax import vmap, config
 from datetime import timedelta
-from amigo.core import ModelParams, ModelHistory
-from amigo.stats import batch_loss_fn
+from .core_models import ModelParams, ModelHistory
+from .stats import batch_loss_fn
 from zodiax.experimental import serialise
 
 # import tqdm appropriately

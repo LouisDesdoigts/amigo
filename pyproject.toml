@@ -1,6 +1,6 @@
 [project]
 name = "amigo"
-version = "0.0.4"
+version = "0.0.5"
 description = "A pipeline for interferometric fitting of AMI data from JWST"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"

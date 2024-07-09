@@ -15,21 +15,22 @@ def fisher_fn(model, exposure, params):
 
 
 def self_fisher_fn(model, exposure, params, read_noise=10, true_read_noise=False):
-    psf, variance = variance_model(
+    slopes, variance = variance_model(
         model, exposure, true_read_noise=true_read_noise, read_noise=read_noise
     )
-    exposure = exposure.set(["data", "variance"], [psf, variance])
+    exposure = exposure.set(["slopes", "variance"], [slopes, variance])
     return fisher_fn(model, exposure, params)
 
 
 def calc_fisher(model, exposure, param, file_path, recalculate=False, save=True):
     # Check that the param exists - caught later
     try:
-        leaf = model.get(param)
+        leaf = model.get(exposure.map_param(param))
         if not isinstance(leaf, np.ndarray):
             raise ValueError(f"Leaf at path '{param}' is not an array")
         N = leaf.size
     except ValueError:
+        # Param doesn't exist, return None
         return None
 
     # Check for cached fisher mats
@@ -49,29 +50,29 @@ def calc_fisher(model, exposure, param, file_path, recalculate=False, save=True)
     return fisher
 
 
-def key_mapper(model, exposure, param):
-    """
-    Takes in a model, exposure and param, returns the correct path to the model leaf
-    """
-    # Check for unique cases, like visibilities
-    if param in ["amplitudes", "phases"]:
-        # Visibilities are fit jointly from multiple observations, one per star per filter
-        # vis_key = model.vis_model.get_key(exposure)
-        vis_key = "_".join([exposure.star, exposure.filter])
-        return f"{param}.{vis_key}"
+# def key_mapper(model, exposure, param):
+#     """
+#     Takes in a model, exposure and param, returns the correct path to the model leaf
+#     """
+#     # Check for unique cases, like visibilities
+#     if param in ["amplitudes", "phases"]:
+#         # Visibilities are fit jointly from multiple observations, one per star per filter
+#         # vis_key = model.vis_model.get_key(exposure)
+#         vis_key = "_".join([exposure.star, exposure.filter])
+#         return f"{param}.{vis_key}"
 
-    # Check for local param
-    leaf = model.get(param)
-    if isinstance(leaf, dict):
-        if exposure.flux_key in leaf.keys():
-            return f"{param}.{exposure.flux_key}"
-        if exposure.abb_key in leaf.keys():
-            return f"{param}.{exposure.abb_key}"
-        if exposure.key in leaf.keys():
-            return f"{param}.{exposure.key}"
+#     # Check for local param
+#     leaf = model.get(param)
+#     if isinstance(leaf, dict):
+#         if exposure.flux_key in leaf.keys():
+#             return f"{param}.{exposure.flux_key}"
+#         if exposure.abb_key in leaf.keys():
+#             return f"{param}.{exposure.abb_key}"
+#         if exposure.key in leaf.keys():
+#             return f"{param}.{exposure.key}"
 
-    # Else its global
-    return param
+#     # Else its global
+#     return param
 
 
 def calc_fishers(
@@ -107,7 +108,8 @@ def calc_fishers(
             file_path = os.path.join(save_path, f"{param}.npy")
 
             # Get path correct for parameters
-            param_path = key_mapper(model, exp, param)
+            # param_path = key_mapper(model, exp, param)
+            param_path = exp.map_param(param)
 
             # Allows for custom mapping of parameters
             if param_map_fn is not None:

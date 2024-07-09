@@ -4,9 +4,10 @@ import jax.tree_util as jtu
 import equinox as eqx
 import zodiax as zdx
 from jax.lax import dynamic_slice as lax_slice
-from .optics import AMIOptics
-from .detectors import LinearDetectorModel, ReadModel, SimpleRamp
-from .modelling import model_exposure
+from .optical_models import AMIOptics
+from .detector_models import LinearDetectorModel
+from .ramp_models import SimpleRamp
+from .read_models import ReadModel
 from .files import get_Teffs, get_filters, calc_splodge_masks
 
 
@@ -99,8 +100,9 @@ class AmigoModel(BaseModeller):
         self.visibilities = visibilities
         self.params = params
 
+    # def model(self, exposure, model_fit, **kwargs):
     def model(self, exposure, **kwargs):
-        return model_exposure(self, exposure, **kwargs)
+        return exposure.fit(self, exposure, **kwargs)
 
     def __getattr__(self, key):
         if key in self.params:
@@ -168,7 +170,7 @@ class Exposure(zdx.Base):
     """
 
     # Arrays
-    data: jax.Array
+    slopes: jax.Array
     variance: jax.Array
     zero_point: jax.Array
     support: jax.Array
@@ -176,8 +178,8 @@ class Exposure(zdx.Base):
 
     # Exposure metadata
     nints: int = eqx.field(static=True)
-    ngroups: int = eqx.field(static=True)
-    nslopes: int = eqx.field(static=True)
+    # ngroups: int = eqx.field(static=True)
+    # nslopes: int = eqx.field(static=True)
 
     # Star and filter
     filter: str = eqx.field(static=True)
@@ -185,7 +187,7 @@ class Exposure(zdx.Base):
 
     # Key identifiers
     filename: str = eqx.field(static=True)
-    key: str = eqx.field(static=True)
+    # key: str = eqx.field(static=True)
     program: str = eqx.field(static=True)
     observation: str = eqx.field(static=True)
     act_id: str = eqx.field(static=True)
@@ -194,7 +196,29 @@ class Exposure(zdx.Base):
     #
     calibrator: bool = eqx.field(static=True)
 
-    def __init__(self, file, slopes, variance, support, opd, key_fn):
+    #
+    fit: object = eqx.field(static=True)
+
+    # Simple method to give nice syntax for getting keys
+    def get_key(self, param):
+        return self.fit.get_key(self, param)
+
+    def map_param(self, param):
+        return self.fit.map_param(self, param)
+
+    @property
+    def ngroups(self):
+        return len(self.slopes) + 1
+
+    @property
+    def nslopes(self):
+        return len(self.slopes)
+
+    @property
+    def key(self):
+        return "_".join([self.program, self.observation, self.act_id, self.dither])
+
+    def __init__(self, file, slopes, variance, support, opd, fit):
 
         # self.data = data
         self.slopes = slopes
@@ -205,8 +229,8 @@ class Exposure(zdx.Base):
 
         #
         self.nints = file[0].header["NINTS"]
-        self.ngroups = file[0].header["NGROUPS"]
-        self.nslopes = file[0].header["NGROUPS"] - 1
+        # self.ngroups = file[0].header["NGROUPS"]
+        # self.nslopes = file[0].header["NGROUPS"] - 1
 
         #
         self.filter = file[0].header["FILTER"]
@@ -214,7 +238,7 @@ class Exposure(zdx.Base):
 
         #
         self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
-        self.key = key_fn(file)
+        # self.key = key_fn(file)
         self.program = file[0].header["PROGRAM"]
         self.observation = file[0].header["OBSERVTN"]
         self.act_id = file[0].header["ACT_ID"]
@@ -223,13 +247,16 @@ class Exposure(zdx.Base):
         #
         self.calibrator = bool(file[0].header["IS_PSF"])
 
+        #
+        self.fit = fit
+
     def print_summary(self):
         print(
             f"File {self.key}\n"
             f"Star {self.star}\n"
             f"Filter {self.filter}\n"
             f"nints {self.nints}\n"
-            f"ngroups {self.ngroups}\n"
+            f"ngroups {len(self.slopes)+1}\n"
         )
 
     def to_vec(self, image):

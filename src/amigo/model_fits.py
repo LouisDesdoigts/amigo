@@ -5,8 +5,9 @@ import dLux.utils as dlu
 import jax.numpy as np
 from abc import abstractmethod
 from jax import jit, lax, vmap
-from amigo.modelling import planck, model_ramp
-from amigo.interferometry import apply_vis
+from .modelling import planck
+from .ramp_models import model_ramp
+from .interferometry import apply_vis
 
 
 class ModelFit(zdx.Base):
@@ -15,34 +16,64 @@ class ModelFit(zdx.Base):
     def __call__(self, model, exposure):
         pass
 
-    @abstractmethod
-    def add_params(self, params, exposure):
-        pass
+    # @abstractmethod
+    # def add_params(self, params, exposure):
+    #     pass
 
-    def map_param(self, exposure, param):
+    def get_key(self, exposure, param):
 
         # TODO: Update to switch statement
         if param in ["amplitudes", "phases"]:
-            return f"{param}.{'_'.join([exposure.star, exposure.filter])}"
+            return "_".join([exposure.star, exposure.filter])
+
+        if param == "dispersion":
+            return exposure.filter
+
+        if param == "fluxes":
+            return "_".join([exposure.star, exposure.filter])
+
+        if param == "aberrations":
+            return "_".join([exposure.program, exposure.filter])
+
+        if param == "reflectivity":
+            return "_".join([exposure.program, exposure.filter])
+
+        if param == "positions":
+            return exposure.key
+
+        if param == "one_on_fs":
+            return exposure.key
+
+        raise ValueError(f"Parameter {param} has no key")
+
+    def map_param(self, exposure, param):
+        """
+        The `key` argument will return only the _key_ extension of the parameter path,
+        which is required for object initialisation.
+        """
+
+        # TODO: Update to switch statement
+        if param in ["amplitudes", "phases"]:
+            return f"{param}.{exposure.get_key(param)}"
 
         # TODO: Add mapping
         if param == "dispersion":
-            return f"{param}.{exposure.filter}"
+            return f"{param}.{exposure.get_key(param)}"
 
-        if param == "flux":
-            return f"{param}.{'_'.join([self.star, self.filter])}"
+        if param == "fluxes":
+            return f"{param}.{exposure.get_key(param)}"
 
         if param == "aberrations":
-            return f"{param}.{'_'.join([self.program])}"
+            return f"{param}.{exposure.get_key(param)}"
 
         if param == "reflectivity":
-            return f"{param}.{'_'.join([self.program])}"
+            return f"{param}.{exposure.get_key(param)}"
 
         if param == "positions":
-            return f"{param}.{exposure.key}"
+            return f"{param}.{exposure.get_key(param)}"
 
         if param == "one_on_fs":
-            return f"{param}.{exposure.key}"
+            return f"{param}.{exposure.get_key(param)}"
 
         # Else its global
         return param
@@ -55,20 +86,20 @@ class ModelFit(zdx.Base):
     def update_optics(self, model, exposure):
         optics = model.optics
         if "aberrations" in model.params.keys():
-            coefficients = model.aberrations[self.map_param(exposure, "aberrations")]
+            coefficients = model.aberrations[self.get_key(exposure, "aberrations")]
 
             # Stop gradient for science targets
-            if exposure.calibrator:
+            if not exposure.calibrator:
                 coefficients = lax.stop_gradient(coefficients)
-            optics = optics.set("pupil_mask.abb_coeffs", model.coefficients)
+            optics = optics.set("pupil_mask.abb_coeffs", coefficients)
 
         if "reflectivity" in model.params.keys():
-            coefficients = model.aberrations[self.map_param(exposure, "reflectivity")]
+            coefficients = model.reflectivity[self.get_key(exposure, "reflectivity")]
 
             # Stop gradient for science targets
-            if exposure.calibrator:
+            if not exposure.calibrator:
                 coefficients = lax.stop_gradient(coefficients)
-            optics = optics.set("pupil_mask.amp_coeffs", model.coefficients)
+            optics = optics.set("pupil_mask.amp_coeffs", coefficients)
         return optics
 
     def model_wfs(self, model, exposure):
@@ -86,6 +117,7 @@ class ModelFit(zdx.Base):
 
     def model_psf(self, model, exposure):
         wfs = self.model_wfs(model, exposure)
+
         return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale.mean(0))
 
     def model_detector(self, psf, model, exposure):
@@ -94,7 +126,7 @@ class ModelFit(zdx.Base):
     def model_ramp(self, psf, model, exposure, to_BFE=False):
 
         # Get the hyper-parameters for the non-linear model
-        key = self.map_param(exposure, "fluxes")
+        key = self.get_key(exposure, "fluxes")
         flux = 10 ** model.fluxes[key]
         oversample = model.optics.oversample
 
@@ -112,7 +144,7 @@ class ModelFit(zdx.Base):
 
         return ramp
 
-    def model_read(self, ramp, model, exposure, slopes=False):
+    def model_read(self, ramp, model, exposure):  # , slopes=False):
         # Model the read effects
         if "one_on_fs" in model.params.keys():
             model = model.set("read.one_on_fs", model.one_on_fs[exposure.key])
@@ -120,12 +152,14 @@ class ModelFit(zdx.Base):
         # Apply the read effects
         ramp = model.read.apply(ramp)
 
-        # Return the slopes if required
-        if slopes:
-            return np.diff(ramp.data, axis=0)
+        return np.diff(ramp.data, axis=0)
 
-        # Return the ramp
-        return ramp.data
+        # # Return the slopes if required
+        # if slopes:
+        #     return np.diff(ramp.data, axis=0)
+
+        # # Return the ramp
+        # return ramp.data
 
 
 class PointFit(ModelFit):
@@ -150,7 +184,7 @@ class VisFit(ModelFit):
         inv_support = self.inv_support[exposure.filter]
 
         # Get visibilities
-        key = self.map_param(exposure, "amplitudes")
+        key = self.get_key(exposure, "amplitudes")
         vis = model.amplitudes[key] * np.exp(1j * model.phases[key])
 
         # Apply the visibilities
@@ -190,7 +224,7 @@ class BinaryFit(ModelFit):
         wavels, weights = self.get_spectra(model, exposure)
 
         # Update the weights for each binary component
-        contrast = 10 ** model.contrasts[self.map_param(exposure, "contrasts")]
+        contrast = 10 ** model.contrasts[self.get_key(exposure, "contrasts")]
         flux_weights = np.array([contrast * 1, 1]) / (1 + contrast)
         weights = flux_weights[:, None] * weights[None, :]
 
