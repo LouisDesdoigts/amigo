@@ -10,7 +10,7 @@ from dLuxWebbpsf.basis import get_noll_indices
 from webbpsf import mast_wss
 from tqdm.notebook import tqdm
 from xara.core import determine_origin
-import jax.tree_util as jtu
+import dLux.utils as dlu
 
 # from .core_models import Exposure
 
@@ -150,6 +150,7 @@ def initialise_params(
     amp_order=1,
     fit_one_on_fs=True,
     fit_reflectivity=True,
+    visibility_orders=0,
 ):
     positions = {}
     fluxes = {}
@@ -162,7 +163,12 @@ def initialise_params(
         im = exp.slopes[0]
         psf = np.where(np.isnan(im), 0.0, im)
         flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.slopes[0]))
-        position = find_position(psf, optics.psf_pixel_scale)
+
+        if hasattr(optics, "focal_length"):
+            pixel_scale = dlu.rad2arcsec(1e-6 * optics.psf_pixel_scale / optics.focal_length)
+        else:
+            pixel_scale = optics.psf_pixel_scale
+        position = find_position(psf, pixel_scale)
 
         # if pre_calc_FDA:
         #     file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
@@ -190,6 +196,14 @@ def initialise_params(
         one_on_fs[one_on_fs_key] = np.zeros((exp.ngroups, 80, amp_order + 1))
 
     params = {"positions": positions, "fluxes": fluxes, "aberrations": aberrations}
+
+    if visibility_orders > 0:
+        params["amplitudes"] = get_amplitudes(
+            exposures, radial_orders=np.arange(visibility_orders), dc=True
+        )
+        params["phases"] = get_phases(
+            exposures, radial_orders=np.arange(visibility_orders), dc=True
+        )
 
     if fit_one_on_fs:
         params["one_on_fs"] = one_on_fs
@@ -357,13 +371,13 @@ def get_phases(exposures, radial_orders=None, noll_indices=None, dc=False):
     return phases
 
 
-def get_exposures(
-    files, fit, ms_thresh=None, as_psf=False
-):  # , key_fn=None):  # , exp_type="point"):
-    # from amigo.core import ExposureModel
+def get_exposures(files, fit, ms_thresh=None, as_psf=False, use_opd=False):
     from amigo.core_models import Exposure  # I think I can import this at the start now
 
-    opds = get_wss_ops(files)
+    if use_opd:
+        opds = get_wss_ops(files)
+    else:
+        opds = np.zeros((len(files), 1024, 1024))
     exposures = []
     for file, opd in zip(files, opds):
         data, variance, support = prep_data(file, ms_thresh=ms_thresh, as_psf=as_psf)
@@ -528,6 +542,7 @@ def calc_splodge_masks(
     noll_indices=None,
     hexike_cache="files/uv_hexikes",
     verbose=False,
+    recalculate=False,
 ):
 
     # _bases = []
@@ -572,6 +587,11 @@ def calc_splodge_masks(
     # # Get the filter dictionary (wavels and weights)
     # filters = get_filters(files)
 
+    if hasattr(optics, "focal_length"):
+        pixel_scale = dlu.rad2arcsec(1e-6 * optics.psf_pixel_scale / optics.focal_length)
+    else:
+        pixel_scale = optics.psf_pixel_scale
+
     filters = {}
     for filt in list(set([exp.filter for exp in exposures])):
         filters[filt] = calc_throughput(filt)  # , nwavels=nwavels)
@@ -601,6 +621,7 @@ def calc_splodge_masks(
     bases = {}
     weights = {}
     supports = {}
+    inv_supports = {}
     # for file in files:
     for exp in exposures:
         filt = exp.filter
@@ -615,24 +636,21 @@ def calc_splodge_masks(
         _bases = []
         _weights = []
         _supports = []
+        _inv_supports = []
 
         looper = tqdm(wavels) if verbose else wavels
         for wavelength in looper:
             wl_key = f"{int(wavelength*1e9)}"  # The nearest nm
             noll_key = "".join([str(n) for n in noll_indices])  # recording the noll indices
             file_key = f"{hexike_cache}/{wl_key}_{optics.oversample}_{noll_key}"
-            try:
-                basis = np.load(f"{file_key}_basis.npy")
-                weight = np.load(f"{file_key}_weight.npy")
-                support = np.load(f"{file_key}_support.npy")
 
-            except FileNotFoundError:
-                basis, weight, support = build_hexikes(
+            if recalculate:
+                basis, weight, support, inv_support = build_hexikes(
                     optics.pupil_mask.holes,
                     optics.pupil_mask.f2f,
                     optics.pupil_mask.transformation,
                     wavelength,
-                    optics.psf_pixel_scale,
+                    pixel_scale,
                     optics.psf_npixels,
                     optics.oversample,
                     uv_pad,
@@ -644,13 +662,42 @@ def calc_splodge_masks(
                 np.save(f"{file_key}_basis.npy", basis)
                 np.save(f"{file_key}_weight.npy", weight)
                 np.save(f"{file_key}_support.npy", support)
+                np.save(f"{file_key}_inv_support.npy", inv_support)
+            else:
+
+                try:
+                    basis = np.load(f"{file_key}_basis.npy")
+                    weight = np.load(f"{file_key}_weight.npy")
+                    support = np.load(f"{file_key}_support.npy")
+                    inv_support = np.load(f"{file_key}_inv_support.npy")
+
+                except FileNotFoundError:
+                    basis, weight, support, inv_support = build_hexikes(
+                        optics.pupil_mask.holes,
+                        optics.pupil_mask.f2f,
+                        optics.pupil_mask.transformation,
+                        wavelength,
+                        pixel_scale,
+                        optics.psf_npixels,
+                        optics.oversample,
+                        uv_pad,
+                        calc_pad,
+                        radial_orders=radial_orders,
+                        noll_indices=noll_indices,
+                        crop_npix=crop_npix,
+                    )
+                    np.save(f"{file_key}_basis.npy", basis)
+                    np.save(f"{file_key}_weight.npy", weight)
+                    np.save(f"{file_key}_support.npy", support)
+                    np.save(f"{file_key}_inv_support.npy", inv_support)
 
             _bases.append(basis)
             _weights.append(weight)
             _supports.append(support)
+            _inv_supports.append(inv_support)
 
         bases[filt] = np.array(_bases)
         weights[filt] = np.array(_weights)
         supports[filt] = np.array(_supports)
-    inv_supports = jtu.tree_map(lambda x: 1.0 - x, supports)
+        inv_supports[filt] = np.array(_inv_supports)
     return bases, weights, supports, inv_supports

@@ -139,6 +139,7 @@ class VisModel(zdx.Base):
         radial_orders=None,
         hexike_cache="files/uv_hexikes",
         verbose=False,
+        recalculate=False,
         nwavels=9,
     ):
         """
@@ -151,9 +152,10 @@ class VisModel(zdx.Base):
             uv_pad=uv_pad,
             calc_pad=calc_pad,
             crop_npix=crop_npix,
-            radial_orders=radial_orders,
+            radial_orders=np.arange(radial_orders),
             hexike_cache=hexike_cache,
             verbose=verbose,
+            recalculate=recalculate,
         )
 
         self.basis = bases
@@ -178,8 +180,6 @@ class Exposure(zdx.Base):
 
     # Exposure metadata
     nints: int = eqx.field(static=True)
-    # ngroups: int = eqx.field(static=True)
-    # nslopes: int = eqx.field(static=True)
 
     # Star and filter
     filter: str = eqx.field(static=True)

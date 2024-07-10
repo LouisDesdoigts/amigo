@@ -179,9 +179,9 @@ class VisFit(ModelFit):
 
     def model_vis(self, wfs, model, exposure, cplx=False):
         # Get the bits we need
-        basis = self.basis[exposure.filter]
-        weights = self.weight[exposure.filter]
-        inv_support = self.inv_support[exposure.filter]
+        basis = model.visibilities.basis[exposure.filter]
+        weights = model.visibilities.weight[exposure.filter]
+        inv_support = model.visibilities.inv_support[exposure.filter]
 
         # Get visibilities
         key = self.get_key(exposure, "amplitudes")
@@ -194,7 +194,7 @@ class VisFit(ModelFit):
         cplx_psfs = jit(vis_fn)(pad_fn(psfs), basis, weights, inv_support)
 
         # Crop back to original size
-        return vmap(lambda x: dlu.resize(x, psfs.shape[-1]))(cplx_psfs)
+        cplx_psfs = vmap(lambda x: dlu.resize(x, psfs.shape[-1]))(cplx_psfs)
 
         # Return complex or psf
         if cplx:

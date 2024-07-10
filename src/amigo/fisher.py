@@ -22,7 +22,7 @@ def self_fisher_fn(model, exposure, params, read_noise=10, true_read_noise=False
     return fisher_fn(model, exposure, params)
 
 
-def calc_fisher(model, exposure, param, file_path, recalculate=False, save=True):
+def calc_fisher(model, exposure, param, file_path, recalculate=False, save=True, overwrite=False):
     # Check that the param exists - caught later
     try:
         leaf = model.get(exposure.map_param(param))
@@ -40,7 +40,14 @@ def calc_fisher(model, exposure, param, file_path, recalculate=False, save=True)
     if exists and not recalculate:
         fisher = np.load(file_path)
         if fisher.shape[0] != N:
-            raise ValueError(f"Shape mismatch for {param}")
+
+            # Overwrite shape miss-matches
+            if overwrite:
+                fisher = self_fisher_fn(model, exposure, [param])
+                if save:
+                    np.save(file_path, fisher)
+            else:
+                raise ValueError(f"Shape mismatch for {param}")
 
     # Calculate and save
     else:
@@ -81,6 +88,7 @@ def calc_fishers(
     parameters,
     param_map_fn=None,
     recalculate=False,
+    overwrite=False,
     save=True,
     cache="files/fishers",
 ):
@@ -116,7 +124,7 @@ def calc_fishers(
                 param_path = param_map_fn(model, exp, param)
 
             # Calculate fisher for each exposure
-            fisher = calc_fisher(model, exp, param_path, file_path, recalculate, save)
+            fisher = calc_fisher(model, exp, param_path, file_path, recalculate, save, overwrite)
 
             # Store the fisher
             if fisher is not None:
