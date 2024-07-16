@@ -100,6 +100,9 @@ class ModelFit(zdx.Base):
             if not exposure.calibrator:
                 coefficients = lax.stop_gradient(coefficients)
             optics = optics.set("pupil_mask.amp_coeffs", coefficients)
+
+        if "wfs_opd" in optics.layers.keys():
+            optics = optics.set("wfs_opd.opd", exposure.opd)
         return optics
 
     def model_wfs(self, model, exposure):
@@ -241,7 +244,7 @@ class BinaryFit(ModelFit):
         prop_fn = lambda pos: optics.propagate(wavels, pos, return_wf=True)
         wfs = eqx.filter_jit(eqx.filter_vmap(prop_fn))(positions)
 
-        # Return the correctly weighted wfs - needs sqrt becase its amplitude not psf
+        # Return the correctly weighted wfs - needs sqrt because its amplitude not psf
         return wfs * np.sqrt(weights)[..., None, None]
 
     def __call__(self, model, exposure):

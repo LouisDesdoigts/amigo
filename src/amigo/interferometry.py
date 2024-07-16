@@ -212,7 +212,6 @@ def build_hexikes(
     # FP precision can cause issues, ensure values are _only_ zeros and ones
     support_mask = np.where(support_mask < 0.5, 0.0, 1.0)
     support_mask = np.where(support_mask >= 0.5, 1.0, 0.0)
-    # support_mask = np.where(support_mask != 1.0, 0.0, 1.0)
     inv_support_mask = np.where(support_mask != 1, 1.0, 0.0)
 
     return hex_mask, weight_mask, support_mask, inv_support_mask

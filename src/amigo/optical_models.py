@@ -24,6 +24,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         oversize=1.1,
         polike=False,
         unique_holes=False,
+        static_opd=False,
     ):
         """Free space locations can be 'before', 'after'"""
         self.wf_npixels = wf_npixels
@@ -33,6 +34,10 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         self.psf_pixel_scale = pixel_scale
 
         layers = []
+
+        if static_opd:
+            layers += [("wfs_opd", dl.AberratedLayer(opd=np.zeros((1024, 1024))))]
+
         layers += [("InvertY", dl.Flip(0))]
 
         if pupil_mask is None:

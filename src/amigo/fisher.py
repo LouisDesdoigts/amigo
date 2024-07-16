@@ -10,19 +10,28 @@ import os
 from tqdm.notebook import tqdm
 
 
-def fisher_fn(model, exposure, params):
-    return FIM(model, params, posterior, exposure)
+def fisher_fn(model, exposure, params, new_diag=False):
+    return FIM(model, params, posterior, exposure, new_diag=new_diag)
 
 
-def self_fisher_fn(model, exposure, params, read_noise=10, true_read_noise=False):
+def self_fisher_fn(model, exposure, params, read_noise=10, true_read_noise=False, new_diag=False):
     slopes, variance = variance_model(
         model, exposure, true_read_noise=true_read_noise, read_noise=read_noise
     )
     exposure = exposure.set(["slopes", "variance"], [slopes, variance])
-    return fisher_fn(model, exposure, params)
+    return fisher_fn(model, exposure, params, new_diag=new_diag)
 
 
-def calc_fisher(model, exposure, param, file_path, recalculate=False, save=True, overwrite=False):
+def calc_fisher(
+    model,
+    exposure,
+    param,
+    file_path,
+    recalculate=False,
+    save=True,
+    overwrite=False,
+    new_diag=False,
+):
     # Check that the param exists - caught later
     try:
         leaf = model.get(exposure.map_param(param))
@@ -43,7 +52,7 @@ def calc_fisher(model, exposure, param, file_path, recalculate=False, save=True,
 
             # Overwrite shape miss-matches
             if overwrite:
-                fisher = self_fisher_fn(model, exposure, [param])
+                fisher = self_fisher_fn(model, exposure, [param], new_diag=new_diag)
                 if save:
                     np.save(file_path, fisher)
             else:
@@ -51,7 +60,7 @@ def calc_fisher(model, exposure, param, file_path, recalculate=False, save=True,
 
     # Calculate and save
     else:
-        fisher = self_fisher_fn(model, exposure, [param])
+        fisher = self_fisher_fn(model, exposure, [param], new_diag=new_diag)
         if save:
             np.save(file_path, fisher)
     return fisher
@@ -90,6 +99,7 @@ def calc_fishers(
     recalculate=False,
     overwrite=False,
     save=True,
+    new_diag=False,
     cache="files/fishers",
 ):
 
@@ -124,7 +134,9 @@ def calc_fishers(
                 param_path = param_map_fn(model, exp, param)
 
             # Calculate fisher for each exposure
-            fisher = calc_fisher(model, exp, param_path, file_path, recalculate, save, overwrite)
+            fisher = calc_fisher(
+                model, exp, param_path, file_path, recalculate, save, overwrite, new_diag
+            )
 
             # Store the fisher
             if fisher is not None:
@@ -135,6 +147,14 @@ def calc_fishers(
         fisher_exposures[exp.key] = fisher_params
 
     return fisher_exposures
+
+
+def hessian_diag(fn, x):
+    """Source: https://github.com/google/jax/issues/924"""
+    eye = np.eye(len(x))
+    return np.array(
+        [jvp(lambda x: jvp(fn, (x,), (eye[i],))[1], (x,), (eye[i],))[1] for i in range(len(x))]
+    )
 
 
 def hessian(f, x, fast=False):
@@ -195,6 +215,7 @@ def FIM(
     save_ram=True,
     vmapped=False,
     diag=False,
+    new_diag=False,
     **loglike_kwargs,
 ):
     # Build X vec
@@ -217,6 +238,9 @@ def FIM(
     if diag:
         diag = hvp(loglike_fn_vec, X, np.ones_like(X))
         return np.eye(diag.shape[0]) * diag[:, None]
+
+    if new_diag:
+        return hessian_diag(loglike_fn_vec, X)
 
     if save_ram:
         return hessian(loglike_fn_vec, X)

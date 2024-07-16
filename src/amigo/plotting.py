@@ -82,7 +82,7 @@ def summarise_fit(
 
     if not skip:
         if residuals:
-            norm = colors.PowerNorm(gamma=0.5, vmin=-vmin, vmax=vmax)
+            norm = colors.PowerNorm(gamma=pow, vmin=-vmin, vmax=vmax)
             inferno.set_bad("k", 0.5)
             seismic.set_bad("k", 0.5)
 

@@ -10,7 +10,7 @@ import dLux.utils as dlu
 from jax import vmap, config
 from datetime import timedelta
 from .core_models import ModelParams, ModelHistory
-from .stats import batch_loss_fn
+from .stats import posterior
 from zodiax.experimental import serialise
 
 # import tqdm appropriately
@@ -109,6 +109,10 @@ def calc_lrs(model, exposures, fishers, params=None, order=1):
     return lr_model
 
 
+def reg_loss_fn(model, exposure, args):
+    return -np.array(posterior(model, exposure, per_pix=True)).sum()
+
+
 def optimise(
     model,
     exposures,
@@ -121,6 +125,7 @@ def optimise(
     grad_fn=lambda model, grads, args, key: (grads, key),
     norm_fn=lambda model, model_params, args, key: (model_params, key),
     args_fn=lambda model, args, key, epoch: (model, args, key),
+    loss_fn=None,  # Must have input signature (model, exposure, args)
     print_grads=False,
     no_history=[],
     batch_params=[],
@@ -146,9 +151,8 @@ def optimise(
     model = set_array(model, opt_params)
 
     # Get the LR normalisation from the fisher matrices
-    # print("calcing lrs")
     lr_model = calc_lrs(model, exposures, fishers, params=opt_params)
-    # print("done")
+
     # Get the parameter classes and the optimisers
     reg_params = [p for p in opt_params if p not in batch_params]
     batch_params = [p for p in batch_params if p in opt_params]
@@ -165,12 +169,17 @@ def optimise(
     update_reg = lambda *args: model_update_fn(reg_optim, *args)
 
     # Apply gradient to loss function
+    if loss_fn is None:
+        loss_fn = reg_loss_fn
+    batch_loss_fn = lambda model, batch, args: np.array(
+        [loss_fn(model, exp, args) for exp in batch]
+    ).sum()
     val_grad_fn = zdx.filter_value_and_grad(opt_params)(batch_loss_fn)
 
     @eqx.filter_jit
     def batched_loss_fn(model, batch, args, key):
         print("Grad Batch fn compiling...")
-        loss, grads = val_grad_fn(model, batch)
+        loss, grads = val_grad_fn(model, batch, args)
 
         # Apply the lr normalisation
         grads = jtu.tree_map(lambda x, y: x * y, grads, lr_model)

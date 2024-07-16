@@ -345,7 +345,8 @@ def get_amplitudes(exposures, radial_orders=None, noll_indices=None, dc=False):
         n = 21
     amplitudes = {}
     for exp in exposures:
-        key = "_".join([exp.star, exp.filter])
+        # key = "_".join([exp.star, exp.filter])
+        key = exp.fit.get_key(exp, "amplitudes")
         if key not in amplitudes.keys():
             pistons = np.ones((n, 1))  # ones for pistons
             higher_orders = np.zeros((n, n_zernikes - 1))  # zeros elsewhere
@@ -365,16 +366,17 @@ def get_phases(exposures, radial_orders=None, noll_indices=None, dc=False):
         n = 21
     phases = {}
     for exp in exposures:
-        key = "_".join([exp.star, exp.filter])
+        # key = "_".join([exp.star, exp.filter])
+        key = exp.fit.get_key(exp, "amplitudes")
         if key not in phases.keys():
             phases[key] = np.zeros((n, n_zernikes))
     return phases
 
 
-def get_exposures(files, fit, ms_thresh=None, as_psf=False, use_opd=False):
+def get_exposures(files, fit, ms_thresh=None, as_psf=False, static_opd=False):
     from amigo.core_models import Exposure  # I think I can import this at the start now
 
-    if use_opd:
+    if static_opd:
         opds = get_wss_ops(files)
     else:
         opds = np.zeros((len(files), 1024, 1024))
