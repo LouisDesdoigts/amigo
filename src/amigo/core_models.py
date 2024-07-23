@@ -8,7 +8,7 @@ from .optical_models import AMIOptics
 from .detector_models import LinearDetectorModel
 from .ramp_models import SimpleRamp
 from .read_models import ReadModel
-from .files import get_Teffs, get_filters, calc_splodge_masks
+from .files import get_Teffs, get_filters
 
 
 class BaseModeller(zdx.Base):
@@ -40,8 +40,8 @@ class BaseModeller(zdx.Base):
 class AmigoModel(BaseModeller):
     Teffs: dict
     filters: dict
-    dispersion: dict
-    contrast: float
+    # dispersion: dict
+    # contrast: float
     optics: AMIOptics
     visibilities: None
     detector: None
@@ -58,8 +58,8 @@ class AmigoModel(BaseModeller):
         detector=None,
         read=None,
         visibilities=None,
-        dispersion_mag=0.0,  # arcseconds
-        contrast=-2,
+        # dispersion_mag=0.0,  # arcseconds
+        # contrast=-2,
         Teff_cache="files/Teff_cache",
     ):
 
@@ -75,23 +75,23 @@ class AmigoModel(BaseModeller):
         self.Teffs = get_Teffs(files, Teff_cache=Teff_cache)
         self.filters = get_filters(files)
 
-        # Dispersion hacking - randomly perturb the position of each wavelength
-        if dispersion_mag > 0.0:
-            self.dispersion = {}
+        # # Dispersion hacking - randomly perturb the position of each wavelength
+        # if dispersion_mag > 0.0:
+        #     self.dispersion = {}
 
-            # # This one is free-floating value per wavelength
-            # for filt, (wavels, weights) in self.filters.items():
-            #     rand_positions = jr.normal(jr.PRNGKey(0), (len(wavels), 2))
-            #     self.dispersion[filt] = dispersion_mag * rand_positions
+        #     # # This one is free-floating value per wavelength
+        #     # for filt, (wavels, weights) in self.filters.items():
+        #     #     rand_positions = jr.normal(jr.PRNGKey(0), (len(wavels), 2))
+        #     #     self.dispersion[filt] = dispersion_mag * rand_positions
 
-            # This one is parameterised by (x, y) - the point at which the longest
-            # wavelength reaches
-            for filt in self.filters.keys():
-                self.dispersion[filt] = np.array([dispersion_mag, dispersion_mag])
+        #     # This one is parameterised by (x, y) - the point at which the longest
+        #     # wavelength reaches
+        #     for filt in self.filters.keys():
+        #         self.dispersion[filt] = np.array([dispersion_mag, dispersion_mag])
 
-        else:
-            self.dispersion = None
-        self.contrast = np.asarray(contrast, float)
+        # # else:
+        # #     self.dispersion = None
+        # self.contrast = np.asarray(contrast, float)
 
         self.optics = optics
         self.detector = detector
@@ -121,47 +121,6 @@ class AmigoModel(BaseModeller):
         if hasattr(self.visibilities, key):
             return getattr(self.visibilities, key)
         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
-
-
-class VisModel(zdx.Base):
-    basis: jax.Array
-    weight: jax.Array
-    support: jax.Array
-    inv_support: jax.Array
-
-    def __init__(
-        self,
-        exposures,
-        optics,
-        uv_pad=2,
-        calc_pad=3,
-        crop_npix=None,
-        radial_orders=None,
-        hexike_cache="files/uv_hexikes",
-        verbose=False,
-        recalculate=False,
-        nwavels=9,
-    ):
-        """
-        Note caches masks to disk for faster loading. The cache is indexed _relative_ to
-        where the file is run from.
-        """
-        bases, weights, supports, inv_supports = calc_splodge_masks(
-            exposures,
-            optics,
-            uv_pad=uv_pad,
-            calc_pad=calc_pad,
-            crop_npix=crop_npix,
-            radial_orders=np.arange(radial_orders),
-            hexike_cache=hexike_cache,
-            verbose=verbose,
-            recalculate=recalculate,
-        )
-
-        self.basis = bases
-        self.weight = weights
-        self.support = supports
-        self.inv_support = inv_supports
 
 
 class Exposure(zdx.Base):

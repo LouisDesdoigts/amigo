@@ -48,8 +48,6 @@ def summarise_fit(
     data = exposure.slopes
 
     residual = data - slopes
-    # loglike_im = exposure.loglike_im(slope)
-
     posterior_im = posterior(model, exposure, return_im=True)
 
     # loglike_im = exposure.log_likelihood(slopes, return_im=True)
@@ -193,9 +191,10 @@ def summarise_fit(
         pupil_mask = pupil_mask.set(
             "abb_coeffs", model.aberrations[exposure.get_key("aberrations")]
         )
-        pupil_mask = pupil_mask.set(
-            "amp_coeffs", model.reflectivity[exposure.get_key("reflectivity")]
-        )
+        if hasattr(model, "reflectivity"):
+            pupil_mask = pupil_mask.set(
+                "amp_coeffs", model.reflectivity[exposure.get_key("reflectivity")]
+            )
 
         optics = model.optics
         mask, amp, abb = pupil_mask.calculate(optics.wf_npixels, optics.diameter)

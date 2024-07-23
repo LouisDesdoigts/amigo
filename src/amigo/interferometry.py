@@ -21,7 +21,7 @@ from dLuxWebbpsf.basis import get_noll_indices
 
 
 # Mask generation and baselines
-def osamp_freqs(n, dx, osamp):
+def osamp_freqs(n, dx, osamp=1):
     df = 1 / (n * dx)
     odf = df / osamp
 
@@ -77,7 +77,7 @@ def pairwise_vectors(points):
 
 
 def get_baselines_and_inds(holes):
-    """Better version of pairwise_vectors that returns hole indicies too"""
+    """Better version of pairwise_vectors that returns hole indices too"""
     pairwise_vectors = []
     hole_inds = []
     for i in range(len(holes)):

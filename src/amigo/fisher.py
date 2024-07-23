@@ -38,6 +38,13 @@ def calc_fisher(
         if not isinstance(leaf, np.ndarray):
             raise ValueError(f"Leaf at path '{param}' is not an array")
         N = leaf.size
+    # except KeyError:
+    #     print(
+    #         f"KeyError: Unable to calculate fisher matrix for {param}",
+    #         # f"key: {exposure.get_key(param)} not found in model {param}",
+    #         # f"keys: {model.get(param).keys()}"
+    #     )
+    #     return None
     except ValueError:
         # Param doesn't exist, return None
         return None
@@ -64,31 +71,6 @@ def calc_fisher(
         if save:
             np.save(file_path, fisher)
     return fisher
-
-
-# def key_mapper(model, exposure, param):
-#     """
-#     Takes in a model, exposure and param, returns the correct path to the model leaf
-#     """
-#     # Check for unique cases, like visibilities
-#     if param in ["amplitudes", "phases"]:
-#         # Visibilities are fit jointly from multiple observations, one per star per filter
-#         # vis_key = model.vis_model.get_key(exposure)
-#         vis_key = "_".join([exposure.star, exposure.filter])
-#         return f"{param}.{vis_key}"
-
-#     # Check for local param
-#     leaf = model.get(param)
-#     if isinstance(leaf, dict):
-#         if exposure.flux_key in leaf.keys():
-#             return f"{param}.{exposure.flux_key}"
-#         if exposure.abb_key in leaf.keys():
-#             return f"{param}.{exposure.abb_key}"
-#         if exposure.key in leaf.keys():
-#             return f"{param}.{exposure.key}"
-
-#     # Else its global
-#     return param
 
 
 def calc_fishers(

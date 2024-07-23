@@ -57,12 +57,22 @@ class SimpleRamp(dl.detectors.BaseDetector):
 
 class PolyNonLin(dl.detectors.BaseDetector):
     coeffs: jax.Array
+    norm: float
     conv: None
     ksize: int = eqx.field(static=True)
     orders: list = eqx.field(static=True)
     oversample: int = eqx.field(static=True)
 
-    def __init__(self, ksize=3, oversample=4, orders=[1, 2], basis_length=4):
+    def __init__(
+        self,
+        ksize=3,
+        oversample=4,
+        orders=[1, 2],
+        # basis_length=4,
+        coeffs_dict=True,
+        seed=0,
+        norm=1.0,
+    ):
         self.ksize = int(ksize)
         self.oversample = int(oversample)
         self.orders = orders
@@ -88,24 +98,44 @@ class PolyNonLin(dl.detectors.BaseDetector):
         for i in range(len(conv_kernels)):
             single_kern = zero_vec.at[i].set(1.0).reshape(true_ksize, true_ksize)
             conv_kernels = conv_kernels.at[i].set(single_kern)
-        ncoeffs = len(conv_kernels) * basis_length * len(orders)
+
+        basis_length = len(build_image_basis(np.zeros((10, 10))))
+        coeffs_per_order = basis_length * len(conv_kernels)
+        ncoeffs = basis_length * len(conv_kernels) * len(orders)
 
         self.conv = eqx.tree_at(lambda x: x.weight, conv, conv_kernels)
         self.coeffs = 1e-8 * jr.normal(jr.PRNGKey(0), (ncoeffs,))
+        self.norm = norm
+
+        if coeffs_dict:
+            coeffs = {}
+            for order in orders:
+                coeffs[str(order)] = 1e-8 * jr.normal(jr.PRNGKey(seed), (coeffs_per_order,))
+                seed += 1
+            self.coeffs = coeffs
+        else:
+            self.coeffs = 1e-8 * jr.normal(jr.PRNGKey(seed), (ncoeffs,))
 
     def apply(self, psf, flux, exposure, oversample):
         image = psf.data * flux
         downsampled_image = dlu.downsample(image, 4, mean=False)
         downsampled_ramp = model_ramp(downsampled_image, exposure.ngroups)
-        ramp = model_ramp(image, exposure.ngroups)
+        ramp = model_ramp(image * self.norm, exposure.ngroups)
         ramp = downsampled_ramp + vmap(self.calculate_bleeding)(ramp)
         return Ramp(ramp, psf.pixel_scale)
 
     def calculate_bleeding(self, image):
         basis = build_basis(image, powers=self.orders)
         full_kernels = vmap(lambda im: self.conv(im[None]))(basis)
-        true_kernels = full_kernels.reshape(len(self.coeffs), *full_kernels.shape[2:])
-        return dlu.eval_basis(true_kernels, self.coeffs)
+
+        if isinstance(self.coeffs, dict):
+            coeffs = np.concatenate(jtu.tree_leaves(self.coeffs))
+        else:
+            coeffs = self.coeffs
+        true_kernels = full_kernels.reshape(len(coeffs), *full_kernels.shape[2:])
+        return dlu.eval_basis(true_kernels, coeffs)
+        # true_kernels = full_kernels.reshape(len(self.coeffs), *full_kernels.shape[2:])
+        # return dlu.eval_basis(true_kernels, self.coeffs)
 
     def model():
         raise NotImplementedError

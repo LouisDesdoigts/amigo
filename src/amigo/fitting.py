@@ -24,6 +24,20 @@ else:
     from tqdm import tqdm
 
 
+def scheduler(lr, start, *args):
+    shed_dict = {start: 1e100}
+    for start, mul in args:
+        shed_dict[start] = mul
+    return optax.piecewise_constant_schedule(lr / 1e100, shed_dict)
+
+
+base_sgd = lambda vals: optax.sgd(vals, nesterov=True, momentum=0.6)
+base_adam = lambda vals: optax.adam(vals)
+
+sgd = lambda lr, start, *schedule: base_sgd(scheduler(lr, start, *schedule))
+adam = lambda lr, start, *schedule: base_adam(scheduler(lr, start, *schedule))
+
+
 def debug_nan_check(grads):
     bool_tree = jax.tree_map(lambda x: np.isnan(x).any(), grads)
     vals = np.array(jax.tree_util.tree_flatten(bool_tree)[0])

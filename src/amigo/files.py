@@ -143,73 +143,168 @@ def find_position(psf, pixel_scale=0.065524085):
     return position
 
 
-def initialise_params(
-    exposures,
-    optics,
-    # pre_calc_FDA=False,
-    amp_order=1,
-    fit_one_on_fs=True,
-    fit_reflectivity=True,
-    visibility_orders=0,
-):
+# def initialise_params(
+#     exposures,
+#     optics,
+#     # pre_calc_FDA=False,
+#     amp_order=1,
+#     fit_one_on_fs=True,
+#     fit_reflectivity=True,
+#     visibility_orders=0,
+# ):
+#     positions = {}
+#     fluxes = {}
+#     aberrations = {}
+#     one_on_fs = {}
+#     aberrations = {}
+#     reflectivity = {}
+#     for exp in exposures:
+
+#         im = exp.slopes[0]
+#         psf = np.where(np.isnan(im), 0.0, im)
+#         flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.slopes[0]))
+
+#         if hasattr(optics, "focal_length"):
+#             pixel_scale = dlu.rad2arcsec(1e-6 * optics.psf_pixel_scale / optics.focal_length)
+#         else:
+#             pixel_scale = optics.psf_pixel_scale
+#         position = find_position(psf, pixel_scale)
+
+#         # if pre_calc_FDA:
+#         #     file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
+#         #     coeffs = np.load(file_path)[:, :n_fda]
+#         # else:
+#         #     coeffs = np.zeros((7, n_fda))
+
+#         pos_key = exp.fit.get_key(exp, "positions")
+#         positions[pos_key] = position
+
+#         #
+#         abb_key = exp.fit.get_key(exp, "aberrations")
+#         aberrations[abb_key] = np.zeros_like(optics.pupil_mask.abb_coeffs)
+
+#         #
+#         amp_key = exp.fit.get_key(exp, "reflectivity")
+#         reflectivity[amp_key] = np.zeros_like(optics.pupil_mask.amp_coeffs)
+
+#         #
+#         flux_key = exp.fit.get_key(exp, "fluxes")
+#         fluxes[flux_key] = flux
+
+#         #
+#         one_on_fs_key = exp.fit.get_key(exp, "one_on_fs")
+#         one_on_fs[one_on_fs_key] = np.zeros((exp.ngroups, 80, amp_order + 1))
+
+#     params = {"positions": positions, "fluxes": fluxes, "aberrations": aberrations}
+
+#     if visibility_orders > 0:
+#         params["amplitudes"] = get_amplitudes(
+#             exposures, radial_orders=np.arange(visibility_orders), dc=True
+#         )
+#         params["phases"] = get_phases(
+#             exposures, radial_orders=np.arange(visibility_orders), dc=True
+#         )
+
+#     if fit_one_on_fs:
+#         params["one_on_fs"] = one_on_fs
+
+#     if fit_reflectivity:
+#         params["reflectivity"] = reflectivity
+
+#     return params
+
+
+def get_default_params(exposures, optics, amp_order=1):
+
+    # These are the default parameters, they are _always_ present
     positions = {}
     fluxes = {}
     aberrations = {}
     one_on_fs = {}
-    aberrations = {}
+    one_on_fs = {}
     reflectivity = {}
     for exp in exposures:
 
         im = exp.slopes[0]
         psf = np.where(np.isnan(im), 0.0, im)
-        flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.slopes[0]))
 
+        # Get pixel scale in arcseconds
         if hasattr(optics, "focal_length"):
             pixel_scale = dlu.rad2arcsec(1e-6 * optics.psf_pixel_scale / optics.focal_length)
         else:
             pixel_scale = optics.psf_pixel_scale
         position = find_position(psf, pixel_scale)
+        positions[exp.fit.get_key(exp, "positions")] = position
 
-        # if pre_calc_FDA:
-        #     file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
-        #     coeffs = np.load(file_path)[:, :n_fda]
-        # else:
-        #     coeffs = np.zeros((7, n_fda))
+        flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.slopes[0]))
+        fluxes[exp.fit.get_key(exp, "fluxes")] = flux
 
-        pos_key = exp.fit.get_key(exp, "positions")
-        positions[pos_key] = position
+        abers = np.zeros_like(optics.pupil_mask.abb_coeffs)
+        aberrations[exp.fit.get_key(exp, "aberrations")] = abers
 
-        #
-        abb_key = exp.fit.get_key(exp, "aberrations")
-        aberrations[abb_key] = np.zeros_like(optics.pupil_mask.abb_coeffs)
+        reflects = np.zeros_like(optics.pupil_mask.amp_coeffs)
+        reflectivity[exp.fit.get_key(exp, "reflectivity")] = reflects
 
-        #
-        amp_key = exp.fit.get_key(exp, "reflectivity")
-        reflectivity[amp_key] = np.zeros_like(optics.pupil_mask.amp_coeffs)
+        one_on_f = np.zeros((exp.ngroups, 80, amp_order + 1))
+        one_on_fs[exp.fit.get_key(exp, "one_on_fs")] = one_on_f
 
-        #
-        flux_key = exp.fit.get_key(exp, "fluxes")
-        fluxes[flux_key] = flux
+    return {
+        "positions": positions,
+        "fluxes": fluxes,
+        "aberrations": aberrations,
+        "reflectivity": reflectivity,
+        "one_on_fs": one_on_fs,
+    }
 
-        #
-        one_on_fs_key = exp.fit.get_key(exp, "one_on_fs")
-        one_on_fs[one_on_fs_key] = np.zeros((exp.ngroups, 80, amp_order + 1))
 
-    params = {"positions": positions, "fluxes": fluxes, "aberrations": aberrations}
+def initialise_vis(vis_model, exposures):
+    """At present this assumes that we are fitting a spline visibility"""
 
-    if visibility_orders > 0:
-        params["amplitudes"] = get_amplitudes(
-            exposures, radial_orders=np.arange(visibility_orders), dc=True
-        )
-        params["phases"] = get_phases(
-            exposures, radial_orders=np.arange(visibility_orders), dc=True
-        )
+    params = {
+        "amplitudes": {},
+        "phases": {},
+    }
+    n = vis_model.knots[0].size // 2
+    for exp in exposures:
+        params["amplitudes"][f"{exp.get_key('amplitudes')}"] = np.ones(n)
+        params["phases"][f"{exp.get_key('phases')}"] = np.zeros(n)
+    return params
 
-    if fit_one_on_fs:
-        params["one_on_fs"] = one_on_fs
 
-    if fit_reflectivity:
-        params["reflectivity"] = reflectivity
+def initialise_fringes(exposures):
+    params = {
+        "shifts": {},
+        "contrasts": {},
+    }
+    for filt in ["F380M", "F430M", "F480M"]:
+        params["shifts"][filt] = np.array([3e-3, 0])
+        params["contrasts"][filt] = np.array(-3.0)
+    return params
+
+
+def initialise_params(
+    exposures,
+    optics,
+    fit_one_on_fs=False,
+    fit_reflectivity=False,
+    fit_fringes=False,
+    vis_model=None,
+):
+    # NOTE: At present this assume the _same_ fit is being applied to all the exposures
+
+    params = get_default_params(exposures, optics)
+
+    if not fit_one_on_fs:
+        params.pop("one_on_fs")
+
+    if not fit_reflectivity:
+        params.pop("reflectivity")
+
+    if fit_fringes:
+        params.update(initialise_fringes(exposures))
+
+    if vis_model is not None:
+        params.update(initialise_vis(vis_model, exposures))
 
     return params
 
@@ -422,6 +517,24 @@ def full_to_SUB80(full_arr, npix_out=80, fill=0.0):
         pad = (npix_out - 80) // 2
         SUB80 = np.pad(SUB80, pad, constant_values=fill)
     return SUB80
+
+
+def repopulate(model, history, index=-1):
+
+    # Populate parameters
+    for param_key, value in history.params.items():
+        if isinstance(value, dict):
+            for exp_key, sub_value in value.items():
+                try:
+                    model = model.set(f"{param_key}.{exp_key}", sub_value[index])
+
+                # Catch key not existing since we might not have a certain exposure here
+                except KeyError:
+                    pass
+        else:
+            model = model.set(param_key, value[index])
+
+    return model
 
 
 # bases, weights, supports, inv_supports
