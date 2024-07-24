@@ -2,7 +2,7 @@ import pkg_resources as pkg
 import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
-from .jitter import GaussianJitter
+from .jitter_models import GaussianJitter
 import jax
 import dLuxWebbpsf as dlw
 from dLuxWebbpsf.utils.interpolation import _map_coordinates
