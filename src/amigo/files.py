@@ -10,15 +10,7 @@ from dLuxWebbpsf.basis import get_noll_indices
 from webbpsf import mast_wss
 from xara.core import determine_origin
 import dLux.utils as dlu
-
-# import tqdm appropriately
-from IPython import get_ipython
-if get_ipython() is not None:
-    # Running in Jupyter Notebook
-    from tqdm.notebook import tqdm
-else:
-    # Running in a script or other non-Jupyter environment
-    from tqdm import tqdm
+from .tqdm import tqdm
 
 # from .core_models import Exposure
 
