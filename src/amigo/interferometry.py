@@ -1,9 +1,16 @@
 import jax.numpy as np
-from tqdm.notebook import tqdm
 import dLux.utils as dlu
 from jax import vmap
 from dLuxWebbpsf.basis import get_noll_indices
 
+# import tqdm appropriately
+from IPython import get_ipython
+if get_ipython() is not None:
+    # Running in Jupyter Notebook
+    from tqdm.notebook import tqdm
+else:
+    # Running in a script or other non-Jupyter environment
+    from tqdm import tqdm
 
 # class UVHexikes(zdx.Base):
 #     basis: Array

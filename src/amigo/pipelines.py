@@ -5,7 +5,15 @@ import numpy as onp
 import astropy
 from astropy.io import fits
 from jwst.pipeline import Detector1Pipeline
-from tqdm.notebook import tqdm
+
+# import tqdm appropriately
+from IPython import get_ipython
+if get_ipython() is not None:
+    # Running in Jupyter Notebook
+    from tqdm.notebook import tqdm
+else:
+    # Running in a script or other non-Jupyter environment
+    from tqdm import tqdm
 
 
 def process_uncal(directory, output_dir="stage1/", verbose=False, AMI_only=True, reprocess=False):
