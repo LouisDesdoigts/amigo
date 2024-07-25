@@ -21,6 +21,7 @@ dependencies = [
   "webbpsf",
   "tqdm",
   "uncertainties",
+  "interpax",
   "dLuxWebbpsf @ git+https://github.com/itroitskaya/dLuxWebbpsf.git",
   "xara @ git+https://github.com/fmartinache/xara.git",
 ]
