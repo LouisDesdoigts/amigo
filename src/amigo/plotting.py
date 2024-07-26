@@ -74,6 +74,9 @@ def summarise_fit(
     vmax = np.maximum(np.nanmax(np.abs(effective_data)), np.nanmax(np.abs(effective_psf)))
     vmin = np.minimum(np.nanmin(np.abs(effective_data)), np.nanmin(np.abs(effective_psf)))
 
+    inferno.set_bad("k", 0.5)
+    seismic.set_bad("k", 0.5)
+
     skip = False
     if np.isnan(vmin) or np.isnan(vmax):
         skip = True
@@ -81,8 +84,6 @@ def summarise_fit(
     if not skip:
         if residuals:
             norm = colors.PowerNorm(gamma=pow, vmin=-vmin, vmax=vmax)
-            inferno.set_bad("k", 0.5)
-            seismic.set_bad("k", 0.5)
 
             plt.figure(figsize=(15, 4))
             plt.subplot(1, 3, 1)

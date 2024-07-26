@@ -3,7 +3,7 @@ import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
 from jax import Array
-from .mask_models import DynamicAMIStaticAbb
+from .mask_models import PolyMask
 
 
 class AMIOptics(dl.optical_systems.AngularOpticalSystem):
@@ -41,7 +41,8 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         layers += [("InvertY", dl.Flip(0))]
 
         if pupil_mask is None:
-            pupil_mask = DynamicAMIStaticAbb(
+            pupil_mask = PolyMask(
+                order=3,
                 diameter=diameter,
                 npixels=wf_npixels,
                 f2f=f2f,
@@ -96,7 +97,8 @@ class AMIOpticsFresnel(dl.CartesianOpticalSystem):
         layers += [("InvertY", dl.Flip(0))]
 
         if pupil_mask is None:
-            pupil_mask = DynamicAMIStaticAbb(
+            pupil_mask = PolyMask(
+                order=3,
                 diameter=diameter,
                 npixels=wf_npixels,
                 f2f=f2f,

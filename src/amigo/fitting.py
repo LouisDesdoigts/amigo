@@ -266,7 +266,7 @@ def optimise(
 
         # Update the looper
         batch_loss = np.array(batch_losses).mean()
-        looper.set_description(f"Loss: {epoch_loss:,.2f}, Change: {batch_loss - epoch_loss:,.2f}")
+        looper.set_description(f"Loss: {epoch_loss:,.2f}, \Delta: {batch_loss - epoch_loss:,.2f}")
         losses.append(batch_losses)
         epoch_loss = batch_loss
 

@@ -108,7 +108,7 @@ def gen_coords(npix, diameter, holes_positions, transformation=None):
         return vmap(dlu.translate_coords, (None, 0))(coords, holes_positions)
 
     # We use the rotation transformation as a way to check if we are dealing with
-    # a single transformation of a _vectorise_ transformation
+    # a single transformation of a _vectorised_ transformation
     if transformation.rotation.ndim == 0:
         # Generate coordinates
         coords = dlu.pixel_coords(npix, diameter)
@@ -499,3 +499,48 @@ class DynamicAMIDynamicAbb(dl.layers.optical_layers.OpticalLayer):
             return getattr(self.transformation, key)
         else:
             raise AttributeError(f"Interpolator has no attribute {key}")
+
+
+# from amigo.mask_models import DynamicAMIStaticAbb, calc_mask
+
+
+def gen_powers(degree):
+    """
+    Generates the powers required for a 2d polynomial
+    """
+    n = dlu.triangular_number(degree)
+    vals = np.arange(n)
+
+    # Ypows
+    tris = dlu.triangular_number(np.arange(degree))
+    ydiffs = np.repeat(tris, np.arange(1, degree + 1))
+    ypows = vals - ydiffs
+
+    # Xpows
+    tris = dlu.triangular_number(np.arange(1, degree + 1))
+    xdiffs = np.repeat(n - np.flip(tris), np.arange(degree, 0, -1))
+    xpows = np.flip(vals - xdiffs)
+
+    return xpows, ypows
+
+
+def distort_coords(coords, coeffs, pows):
+    pow_base = np.multiply(*(coords[:, None, ...] ** pows[..., None, None]))
+    distortion = np.sum(coeffs[..., None, None] * pow_base[None, ...], axis=1)
+    return coords + distortion
+
+
+class PolyMask(DynamicAMIStaticAbb):
+    distortion: np.ndarray
+    powers: np.ndarray
+
+    def __init__(self, *args, order=1, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.powers = np.array(gen_powers(order + 1))[:, 1:]
+        self.distortion = np.zeros_like(self.powers)
+
+    def calc_mask(self, npixels, diameter):
+        coords = dlu.pixel_coords(npixels, diameter)
+        distorted_coords = distort_coords(coords, self.distortion, self.powers)
+        hole_coords = vmap(dlu.translate_coords, (None, 0))(distorted_coords, self.holes)
+        return calc_mask(hole_coords, self.f2f, diameter / npixels)
