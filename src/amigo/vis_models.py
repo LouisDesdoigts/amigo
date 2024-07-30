@@ -1,6 +1,5 @@
 import zodiax as zdx
 import jax.numpy as np
-import jax.tree_util as jtu
 import interpax as ipx
 from jax import vmap
 from .interferometry import get_baselines_and_inds, osamp_freqs
@@ -45,7 +44,7 @@ def get_uv_coords(wavel, pixel_scale, full_size, crop_size):
 
 def sample_spline(image, knots, sample_coords):
     xs, ys = knots
-    xpts, ypts = jtu.tree_map(lambda x: x.flatten(), sample_coords)
+    xpts, ypts = sample_coords.reshape(2, -1)
 
     # NOTE: Extrapolation is used since the outer edges get cut with a hard edge
     # and there are some pixels in the support outside the edge points

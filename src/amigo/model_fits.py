@@ -178,11 +178,13 @@ class SplineVisFit(PointFit):
     uv_pad: int = eqx.field(static=True)
     crop_size: int = eqx.field(static=True)
     joint_fit: bool = eqx.field(static=True)
+    per_wavelength: bool = eqx.field(static=True)
 
-    def __init__(self, uv_pad=2, crop_size=160, joint_fit=True):
+    def __init__(self, uv_pad=2, crop_size=160, joint_fit=True, per_wavelength=True):
         self.uv_pad = int(uv_pad)
         self.crop_size = int(crop_size)
         self.joint_fit = bool(joint_fit)
+        self.per_wavelength = bool(per_wavelength)
 
     def get_key(self, exposure, param):
 
@@ -194,9 +196,17 @@ class SplineVisFit(PointFit):
         return super().get_key(exposure, param)
 
     def get_uv_coords(self, model, exposure):
-        lam = get_mean_wavelength(*self.get_spectra(model, exposure))
         pscale = dlu.arcsec2rad(model.optics.psf_pixel_scale / model.optics.oversample)
         full_size = self.uv_pad * model.optics.psf_npixels * model.optics.oversample
+
+        # Per wavelength, we need to calculate the UV coordinates for each wavelength
+        if self.per_wavelength:
+            wavels = model.filters[exposure.filter][0]
+            coord_fn = lambda lam: get_uv_coords(lam, pscale, full_size, self.crop_size)
+            return vmap(coord_fn)(wavels)
+
+        # Otherwise, we can just use the weighted mean wavelength
+        lam = get_mean_wavelength(*self.get_spectra(model, exposure))
         return get_uv_coords(lam, pscale, full_size, self.crop_size)
 
     def get_vis_pts(self, model, exposure):
@@ -209,33 +219,59 @@ class SplineVisFit(PointFit):
     def get_vis_map(self, model, exposure):
         # Get the inputs
         vis_pts = self.get_vis_pts(model, exposure)
-        uv_coords = self.get_uv_coords(model, exposure)
+
+        # If per_wavelength, this has an extra dimension
+        uv_coords = np.array(self.get_uv_coords(model, exposure))
         knots = model.visibilities.knots
 
         # Interpolate the visibilities
-        interp_fn = lambda im: sample_spline(im, knots, uv_coords)
-        amp_map = np.maximum(interp_fn(np.abs(vis_pts)), 0)
-        phase_map = interp_fn(np.angle(vis_pts))
-        return amp_map * np.exp(1j * phase_map)
+        if self.per_wavelength:
+            uv_coords = np.swapaxes(uv_coords, 0, 1)
+            interp_fn = lambda im, coords: sample_spline(im, knots, coords)
+            amp_map = vmap(interp_fn, (None, 0))(np.abs(vis_pts), uv_coords)
+            phase_map = vmap(interp_fn, (None, 0))(np.angle(vis_pts), uv_coords)
+        else:
+            interp_fn = lambda im: sample_spline(im, knots, uv_coords)
+            amp_map = interp_fn(np.abs(vis_pts))
+            phase_map = interp_fn(np.angle(vis_pts))
+        return np.maximum(amp_map, 0) * np.exp(1j * phase_map)
 
-    def calc_vis_psf(self, psf, model, exposure):
-        splodges = to_uv(dlu.resize(psf, self.uv_pad * len(psf)))
-        vis_map = dlu.resize(self.get_vis_map(model, exposure), splodges.shape[0])
+    def calc_vis_psf(self, wfs, model, exposure):
+        psfs = wfs.psf
+        npix_in = psfs.shape[-1]
+        npix_pad = self.uv_pad * npix_in
 
-        # The support threshold is some what arbitrary and determined experimentally
-        # To be safe, in future we should normalise the splodge map first
-        applied = np.where(np.abs(splodges) > 1e-3, splodges * vis_map, splodges)
-        return dlu.resize(np.abs(from_uv(applied)), psf.shape[0])
+        if self.per_wavelength:
+            splodges = vmap(lambda psf: to_uv(dlu.resize(psf, npix_pad)))(psfs)
+            resize_fn = lambda vis_map: dlu.resize(vis_map, npix_pad)
+            vis_map = vmap(resize_fn)(self.get_vis_map(model, exposure))
 
-    def model_vis(self, psf, model, exposure):
-        return psf.set("data", self.calc_vis_psf(psf.data, model, exposure))
+            amps = np.abs(splodges)
+            norm_amps = amps / np.max(amps, axis=(1, 2), keepdims=True)
+            applied = np.where(norm_amps > 1e-3, splodges * vis_map, splodges)
 
-    def __call__(self, model, exposure):
-        psf = self.model_psf(model, exposure)
-        psf = self.model_vis(psf, model, exposure)
-        psf = self.model_detector(psf, model, exposure)
-        ramp = self.model_ramp(psf, model, exposure)
-        return self.model_read(ramp, model, exposure)
+            psf_fn = lambda cplx: np.abs(dlu.resize(from_uv(cplx), npix_in))
+            return vmap(psf_fn)(applied).sum(0)
+
+        else:
+            psf = wfs.psf.sum(0)
+            vis_map = dlu.resize(self.get_vis_map(model, exposure), npix_pad)
+            splodges = to_uv(dlu.resize(psf, npix_pad))
+
+            # The support threshold is some what arbitrary and determined experimentally
+            # To be safe, in future we should normalise the splodge map first
+            applied = np.where(np.abs(splodges) > 1e-3, splodges * vis_map, splodges)
+            np.where(np.abs(splodges) > 1e-3, vis_map, np.nan)
+            return dlu.resize(np.abs(from_uv(applied)), npix_in)
+
+    def model_vis(self, wfs, model, exposure):
+        psf = self.calc_vis_psf(wfs, model, exposure)
+        return dl.PSF(psf, wfs.pixel_scale.mean(0))
+
+    def model_psf(self, model, exposure):
+        wfs = self.model_wfs(model, exposure)
+        psf = self.model_vis(wfs, model, exposure)
+        return psf
 
 
 class FringeFit(PointFit):
