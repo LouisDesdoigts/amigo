@@ -268,7 +268,7 @@ def optimise(
         batch_loss = np.array(batch_losses).mean()
         looper.set_description(f"Loss: {epoch_loss:,.2f}, \u0394: {batch_loss - epoch_loss:,.2f}")
         losses.append(batch_losses)
-        epoch_loss = batch_loss
+        epoch_loss = batch_loss / batch_size
 
         # Save progress along the way
         if save_every is not None and ((idx + 1) % save_every) == 0:
