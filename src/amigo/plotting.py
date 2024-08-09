@@ -355,10 +355,9 @@ def _plot_ax(leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, e
 
 def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
     """This is the ugly gross function that is necessary"""
-    # print(start, end)
     arr = arr[start:end]
     epochs = np.arange(len(arr))
-    ax.set(xlabel="Epochs", title=param)  # , xlim=(start, epochs[end]))
+    ax.set(xlabel="Epochs", title=param)
 
     match param:
         case "positions":

@@ -77,14 +77,35 @@ class LayeredDetector(dl.detectors.LayeredDetector):
         return psf
 
 
+def gen_fourier_signal(single_ramp, coeffs, period=1024):
+    orders = np.arange(len(coeffs)) + 1
+    xs = vmap(lambda order: order * 2 * np.pi * single_ramp / period)(orders)
+    basis = np.vstack([np.sin(xs), np.cos(xs)])
+    return np.dot(coeffs.flatten(), basis)
+
+
+class ADC(dl.detector_layers.DetectorLayer):
+    ADC_coeffs: Array
+    period: int = eqx.field(static=True)
+
+    def __init__(self, ADC_coeffs=None, period=1024):
+        if ADC_coeffs is None:
+            ADC_coeffs = np.zeros((1, 2))
+        if ADC_coeffs[0, 0] == 0:
+            ADC_coeffs = ADC_coeffs.at[0, 0].set(1.5)
+        self.ADC_coeffs = np.array(ADC_coeffs, float)
+        self.period = int(period)
+
+    def apply(self, ramp):
+        data = ramp.data
+        apply_fn = vmap(lambda x: gen_fourier_signal(x, self.ADC_coeffs, self.period))
+        correction = apply_fn(data.reshape(len(data), -1).T).T.reshape(data.shape)
+        return ramp.add("data", correction)
+
+
 class ReadModel(LayeredDetector):
 
-    def __init__(
-        self,
-        dark_current=0.0,
-        ipc=True,
-        one_on_fs=None,
-    ):
+    def __init__(self, dark_current=0.0, ipc=True, one_on_fs=None, ADC_coeffs=np.zeros((4, 2))):
         layers = []
         layers.append(("read", DarkCurrent(dark_current)))
         if ipc:
@@ -94,4 +115,5 @@ class ReadModel(LayeredDetector):
             ipc = np.array([[1.0]])
         layers.append(("IPC", IPC(ipc)))
         layers.append(("amplifier", Amplifier(one_on_fs)))
+        layers.append(("ADC", ADC(ADC_coeffs)))
         self.layers = dlu.list2dictionary(layers, ordered=True)

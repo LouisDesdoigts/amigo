@@ -64,16 +64,18 @@ def process_uncal(directory, output_dir="stage1/", verbose=False, AMI_only=True,
         pl1.save_calibrated_ramp = True  # save the output
 
         # These are all the ones that are run at present, in order
-        pl1.dq_init.skip = False  # This is run
-        pl1.saturation.skip = False  # This is run
+        # pl1.dq_init.skip = False  # This is run
+        # pl1.saturation.skip = False  # This is run
         pl1.ipc.skip = True
-        pl1.superbias.skip = False  # This is run
+        # pl1.superbias.skip = False  # This is run
+        pl1.superbias.skip = True
         pl1.refpix.skip = True
         pl1.linearity.skip = True
         pl1.persistence.skip = True
         pl1.dark_current.skip = True
         pl1.charge_migration.skip = True
-        pl1.jump.skip = False  # This is run
+        # pl1.jump.skip = False  # This is run
+        pl1.jump.skip = True
         pl1.ramp_fit.skip = True
 
         pl1.run(str(file_path))  # run pipeline from uncal file
@@ -135,6 +137,16 @@ def delete_contents(path):
             print("Failed to delete %s. Reason: %s" % (file_path, e))
 
 
+# def recon_sine(signal, freq):
+#     times = np.arange(signal.shape[0])
+#     ls = LombScargle(times, signal)
+#     design = ls.design_matrix(frequency=freq)
+#     poly = np.vander(times, 2)
+#     design = np.hstack((design[:, 1:], poly))
+#     b, _, _, _ = np.linalg.lstsq(design, signal)
+#     return design[:, :-2] @ b[:-2], design[:, -2:] @ b[-2:]  # sine part, poly part
+
+
 def process_calslope(
     directory,
     output_dir="calslope/",
@@ -143,6 +155,7 @@ def process_calslope(
     n_groups=None,  # how many groups of the ramp to use
     dq_thresh=0.0,  # threshold value for the PIXELDQ flags
     clean_dir=True,
+    # correct_frequency=False,
 ):
     """
     Chunk size determines the maximum number of integrations in a 'chunk'. Each chunk
@@ -256,6 +269,16 @@ def process_calslope(
             # Get slopes
             slopes = np.diff(chunk, axis=1)
             slope, slope_var = calc_mean_and_var(slopes)
+
+            # if correct_frequency:
+            #     for i in range(80):  # takes 2 seconds on my machine
+            #         for j in range(80):
+
+            #             signal = slope[:, i, j]
+            #             rec, poly = recon_sine(signal, 1 / 1024 * np.mean(signal))
+            #             # corrected = signal - rec
+            #             if signal.sum() > 512:
+            #                 slope = slope.at[:, i, j].set(signal - rec)
 
             # Zero-point - We may actually want to track this to feed into the
             # forwards model. The bias/zero point will couple into the BFE, and so exposures

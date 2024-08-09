@@ -120,7 +120,7 @@ class LinearDetectorModel(LayeredDetector):
         layers = [("rotate", Rotate(rot_angle))]
 
         if anisotropy:
-            compression = np.array([0.99580676, 1.00343162])
+            compression = np.array([0.99618757, 1.00381243])
             anisotropy = PixelAnisotropy(order=3).set("compression", compression)
             layers.append(("anisotropy", anisotropy))
 

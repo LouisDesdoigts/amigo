@@ -21,6 +21,7 @@ from . import ramp_models
 from . import pipelines
 from . import plotting
 from . import stats
+from . import training
 
 __all__ = [
     core_models,
@@ -40,4 +41,5 @@ __all__ = [
     pipelines,
     plotting,
     stats,
+    training,
 ]

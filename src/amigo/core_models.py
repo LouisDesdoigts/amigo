@@ -134,6 +134,7 @@ class Exposure(zdx.Base):
     slopes: jax.Array
     variance: jax.Array
     zero_point: jax.Array
+    zero_point_variance: jax.Array
     support: jax.Array
     opd: jax.Array
 
@@ -185,6 +186,7 @@ class Exposure(zdx.Base):
         self.support = support
         self.opd = opd
         self.zero_point = np.asarray(file["ZPOINT"].data, float)
+        self.zero_point_variance = np.asarray(file["ZPOINT_VAR"].data, float)
 
         #
         self.nints = file[0].header["NINTS"]

@@ -542,7 +542,7 @@ class PolyConv(eqx.Module):
         pows = np.arange(0, len(coeffs)) + 1
         sample_points = sample_ratio * (np.arange(ngroups) + 1) / ngroups
 
-        # Regular polynomial, coeffs not raised to a power
+        # Regular polynomial
         eval_points = sample_points[:, None] ** pows[None, :]
         bleed_ramp = np.sum(coeffs[None, ...] * eval_points[..., None, None], axis=1)
 

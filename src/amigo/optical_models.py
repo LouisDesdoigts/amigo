@@ -10,11 +10,11 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
 
     def __init__(
         self,
-        radial_orders=4,
+        radial_orders=6,
         pupil_mask=None,
         opd=None,
         normalise=True,
-        coherence_orders=4,
+        coherence_orders=6,
         psf_npixels=80,
         oversample=4,
         pixel_scale=0.065524085,
@@ -22,6 +22,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         wf_npixels=1024,
         f2f=0.80,
         oversize=1.1,
+        distortion_orders=5,
         polike=False,
         unique_holes=False,
         static_opd=False,
@@ -42,7 +43,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
 
         if pupil_mask is None:
             pupil_mask = PolyMask(
-                order=3,
+                order=distortion_orders,
                 diameter=diameter,
                 npixels=wf_npixels,
                 f2f=f2f,

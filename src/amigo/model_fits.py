@@ -152,6 +152,16 @@ class ModelFit(zdx.Base):
         if "one_on_fs" in model.params.keys():
             model = model.set("read.one_on_fs", model.one_on_fs[exposure.key])
 
+        # if "biases" in model.params.keys():
+        #     model = model.set("read.bias", model.biases[exposure.key])
+
+        # Add the zero point to the ramp
+        zpoint = exposure.zero_point[None, ...]
+        zpoint = np.where(np.isnan(zpoint), 0, zpoint)
+        slopes = np.diff(ramp.data, axis=0)
+        true_ramp = np.concatenate([zpoint, zpoint + np.cumsum(slopes, axis=0)])
+        ramp = ramp.set("data", true_ramp)
+
         # Apply the read effects
         ramp = model.read.apply(ramp)
 
