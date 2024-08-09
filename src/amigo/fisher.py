@@ -7,7 +7,6 @@ import jax.tree_util as jtu
 from .modelling import variance_model
 from .stats import posterior
 import os
-from tqdm.notebook import tqdm
 
 
 def fisher_fn(model, exposure, params, new_diag=False):
@@ -90,14 +89,15 @@ def calc_fishers(
 
     # Iterate over exposures
     fisher_exposures = {}
-    for exp in tqdm(exposures):
+    # for exp in tqdm(exposures):
+    for exp in exposures:
 
         # Iterate over params
         fisher_params = {}
-        looper = tqdm(range(0, len(parameters)), leave=False, desc="")
-        for idx in looper:
+        # looper = tqdm(range(0, len(parameters)), leave=False, desc="")
+        for idx in range(0, len(parameters)):
             param = parameters[idx]
-            looper.set_description(param)
+            # looper.set_description(param)
 
             # Ensure the path to save to exists
             save_path = f"{cache}/{exp.filename}/"
