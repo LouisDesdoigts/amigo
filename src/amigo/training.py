@@ -79,6 +79,7 @@ def train(
     epochs,
     lr,
     batch_size,
+    save_last_n=25,
     cache="files/fishers",
 ):
 
