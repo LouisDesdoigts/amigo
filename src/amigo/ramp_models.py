@@ -20,14 +20,6 @@ def build_image_basis(image):
     return np.array([image, rgrads, xyrgrads, xxyygrads])
 
 
-def build_basis(image, powers=[1], norm=1.0):
-    image /= norm
-    safe_pow = lambda x, p: np.where(x < 0, -np.abs(np.pow(-x, p)), np.pow(x, p))
-    images = [safe_pow(image, pow) for pow in powers]
-    basis = [build_image_basis(im) for im in images]
-    return np.concatenate(basis)
-
-
 def model_ramp(psf, ngroups):
     """Applies an 'up the ramp' model of the input 'optical' PSF. Input PSF.data
     should have shape (npix, npix) and return shape (ngroups, npix, npix)"""
