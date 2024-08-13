@@ -5,9 +5,8 @@ from astroquery.simbad import Simbad
 import pyia
 import pkg_resources as pkg
 import numpy as onp
-from scipy.ndimage import center_of_mass
-from scipy.interpolate import griddata
 import dLux.utils as dlu
+from .misc import find_position
 
 
 def summarise_files(files, extra_keys=[]):
@@ -168,32 +167,6 @@ def get_Teffs(files, default=4500, skip_search=False, Teff_cache="files/Teffs"):
     return Teffs
 
 
-def interp_badpix(array):
-    # Get the coordinates of the good pixels
-    x, y = np.indices(array.shape)
-    good_pixels = ~np.isnan(array)
-
-    # Interpolate over the bad pixels
-    fixed = griddata((x[good_pixels], y[good_pixels]), array[good_pixels], (x, y), method="cubic")
-    return np.where(np.isnan(fixed), 0.0, fixed)
-
-
-def find_position(psf, pixel_scale=0.065524085):
-    # Interpolate the bad pixels
-    psf = onp.array(interp_badpix(psf))
-    # Compute the center of mass
-    cen = np.array(center_of_mass(psf))
-
-    # Convert back to paraxial coordinates
-    cen -= (np.array(psf.shape) - 1) / 2
-
-    # Scale and flip the y
-    y, x = cen * pixel_scale * np.array([-1, 1])
-
-    # Return as (x, y)
-    return np.array([x, y])
-
-
 def get_default_params(exposures, optics, amp_order=1):
 
     # These are the default parameters, they are _always_ present
@@ -251,23 +224,11 @@ def initialise_vis(vis_model, exposures):
     return params
 
 
-# def initialise_fringes(exposures):
-#     params = {
-#         "shifts": {},
-#         "contrasts": {},
-#     }
-#     for filt in ["F380M", "F430M", "F480M"]:
-#         params["shifts"][filt] = np.array([3e-3, 0])
-#         params["contrasts"][filt] = np.array(-3.0)
-#     return params
-
-
 def initialise_params(
     exposures,
     optics,
     fit_one_on_fs=False,
     fit_reflectivity=False,
-    # fit_fringes=False,
     vis_model=None,
 ):
     # NOTE: At present this assume the _same_ fit is being applied to all the exposures
@@ -279,9 +240,6 @@ def initialise_params(
 
     if not fit_reflectivity:
         params.pop("reflectivity")
-
-    # if fit_fringes:
-    #     params.update(initialise_fringes(exposures))
 
     if vis_model is not None:
         params.update(initialise_vis(vis_model, exposures))
@@ -351,110 +309,17 @@ def prep_data(file, ms_thresh=None, as_psf=False):
     return data, var, support
 
 
-# def get_wss_ops(files):
-#     opds = {}
-#     opd_files = []
-#     for file in files:
-#         date = file[0].header["DATE-BEG"]
-#         opd0, opd1, t0, t1 = mast_wss.mast_wss_opds_around_date_query(date, verbose=False)
-#         closest_fn, closest_dt = (opd1, t1) if abs(t1) < abs(t0) else (opd0, t0)
-#         opd_file = mast_wss.mast_retrieve_opd(closest_fn)
-#         if opd_file not in opds.keys():
-#             opd = mast_wss.import_wss_opd(opd_file)[0].data
-#             opds[opd_file] = np.asarray(opd, float)
-#         opd_files.append(opds[opd_file])
-#     return opd_files
+def get_exposures(files, fit, ms_thresh=None, as_psf=False):
+    from amigo.core_models import Exposure
 
-
-# def get_amplitudes(exposures, radial_orders=None, noll_indices=None, dc=False):
-#     """If dc is True, an extra value for the dc term is included.
-#     Returns amplitudes of the shape (n_hexes, n_zernikes)."""
-
-#     n_zernikes = len(get_noll_indices(radial_orders, noll_indices))
-
-#     if dc:
-#         n = 22
-#     else:
-#         n = 21
-#     amplitudes = {}
-#     for exp in exposures:
-#         # key = "_".join([exp.star, exp.filter])
-#         key = exp.fit.get_key(exp, "amplitudes")
-#         if key not in amplitudes.keys():
-#             pistons = np.ones((n, 1))  # ones for pistons
-#             higher_orders = np.zeros((n, n_zernikes - 1))  # zeros elsewhere
-#             amplitudes[key] = np.hstack([pistons, higher_orders])
-#     return amplitudes
-
-
-# def get_phases(exposures, radial_orders=None, noll_indices=None, dc=False):
-#     """If dc is True, an extra value for the dc term is included.
-#     Returns phases of the shape (n_hexes, n_zernikes)"""
-
-#     n_zernikes = len(get_noll_indices(radial_orders, noll_indices))
-
-#     if dc:
-#         n = 22
-#     else:
-#         n = 21
-#     phases = {}
-#     for exp in exposures:
-#         # key = "_".join([exp.star, exp.filter])
-#         key = exp.fit.get_key(exp, "amplitudes")
-#         if key not in phases.keys():
-#             phases[key] = np.zeros((n, n_zernikes))
-#     return phases
-
-
-def get_exposures(files, fit, ms_thresh=None, as_psf=False):  # , static_opd=False):
-    from amigo.core_models import Exposure  # I think I can import this at the start now
-
-    # if static_opd:
-    #     opds = get_wss_ops(files)
-    # else:
-    #     opds = np.zeros((len(files), 1024, 1024))
     exposures = []
     for file in files:
         data, variance, support = prep_data(file, ms_thresh=ms_thresh, as_psf=as_psf)
-        # if key_fn is None:
-
-        #     key_fn = lambda file: "_".join(
-        #         [
-        #             file[0].header[k]
-        #             for k in [
-        #                 "PROGRAM",
-        #                 "OBSERVTN",
-        #                 "ACT_ID",
-        #                 "EXPOSURE",
-        #             ]
-        #         ]
-        #     )
-        # key_fn = lambda file: "_".join(file[0].header["FILENAME"].split("_")[:4])
         data = np.asarray(data, float)
         variance = np.asarray(variance, float)
         support = np.asarray(support, int)
-        # exposures.append(ExposureModel(file, data, variance, support, opd, key_fn, exp_type))
         exposures.append(Exposure(file, data, variance, support, fit))  # key_fn, fit))
     return exposures
-
-
-def full_to_SUB80(full_arr, npix_out=80, fill=0.0):
-    """
-    This is taken from the JWST pipeline, so its probably correct.
-
-    The padding adds zeros to the edges of the array, keeping the SUB80 array centered.
-    """
-    xstart = 1045
-    ystart = 1
-    xsize = 80
-    ysize = 80
-    xstop = xstart + xsize - 1
-    ystop = ystart + ysize - 1
-    SUB80 = full_arr[ystart - 1 : ystop, xstart - 1 : xstop]
-    if npix_out != 80:
-        pad = (npix_out - 80) // 2
-        SUB80 = np.pad(SUB80, pad, constant_values=fill)
-    return SUB80
 
 
 def repopulate(model, history, index=-1):
@@ -473,133 +338,3 @@ def repopulate(model, history, index=-1):
             model = model.set(param_key, value[index])
 
     return model
-
-
-# def calc_splodge_masks(
-#     exposures,
-#     optics,
-#     # wavels,
-#     uv_pad=2,
-#     calc_pad=3,
-#     crop_npix=None,
-#     radial_orders=None,
-#     noll_indices=None,
-#     hexike_cache="files/uv_hexikes",
-#     verbose=False,
-#     recalculate=False,
-# ):
-
-#     if hasattr(optics, "focal_length"):
-#         pixel_scale = dlu.rad2arcsec(1e-6 * optics.psf_pixel_scale / optics.focal_length)
-#     else:
-#         pixel_scale = optics.psf_pixel_scale
-
-#     filters = {}
-#     for filt in list(set([exp.filter for exp in exposures])):
-#         filters[filt] = calc_throughput(filt)  # , nwavels=nwavels)
-
-#     # Dealing with the radial_orders and noll_indices arguments
-#     if radial_orders is not None and noll_indices is not None:
-#         print("Warning: Both radial_orders and noll_indices provided. Using noll_indices.")
-#         radial_orders = None
-
-#     if noll_indices is None:
-#         noll_indices = get_noll_indices(radial_orders, noll_indices)
-
-#     # Check whether the specified cache directory exists
-#     if not os.path.exists(hexike_cache):
-#         os.makedirs(hexike_cache)
-
-#     # defining known desired array sizes for different filters
-#     # TODO: This should scale with optical oversample
-#     crop_dict = {
-#         "F277W": 714,
-#         "F380M": 486,
-#         "F430M": 426,
-#         "F480M": 384,
-#     }
-
-#     # hexikes = {}
-#     bases = {}
-#     weights = {}
-#     supports = {}
-#     inv_supports = {}
-#     # for file in files:
-#     for exp in exposures:
-#         filt = exp.filter
-#         if filt in bases.keys():
-#             continue
-#         wavels = filters[filt][0]
-
-#         # calc_pad = 3  # 3x oversample on the mask calculation for soft edges
-#         # uv_pad = 2  # 2x oversample on the UV transform
-#         crop_npix = crop_dict[filt]  # cropping masks
-
-#         _bases = []
-#         _weights = []
-#         _supports = []
-#         _inv_supports = []
-
-#         looper = tqdm(wavels) if verbose else wavels
-#         for wavelength in looper:
-#             wl_key = f"{int(wavelength*1e9)}"  # The nearest nm
-#             noll_key = "".join([str(n) for n in noll_indices])  # recording the noll indices
-#             file_key = f"{hexike_cache}/{wl_key}_{optics.oversample}_{noll_key}"
-
-#             if recalculate:
-#                 basis, weight, support, inv_support = build_hexikes(
-#                     optics.pupil_mask.holes,
-#                     optics.pupil_mask.f2f,
-#                     optics.pupil_mask.transformation,
-#                     wavelength,
-#                     pixel_scale,
-#                     optics.psf_npixels,
-#                     optics.oversample,
-#                     uv_pad,
-#                     calc_pad,
-#                     radial_orders=radial_orders,
-#                     noll_indices=noll_indices,
-#                     crop_npix=crop_npix,
-#                 )
-#                 np.save(f"{file_key}_basis.npy", basis)
-#                 np.save(f"{file_key}_weight.npy", weight)
-#                 np.save(f"{file_key}_support.npy", support)
-#                 np.save(f"{file_key}_inv_support.npy", inv_support)
-#             else:
-
-#                 try:
-#                     basis = np.load(f"{file_key}_basis.npy")
-#                     weight = np.load(f"{file_key}_weight.npy")
-#                     support = np.load(f"{file_key}_support.npy")
-#                     inv_support = np.load(f"{file_key}_inv_support.npy")
-
-#                 except FileNotFoundError:
-#                     basis, weight, support, inv_support = build_hexikes(
-#                         optics.pupil_mask.holes,
-#                         optics.pupil_mask.f2f,
-#                         optics.pupil_mask.transformation,
-#                         wavelength,
-#                         pixel_scale,
-#                         optics.psf_npixels,
-#                         optics.oversample,
-#                         uv_pad,
-#                         calc_pad,
-#                         radial_orders=radial_orders,
-#                         noll_indices=noll_indices,
-#                         crop_npix=crop_npix,
-#                     )
-#                     np.save(f"{file_key}_basis.npy", basis)
-#                     np.save(f"{file_key}_weight.npy", weight)
-#                     np.save(f"{file_key}_support.npy", support)
-#                     np.save(f"{file_key}_inv_support.npy", inv_support)
-
-#             _bases.append(basis)
-#             _weights.append(weight)
-#             _supports.append(support)
-#             _inv_supports.append(inv_support)
-
-#         bases[filt] = np.array(_bases)
-#         weights[filt] = np.array(_weights)
-#         supports[filt] = np.array(_supports)
-#         inv_supports[filt] = np.array(_inv_supports)
-#     return bases, weights, supports, inv_supports

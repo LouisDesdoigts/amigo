@@ -4,7 +4,6 @@ from jax import Array, vmap
 import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
-from .mask_models import PolyMask
 
 
 def gen_powers(degree):
@@ -292,7 +291,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         layers += [("InvertY", dl.Flip(0))]
 
         if pupil_mask is None:
-            pupil_mask = PolyMask(
+            pupil_mask = DynamicApertureMask(
                 order=distortion_orders,
                 diameter=diameter,
                 npixels=wf_npixels,

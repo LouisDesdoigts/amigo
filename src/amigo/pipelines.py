@@ -1,23 +1,9 @@
 import os
 import shutil
-import numpy as onp
 import jax.numpy as np
 from tqdm.notebook import tqdm
 from astropy.io import fits
-from astropy.stats import sigma_clip
-
-
-def calc_mean_and_std_var(data, axis=0):
-    support = np.asarray(~np.isnan(data), int).sum(axis)
-    mean = np.nanmean(data, axis=axis)
-    std_var = np.nanvar(data, axis=axis) / support
-    return mean, std_var
-
-
-def apply_sigma_clip(array, sigma=5.0, axis=0):
-    masked = onp.ma.masked_invalid(array, copy=True)
-    clipped = sigma_clip(masked, axis=axis, sigma=sigma)
-    return onp.ma.filled(clipped, fill_value=onp.nan)
+from .misc import apply_sigma_clip, calc_mean_and_std_var
 
 
 def delete_contents(path):
@@ -144,7 +130,7 @@ def process_calslope(
             # can not distinguish between real signal and bias, so its value couples
             # through pixel non-linearities (ie pixel response, BFE)
             if sigma > 0:
-                chunk = sigma_clip(chunk, sigma=sigma)
+                chunk = apply_sigma_clip(chunk, sigma=sigma)
 
             # Get slopes
             slopes = np.diff(chunk, axis=1)

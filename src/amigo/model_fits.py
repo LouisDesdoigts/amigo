@@ -6,38 +6,15 @@ import jax.numpy as np
 from abc import abstractmethod
 from jax import lax, vmap
 from .ramp_models import model_ramp
-from .interferometry import to_uv, from_uv
-from .vis_models import build_vis_pts, get_mean_wavelength, get_uv_coords, sample_spline
-
-
-def planck(wav, T):
-    """
-    Planck's Law:
-    I(W, T) = (2hc^2 / W^5) * (1 / (exp{hc/WkT} - 1))
-    where
-    h = Planck's constant
-    c = speed of light
-    k = Boltzmann's constant
-
-    W = wavelength array
-    T = effective temperature
-
-    Here A is the first fraction and B is the second fraction.
-    The calculation is (sort of) performed in log space.
-    """
-    logW = np.log10(wav)  # wavelength array
-    logT = np.log10(T)  # effective temperature
-
-    # -15.92... is [log2 + logh + 2*logc]
-    logA = -15.92347606 - 5 * logW
-    logB = -np.log10(
-        np.exp(
-            # -1.84...is logh + logc - logk
-            np.power(10, -1.8415064 - logT - logW)
-        )
-        - 1.0
-    )
-    return np.power(10, logA + logB)
+from .misc import planck
+from .vis_models import (
+    build_vis_pts,
+    get_mean_wavelength,
+    get_uv_coords,
+    sample_spline,
+    to_uv,
+    from_uv,
+)
 
 
 class ModelFit(zdx.Base):
@@ -84,10 +61,6 @@ class ModelFit(zdx.Base):
 
         if param in ["shifts", "contrasts"]:
             return f"{param}.{exposure.get_key(param)}"
-
-        # # TODO: Add mapping
-        # if param == "dispersion":
-        #     return f"{param}.{exposure.get_key(param)}"
 
         if param == "fluxes":
             return f"{param}.{exposure.get_key(param)}"

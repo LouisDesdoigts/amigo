@@ -1,9 +1,8 @@
+import os
 import zodiax as zdx
 import jax.numpy as np
 from jax import jit, grad, linearize, lax
-from .modelling import variance_model
-from .stats import posterior
-import os
+from .stats import posterior, variance_model
 
 
 def fisher_fn(model, exposure, params, new_diag=False):
