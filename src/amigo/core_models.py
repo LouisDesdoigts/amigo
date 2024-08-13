@@ -35,6 +35,33 @@ class Exposure(zdx.Base):
     calibrator: bool = eqx.field(static=True)
     fit: object = eqx.field(static=True)
 
+    def __init__(self, file, slopes, variance, support, fit):
+        self.slopes = slopes
+        self.variance = variance
+        self.support = support
+        self.zero_point = np.asarray(file["ZPOINT"].data, float)
+        self.zero_point_variance = np.asarray(file["ZPOINT_VAR"].data, float)
+        self.fit = fit
+
+        self.nints = file[0].header["NINTS"]
+        self.filter = file[0].header["FILTER"]
+        self.star = file[0].header["TARGPROP"]
+        self.observation = file[0].header["OBSERVTN"]
+        self.program = file[0].header["PROGRAM"]
+        self.act_id = file[0].header["ACT_ID"]
+        self.dither = file[0].header["EXPOSURE"]
+        self.calibrator = bool(file[0].header["IS_PSF"])
+        self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
+
+    def print_summary(self):
+        print(
+            f"File {self.key}\n"
+            f"Star {self.star}\n"
+            f"Filter {self.filter}\n"
+            f"nints {self.nints}\n"
+            f"ngroups {len(self.slopes)+1}\n"
+        )
+
     # Simple method to give nice syntax for getting keys
     def get_key(self, param):
         return self.fit.get_key(self, param)
@@ -53,32 +80,6 @@ class Exposure(zdx.Base):
     @property
     def key(self):
         return "_".join([self.program, self.observation, self.act_id, self.dither])
-
-    def __init__(self, file, slopes, variance, support, fit):
-        self.slopes = slopes
-        self.variance = variance
-        self.support = support
-        self.zero_point = np.asarray(file["ZPOINT"].data, float)
-        self.zero_point_variance = np.asarray(file["ZPOINT_VAR"].data, float)
-        self.fit = fit
-
-        self.nints = file[0].header["NINTS"]
-        self.filter = file[0].header["FILTER"]
-        self.star = file[0].header["TARGPROP"]
-        self.observation = file[0].header["OBSERVTN"]
-        self.act_id = file[0].header["ACT_ID"]
-        self.dither = file[0].header["EXPOSURE"]
-        self.calibrator = bool(file[0].header["IS_PSF"])
-        self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
-
-    def print_summary(self):
-        print(
-            f"File {self.key}\n"
-            f"Star {self.star}\n"
-            f"Filter {self.filter}\n"
-            f"nints {self.nints}\n"
-            f"ngroups {len(self.slopes)+1}\n"
-        )
 
     def to_vec(self, image):
         return image[..., *self.support].T

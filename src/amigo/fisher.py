@@ -4,6 +4,9 @@ import jax.numpy as np
 from jax import jit, grad, linearize, lax
 from .stats import posterior, variance_model
 
+# TODO: Update to proper import
+from tqdm.notebook import tqdm
+
 
 def fisher_fn(model, exposure, params, new_diag=False):
     return FIM(model, params, posterior, exposure, new_diag=new_diag)
@@ -69,6 +72,7 @@ def calc_fishers(
     overwrite=False,
     save=True,
     new_diag=False,
+    verbose=True,
     cache="files/fishers",
 ):
 
@@ -77,15 +81,19 @@ def calc_fishers(
 
     # Iterate over exposures
     fisher_exposures = {}
-    # for exp in tqdm(exposures):
-    for exp in exposures:
+    if verbose:
+        looper = tqdm(exposures, desc="")
+    else:
+        looper = exposures
+    for exp in looper:
 
         # Iterate over params
         fisher_params = {}
-        # looper = tqdm(range(0, len(parameters)), leave=False, desc="")
         for idx in range(0, len(parameters)):
             param = parameters[idx]
-            # looper.set_description(param)
+
+            if verbose:
+                looper.set_description(param)
 
             # Ensure the path to save to exists
             save_path = f"{cache}/{exp.filename}/"

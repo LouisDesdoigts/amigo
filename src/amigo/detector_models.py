@@ -46,7 +46,7 @@ class Rotate(dl.layers.detector_layers.DetectorLayer):
         self.angle = angle
 
     def apply(self, PSF):
-        coords = dlu.pixel_coords(-1, 1, PSF.data.shape[0])
+        coords = dlu.pixel_coords(PSF.data.shape[0], 2)
         rot_coords = dlu.rotate_coords(coords, dlu.deg2rad(self.angle))
         rotated = interp(PSF.data, coords, rot_coords)
         return PSF.set("data", rotated)
@@ -113,6 +113,7 @@ class LinearDetectorModel(LayeredDetector):
         oversample=4,
         npixels_in=80,
         rot_angle=-0.56126717,
+        jitter_amplitude=6.5e-4,
         SRF=None,
         FF=None,
         jitter=True,
@@ -120,7 +121,9 @@ class LinearDetectorModel(LayeredDetector):
         layers = [("rotate", Rotate(rot_angle))]
 
         if jitter:
-            layers.append(("jitter", GaussianJitter(2.5e-7, kernel_size=19, kernel_oversample=3)))
+            layers.append(
+                ("jitter", GaussianJitter(jitter_amplitude, kernel_size=19, kernel_oversample=3))
+            )
 
         # Load the FF
         if FF is None:

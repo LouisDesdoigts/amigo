@@ -198,13 +198,16 @@ def summarise_fit(
             )
 
         optics = model.optics
-        mask, amp, abb = pupil_mask.calculate(optics.wf_npixels, optics.diameter)
+        amp = pupil_mask.calc_transmission()
+        mask = pupil_mask.calc_mask(optics.wf_npixels, optics.diameter)
+        abb = pupil_mask.calc_aberrations()
+        # mask, amp, abb = pupil_mask.calculate(optics.wf_npixels, optics.diameter)
         amp_in = np.where(mask < 1.0, np.nan, mask * amp)
         abb_in = np.where(mask < 1.0, np.nan, 1e9 * abb)
 
         # # Get the applied opds in nm and flip to match the mask
-        static_opd = np.flipud(exposure.opd) * 1e9
-        total_opd = np.where(mask < 1.0, np.nan, static_opd + abb_in)
+        # static_opd = np.flipud(exposure.opd) * 1e9
+        # total_opd = np.where(mask < 1.0, np.nan, abb_in)
 
         plt.figure(figsize=(15, 4))
 
@@ -220,11 +223,11 @@ def summarise_fit(
         plt.imshow(abb_in, cmap=seismic, vmin=-v, vmax=v)
         plt.colorbar(label="OPD (nm)")
 
-        v = np.nanmax(np.abs(total_opd))
-        plt.subplot(1, 3, 3)
-        plt.title("Total OPD")
-        plt.imshow(total_opd, cmap=seismic, vmin=-v, vmax=v)
-        plt.colorbar(label="OPD (nm)")
+        # v = np.nanmax(np.abs(total_opd))
+        # plt.subplot(1, 3, 3)
+        # plt.title("Total OPD")
+        # plt.imshow(total_opd, cmap=seismic, vmin=-v, vmax=v)
+        # plt.colorbar(label="OPD (nm)")
 
         plt.tight_layout()
         plt.show()

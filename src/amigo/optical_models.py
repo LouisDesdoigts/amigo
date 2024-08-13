@@ -81,17 +81,13 @@ def calc_mask(coords, f2f, pixel_scale):
     return vmap(hex_fn)(coords).sum(0)
 
 
-def calc_basis(coords, f2f, radial_orders, oversize=1.1, polike=False):
+def calc_basis(coords, f2f, radial_orders, polike=False):
     noll_inds = get_noll_indices(np.arange(radial_orders))
 
     if polike:
-        basis_fn = lambda coords: dlu.polike_basis(
-            6, noll_inds, coords, oversize * 2 * f2f / np.sqrt(3)
-        )
+        basis_fn = lambda coords: dlu.polike_basis(6, noll_inds, coords, 2 * f2f / np.sqrt(3))
     else:
-        basis_fn = lambda coords: dlu.zernike_basis(
-            noll_inds, coords, oversize * 2 * f2f / np.sqrt(3)
-        )
+        basis_fn = lambda coords: dlu.zernike_basis(noll_inds, coords, 2 * f2f / np.sqrt(3))
     return vmap(basis_fn)(coords)
 
 
@@ -110,17 +106,20 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
     def __init__(
         self,
         hole_coords,
-        f2f=0.80,
+        f2f,
+        # npix=1024,
+        # diameter=6.603464,
         aberration_orders=None,
         amplitude_orders=None,
-        oversize=1.1,
+        # oversize=1.1,
         polike=False,
     ):
+        # coords = dlu.pixel_coords(npix, diameter)
+        # hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, holes)
+
         # Calculate the aberration basis functions
         if aberration_orders is not None:
-            self.abb_basis = 1e-9 * calc_basis(
-                hole_coords, f2f, aberration_orders, oversize, polike
-            )
+            self.abb_basis = 1e-9 * calc_basis(hole_coords, f2f, aberration_orders, polike)
             self.abb_coeffs = np.zeros(self.abb_basis.shape[:-2])
         else:
             self.abb_basis = None
@@ -128,21 +127,21 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
 
         # Calculate the amplitude basis functions
         if amplitude_orders is not None:
-            self.amp_basis = calc_basis(hole_coords, f2f, amplitude_orders, oversize, polike)
+            self.amp_basis = calc_basis(hole_coords, f2f, amplitude_orders, polike)
             self.amp_coeffs = np.zeros(self.amp_basis.shape[:-2])
         else:
             self.amp_basis = None
             self.amp_coeffs = None
 
-    def calc_transmission(self):
+    def calc_transmission(self, npixels=1024):
         if self.amp_basis is not None:
             return 1 + dlu.eval_basis(self.amp_basis, self.amp_coeffs)
-        return None
+        return np.ones((npixels, npixels))
 
-    def calc_aberrations(self):
+    def calc_aberrations(self, npixels=1024):
         if self.abb_basis is not None:
             return dlu.eval_basis(self.abb_basis, self.abb_coeffs)
-        return None
+        return np.zeros((npixels, npixels))
 
 
 class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.TransmissiveLayer):
@@ -150,10 +149,10 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
     def __init__(
         self,
         holes=None,
+        f2f=0.80,
         diameter=6.603464,
         npixels=1024,
-        f2f=0.80,
-        distortion=None,
+        transformation=None,
         normalise=True,
         aberration_orders=None,
         amplitude_orders=None,
@@ -162,8 +161,8 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
     ):
         # Get distorted coordinates
         coords = dlu.pixel_coords(npixels, diameter)
-        if distortion is not None:
-            coords = distortion.apply(coords)
+        if transformation is not None:
+            coords = transformation.apply(coords)
 
         # Get the holes coordinates
         if holes is None:
@@ -175,17 +174,18 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
         self.normalise = bool(normalise)
 
         super().__init__(
-            hole_coords,
-            f2f=f2f,
+            hole_coords=hole_coords,
+            f2f=f2f * oversize,  # Oversize the aberrations to avoid edge effects
             aberration_orders=aberration_orders,
             amplitude_orders=amplitude_orders,
-            oversize=oversize,
             polike=polike,
         )
 
     def calc_transmission(self):
         if self.amp_basis is not None:
-            return self.transmission + super().calc_transmission()
+            return self.transmission + super().calc_transmission(
+                npixels=self.transmission.shape[0]
+            )
         return self.transmission
 
     def calc_aberrations(self):
@@ -210,10 +210,10 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
     def __init__(
         self,
         holes=None,
+        f2f=0.80,
         diameter=6.603464,
         npixels=1024,
-        f2f=0.80,
-        transformation=None,
+        distortion_orders=None,
         normalise=True,
         aberration_orders=None,
         amplitude_orders=None,
@@ -224,15 +224,18 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
             holes = get_initial_holes(diameter, npixels)
         self.holes = holes
         self.f2f = np.asarray(f2f, float)
-        self.transformation = transformation
+        self.transformation = DistortedCoords(distortion_orders)
         self.normalise = bool(normalise)
 
+        # Get undistorted coordinates for aberrations
+        coords = dlu.pixel_coords(npixels, diameter)
+        hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, holes)
+
         super().__init__(
-            holes,
-            f2f=f2f,
+            hole_coords=hole_coords,
+            f2f=f2f * oversize,  # Oversize the aberrations to avoid edge effects
             aberration_orders=aberration_orders,
             amplitude_orders=amplitude_orders,
-            oversize=oversize,
             polike=polike,
         )
 
@@ -242,9 +245,9 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         return calc_mask(hole_coords, self.f2f, diameter / npixels)
 
     def apply(self, wavefront):
-        wavefront *= self.calc_transmission()
+        wavefront *= self.calc_transmission(npixels=wavefront.npixels)
         wavefront *= self.calc_mask(wavefront.npixels, wavefront.diameter)
-        wavefront += self.calc_aberrations()
+        wavefront += self.calc_aberrations(npixels=wavefront.npixels)
         if self.normalise:
             return wavefront.normalise()
         return wavefront
@@ -292,7 +295,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
 
         if pupil_mask is None:
             pupil_mask = DynamicApertureMask(
-                order=distortion_orders,
+                distortion_orders=distortion_orders,
                 diameter=diameter,
                 npixels=wf_npixels,
                 f2f=f2f,
@@ -301,7 +304,6 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
                 amplitude_orders=coherence_orders,
                 oversize=oversize,
                 polike=polike,
-                unique_holes=unique_holes,
             )
         layers += [("pupil_mask", pupil_mask)]
         self.layers = dlu.list2dictionary(layers, ordered=True)

@@ -195,8 +195,9 @@ def get_default_params(exposures, optics, amp_order=1):
         abers = np.zeros_like(optics.pupil_mask.abb_coeffs)
         aberrations[exp.fit.get_key(exp, "aberrations")] = abers
 
-        reflects = np.zeros_like(optics.pupil_mask.amp_coeffs)
-        reflectivity[exp.fit.get_key(exp, "reflectivity")] = reflects
+        if optics.pupil_mask.amp_coeffs is not None:
+            reflects = np.zeros_like(optics.pupil_mask.amp_coeffs)
+            reflectivity[exp.fit.get_key(exp, "reflectivity")] = reflects
 
         one_on_f = np.zeros((exp.ngroups, 80, amp_order + 1))
         one_on_fs[exp.fit.get_key(exp, "one_on_fs")] = one_on_f
