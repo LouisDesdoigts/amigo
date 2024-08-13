@@ -11,118 +11,6 @@ from .read_models import ReadModel
 from .files import get_Teffs, get_filters
 
 
-class BaseModeller(zdx.Base):
-    params: dict
-
-    def __init__(self, params):
-        self.params = params
-
-    def __getattr__(self, key):
-        if key in self.params:
-            return self.params[key]
-        for k, val in self.params.items():
-            if hasattr(val, key):
-                return getattr(val, key)
-        raise AttributeError(
-            f"Attribute {key} not found in params of {self.__class__.__name__} object"
-        )
-
-    def __getitem__(self, key):
-
-        values = {}
-        for param, item in self.params.items():
-            if isinstance(item, dict) and key in item.keys():
-                values[param] = item[key]
-
-        return values
-
-
-class AmigoModel(BaseModeller):
-    Teffs: dict
-    filters: dict
-    # dispersion: dict
-    # contrast: float
-    optics: AMIOptics
-    visibilities: None
-    detector: None
-    ramp: None
-    read: None
-
-    def __init__(
-        self,
-        files,
-        # exposures,
-        params,
-        optics=None,
-        ramp=None,
-        detector=None,
-        read=None,
-        visibilities=None,
-        # dispersion_mag=0.0,  # arcseconds
-        # contrast=-2,
-        Teff_cache="files/Teff_cache",
-    ):
-
-        if optics is None:
-            optics = AMIOptics()
-        if detector is None:
-            detector = LinearDetectorModel()
-        if ramp is None:
-            ramp = SimpleRamp()
-        if read is None:
-            read = ReadModel()
-
-        self.Teffs = get_Teffs(files, Teff_cache=Teff_cache)
-        self.filters = get_filters(files)
-
-        # # Dispersion hacking - randomly perturb the position of each wavelength
-        # if dispersion_mag > 0.0:
-        #     self.dispersion = {}
-
-        #     # # This one is free-floating value per wavelength
-        #     # for filt, (wavels, weights) in self.filters.items():
-        #     #     rand_positions = jr.normal(jr.PRNGKey(0), (len(wavels), 2))
-        #     #     self.dispersion[filt] = dispersion_mag * rand_positions
-
-        #     # This one is parameterised by (x, y) - the point at which the longest
-        #     # wavelength reaches
-        #     for filt in self.filters.keys():
-        #         self.dispersion[filt] = np.array([dispersion_mag, dispersion_mag])
-
-        # # else:
-        # #     self.dispersion = None
-        # self.contrast = np.asarray(contrast, float)
-
-        self.optics = optics
-        self.detector = detector
-        self.ramp = ramp
-        self.read = read
-        self.visibilities = visibilities
-        self.params = params
-
-    # def model(self, exposure, model_fit, **kwargs):
-    def model(self, exposure, **kwargs):
-        return exposure.fit(self, exposure, **kwargs)
-
-    def __getattr__(self, key):
-        if key in self.params:
-            return self.params[key]
-        for k, val in self.params.items():
-            if hasattr(val, key):
-                return getattr(val, key)
-        if hasattr(self.optics, key):
-            return getattr(self.optics, key)
-        if hasattr(self.detector, key):
-            return getattr(self.detector, key)
-        if hasattr(self.ramp, key):
-            return getattr(self.ramp, key)
-        if hasattr(self.read, key):
-            return getattr(self.read, key)
-        if hasattr(self.visibilities, key):
-            return getattr(self.visibilities, key)
-        raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
-
-
 class Exposure(zdx.Base):
     """
     A class to hold all the data relevant to a single exposure, allowing it to be
@@ -136,7 +24,6 @@ class Exposure(zdx.Base):
     zero_point: jax.Array
     zero_point_variance: jax.Array
     support: jax.Array
-    opd: jax.Array
 
     # Exposure metadata
     nints: int = eqx.field(static=True)
@@ -147,7 +34,6 @@ class Exposure(zdx.Base):
 
     # Key identifiers
     filename: str = eqx.field(static=True)
-    # key: str = eqx.field(static=True)
     program: str = eqx.field(static=True)
     observation: str = eqx.field(static=True)
     act_id: str = eqx.field(static=True)
@@ -178,38 +64,22 @@ class Exposure(zdx.Base):
     def key(self):
         return "_".join([self.program, self.observation, self.act_id, self.dither])
 
-    def __init__(self, file, slopes, variance, support, opd, fit):
-
-        # self.data = data
+    def __init__(self, file, slopes, variance, support, fit):
         self.slopes = slopes
         self.variance = variance
         self.support = support
-        self.opd = opd
         self.zero_point = np.asarray(file["ZPOINT"].data, float)
         self.zero_point_variance = np.asarray(file["ZPOINT_VAR"].data, float)
+        self.fit = fit
 
-        #
         self.nints = file[0].header["NINTS"]
-        # self.ngroups = file[0].header["NGROUPS"]
-        # self.nslopes = file[0].header["NGROUPS"] - 1
-
-        #
         self.filter = file[0].header["FILTER"]
         self.star = file[0].header["TARGPROP"]
-
-        #
-        self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
-        # self.key = key_fn(file)
-        self.program = file[0].header["PROGRAM"]
         self.observation = file[0].header["OBSERVTN"]
         self.act_id = file[0].header["ACT_ID"]
         self.dither = file[0].header["EXPOSURE"]
-
-        #
         self.calibrator = bool(file[0].header["IS_PSF"])
-
-        #
-        self.fit = fit
+        self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
 
     def print_summary(self):
         print(
@@ -225,6 +95,94 @@ class Exposure(zdx.Base):
 
     def from_vec(self, vec, fill=np.nan):
         return (fill * np.ones((80, 80))).at[*self.support].set(vec)
+
+
+class BaseModeller(zdx.Base):
+    params: dict
+
+    def __init__(self, params):
+        self.params = params
+
+    def __getattr__(self, key):
+        if key in self.params:
+            return self.params[key]
+        for k, val in self.params.items():
+            if hasattr(val, key):
+                return getattr(val, key)
+        raise AttributeError(
+            f"Attribute {key} not found in params of {self.__class__.__name__} object"
+        )
+
+    def __getitem__(self, key):
+
+        values = {}
+        for param, item in self.params.items():
+            if isinstance(item, dict) and key in item.keys():
+                values[param] = item[key]
+
+        return values
+
+
+class AmigoModel(BaseModeller):
+    Teffs: dict
+    filters: dict
+    optics: AMIOptics
+    visibilities: None
+    detector: None
+    ramp: None
+    read: None
+
+    def __init__(
+        self,
+        files,
+        params,
+        optics=None,
+        ramp=None,
+        detector=None,
+        read=None,
+        visibilities=None,
+        Teff_cache="files/Teff_cache",
+    ):
+
+        if optics is None:
+            optics = AMIOptics()
+        if detector is None:
+            detector = LinearDetectorModel()
+        if ramp is None:
+            ramp = SimpleRamp()
+        if read is None:
+            read = ReadModel()
+
+        self.Teffs = get_Teffs(files, Teff_cache=Teff_cache)
+        self.filters = get_filters(files)
+
+        self.optics = optics
+        self.detector = detector
+        self.ramp = ramp
+        self.read = read
+        self.visibilities = visibilities
+        self.params = params
+
+    def model(self, exposure, **kwargs):
+        return exposure.fit(self, exposure, **kwargs)
+
+    def __getattr__(self, key):
+        if key in self.params:
+            return self.params[key]
+        for k, val in self.params.items():
+            if hasattr(val, key):
+                return getattr(val, key)
+        if hasattr(self.optics, key):
+            return getattr(self.optics, key)
+        if hasattr(self.detector, key):
+            return getattr(self.detector, key)
+        if hasattr(self.ramp, key):
+            return getattr(self.ramp, key)
+        if hasattr(self.read, key):
+            return getattr(self.read, key)
+        if hasattr(self.visibilities, key):
+            return getattr(self.visibilities, key)
+        raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
 
 
 class NNWrapper(zdx.Base):

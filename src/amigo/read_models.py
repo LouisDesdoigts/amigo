@@ -7,6 +7,13 @@ from jax import Array, vmap
 from jax.scipy.signal import convolve
 
 
+def gen_fourier_signal(single_ramp, coeffs, period=1024):
+    orders = np.arange(len(coeffs)) + 1
+    xs = vmap(lambda order: order * 2 * np.pi * single_ramp / period)(orders)
+    basis = np.vstack([np.sin(xs), np.cos(xs)])
+    return np.dot(coeffs.flatten(), basis)
+
+
 class IPC(dl.detector_layers.DetectorLayer):
     ipc: Array
 
@@ -69,13 +76,6 @@ class LayeredDetector(dl.detectors.LayeredDetector):
                 continue
             psf = layer.apply(psf)
         return psf
-
-
-def gen_fourier_signal(single_ramp, coeffs, period=1024):
-    orders = np.arange(len(coeffs)) + 1
-    xs = vmap(lambda order: order * 2 * np.pi * single_ramp / period)(orders)
-    basis = np.vstack([np.sin(xs), np.cos(xs)])
-    return np.dot(coeffs.flatten(), basis)
 
 
 class ADC(dl.detector_layers.DetectorLayer):
