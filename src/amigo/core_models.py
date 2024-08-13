@@ -24,25 +24,15 @@ class Exposure(zdx.Base):
     zero_point: jax.Array
     zero_point_variance: jax.Array
     support: jax.Array
-
-    # Exposure metadata
     nints: int = eqx.field(static=True)
-
-    # Star and filter
     filter: str = eqx.field(static=True)
     star: str = eqx.field(static=True)
-
-    # Key identifiers
     filename: str = eqx.field(static=True)
     program: str = eqx.field(static=True)
     observation: str = eqx.field(static=True)
     act_id: str = eqx.field(static=True)
     dither: str = eqx.field(static=True)
-
-    #
     calibrator: bool = eqx.field(static=True)
-
-    #
     fit: object = eqx.field(static=True)
 
     # Simple method to give nice syntax for getting keys

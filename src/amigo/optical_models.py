@@ -206,7 +206,7 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
     holes: Array
     f2f: Array
     normalise: bool
-    distortion: None
+    transformation: None
 
     def __init__(
         self,
@@ -214,7 +214,7 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         diameter=6.603464,
         npixels=1024,
         f2f=0.80,
-        distortion=None,
+        transformation=None,
         normalise=True,
         aberration_orders=None,
         amplitude_orders=None,
@@ -225,7 +225,7 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
             holes = get_initial_holes(diameter, npixels)
         self.holes = holes
         self.f2f = np.asarray(f2f, float)
-        self.distortion = distortion
+        self.transformation = transformation
         self.normalise = bool(normalise)
 
         super().__init__(
@@ -238,7 +238,7 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         )
 
     def calc_mask(self, npixels, diameter):
-        coords = self.distortion.apply(dlu.pixel_coords(npixels, diameter))
+        coords = self.transformation.apply(dlu.pixel_coords(npixels, diameter))
         hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, self.holes)
         return calc_mask(hole_coords, self.f2f, diameter / npixels)
 
@@ -249,6 +249,11 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         if self.normalise:
             return wavefront.normalise()
         return wavefront
+
+    def __getattr__(self, key):
+        if hasattr(self.transformation, key):
+            return getattr(self.transformation, key)
+        raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
 
 
 class AMIOptics(dl.optical_systems.AngularOpticalSystem):

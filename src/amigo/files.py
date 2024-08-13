@@ -5,7 +5,8 @@ from astroquery.simbad import Simbad
 import pyia
 import pkg_resources as pkg
 import numpy as onp
-from xara.core import determine_origin
+from scipy.ndimage import center_of_mass
+from scipy.interpolate import griddata
 import dLux.utils as dlu
 
 
@@ -167,12 +168,30 @@ def get_Teffs(files, default=4500, skip_search=False, Teff_cache="files/Teffs"):
     return Teffs
 
 
+def interp_badpix(array):
+    # Get the coordinates of the good pixels
+    x, y = np.indices(array.shape)
+    good_pixels = ~np.isnan(array)
+
+    # Interpolate over the bad pixels
+    fixed = griddata((x[good_pixels], y[good_pixels]), array[good_pixels], (x, y), method="cubic")
+    return np.where(np.isnan(fixed), 0.0, fixed)
+
+
 def find_position(psf, pixel_scale=0.065524085):
-    origin = np.array(determine_origin(psf, verbose=False))
-    origin -= (np.array(psf.shape) - 1) / 2
-    origin += np.array([0.5, 0.5])
-    position = origin * pixel_scale * np.array([1, -1])
-    return position
+    # Interpolate the bad pixels
+    psf = onp.array(interp_badpix(psf))
+    # Compute the center of mass
+    cen = np.array(center_of_mass(psf))
+
+    # Convert back to paraxial coordinates
+    cen -= (np.array(psf.shape) - 1) / 2
+
+    # Scale and flip the y
+    y, x = cen * pixel_scale * np.array([-1, 1])
+
+    # Return as (x, y)
+    return np.array([x, y])
 
 
 def get_default_params(exposures, optics, amp_order=1):
