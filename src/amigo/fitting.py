@@ -10,7 +10,7 @@ import dLux.utils as dlu
 from jax import vmap, config
 from datetime import timedelta
 from .core_models import ModelParams, ModelHistory
-from .stats import posterior
+from .stats import reg_loss_fn
 from zodiax.experimental import serialise
 
 # import tqdm appropriately
@@ -123,8 +123,8 @@ def calc_lrs(model, exposures, fishers, params=None, order=1):
     return lr_model
 
 
-def reg_loss_fn(model, exposure, args):
-    return -np.array(posterior(model, exposure, per_pix=True)).sum()
+# def reg_loss_fn(model, exposure, args):
+#     return -np.array(posterior(model, exposure, per_pix=True)).sum()
 
 
 def optimise(

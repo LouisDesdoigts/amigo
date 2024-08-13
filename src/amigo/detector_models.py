@@ -2,22 +2,17 @@ import pkg_resources as pkg
 import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
-from .jitter_models import GaussianJitter
 import jax
-import dLuxWebbpsf as dlw
-from dLuxWebbpsf.utils.interpolation import _map_coordinates
+from jax.scipy.stats import multivariate_normal
+import interpax as ipx
 
 
-def arr2pix(coords, pscale=1):
-    n = coords.shape[-1]
-    shift = (n - 1) / 2
-    return pscale * (coords - shift)
-
-
-def pix2arr(coords, pscale=1):
-    n = coords.shape[-1]
-    shift = (n - 1) / 2
-    return (coords / pscale) + shift
+def interp(image, knots, sample_coords, extrap=0.0):
+    xs, ys = knots[0, 0, :], knots[1, :, 0]
+    xpts, ypts = sample_coords.reshape(2, -1)
+    return ipx.interp2d(ypts, xpts, ys, xs, image, method="cubic2", extrap=extrap).reshape(
+        sample_coords[0].shape
+    )
 
 
 class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
@@ -45,39 +40,52 @@ class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
 
 
 class Rotate(dl.layers.detector_layers.DetectorLayer):
-    """
-    Applies cubic spline interpolator for rotation of the PSF
-    """
-
     angle: float
 
     def __init__(self, angle):
         self.angle = angle
 
     def apply(self, PSF):
-        psf = dlw.utils.rotate(PSF.data, dlu.deg2rad(self.angle), order=3)
-        return PSF.set("data", psf)
+        coords = dlu.pixel_coords(PSF.data.shape[0], 2)
+        rot_coords = dlu.rotate_coords(coords, dlu.deg2rad(self.angle))
+        rotated = interp(PSF.data, coords, rot_coords)
+        return PSF.set("data", rotated)
 
 
-class PixelAnisotropy(dl.layers.detector_layers.DetectorLayer):
-    transform: dl.CoordTransform
-    order: int
+class GaussianJitter(dl.layers.detector_layers.DetectorLayer):
+    r: float
+    kernel_size: int
+    kernel_oversample: int
 
-    def __init__(self, order=3):
-        self.transform = dl.CoordTransform(compression=np.ones(2))
-        self.order = int(order)
+    def __init__(self, r, kernel_size=11, kernel_oversample=1):
+        if kernel_size % 2 == 0:
+            raise ValueError("kernel_size must be an odd integer")
 
-    def __getattr__(self, key):
-        if hasattr(self.transform, key):
-            return getattr(self.transform, key)
-        raise AttributeError(f"PixelAnisotropy has no attribute {key}")
+        self.kernel_size = int(kernel_size)
+        self.r = np.asarray(r, float)
+        self.kernel_oversample = kernel_oversample
 
-    def apply(self, PSF):
-        npix = PSF.data.shape[0]
-        transformed = self.transform.apply(dlu.pixel_coords(npix, npix * PSF.pixel_scale))
-        coords = np.roll(pix2arr(transformed, PSF.pixel_scale), 1, axis=0)
-        interp_fn = lambda x: _map_coordinates(x, coords, order=3, mode="constant", cval=0.0)
-        return PSF.set("data", interp_fn(PSF.data))
+    def apply(self, psf):
+        kernel = self.generate_kernel(dlu.rad2arcsec(psf.pixel_scale))
+        return psf.convolve(kernel)
+
+    def generate_kernel(self, pixel_scale):
+        # Generate distribution
+        extent = pixel_scale * self.kernel_size  # kernel size in arcseconds
+        x = np.linspace(0, extent, self.kernel_oversample * self.kernel_size) - 0.5 * extent
+        xs, ys = np.meshgrid(x, x)
+
+        #
+        pos = np.dstack((xs, ys))
+        mean = np.array([0.0, 0.0])
+        cov = self.r * np.eye(2)
+
+        kernel = dlu.downsample(
+            multivariate_normal.pdf(pos, mean=mean, cov=cov),
+            self.kernel_oversample,
+        )
+
+        return kernel / np.sum(kernel)
 
 
 class LayeredDetector(dl.detectors.LayeredDetector):
@@ -105,20 +113,17 @@ class LinearDetectorModel(LayeredDetector):
         oversample=4,
         npixels_in=80,
         rot_angle=-0.56126717,
+        jitter_amplitude=6.5e-4,
         SRF=None,
         FF=None,
         jitter=True,
-        anisotropy=True,
     ):
         layers = [("rotate", Rotate(rot_angle))]
 
-        if anisotropy:
-            compression = np.array([0.99618757, 1.00381243])
-            anisotropy = PixelAnisotropy(order=3).set("compression", compression)
-            layers.append(("anisotropy", anisotropy))
-
         if jitter:
-            layers.append(("jitter", GaussianJitter(2.5e-7, kernel_size=19, kernel_oversample=3)))
+            layers.append(
+                ("jitter", GaussianJitter(jitter_amplitude, kernel_size=19, kernel_oversample=3))
+            )
 
         # Load the FF
         if FF is None:

@@ -5,6 +5,14 @@ import dLux as dl
 import dLux.utils as dlu
 from jax import Array, vmap
 from jax.scipy.signal import convolve
+from .detector_models import LayeredDetector
+
+
+def gen_fourier_signal(single_ramp, coeffs, period=1024):
+    orders = np.arange(len(coeffs)) + 1
+    xs = vmap(lambda order: order * 2 * np.pi * single_ramp / period)(orders)
+    basis = np.vstack([np.sin(xs), np.cos(xs)])
+    return np.dot(coeffs.flatten(), basis)
 
 
 class IPC(dl.detector_layers.DetectorLayer):
@@ -51,31 +59,6 @@ class DarkCurrent(dl.detector_layers.DetectorLayer):
         dark_current = self.dark_current * (np.arange(len(ramp.data)) + 1)
         # dark_current = model_dark_current(self.dark_current, len(ramp.data))
         return ramp.add("data", dark_current[..., None, None])
-
-
-class LayeredDetector(dl.detectors.LayeredDetector):
-
-    def __getattr__(self, key: str):
-        if key in self.layers.keys():
-            return self.layers[key]
-        for layer in list(self.layers.values()):
-            if hasattr(layer, key):
-                return getattr(layer, key)
-        raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
-
-    def apply(self, psf):
-        for layer in list(self.layers.values()):
-            if layer is None:
-                continue
-            psf = layer.apply(psf)
-        return psf
-
-
-def gen_fourier_signal(single_ramp, coeffs, period=1024):
-    orders = np.arange(len(coeffs)) + 1
-    xs = vmap(lambda order: order * 2 * np.pi * single_ramp / period)(orders)
-    basis = np.vstack([np.sin(xs), np.cos(xs)])
-    return np.dot(coeffs.flatten(), basis)
 
 
 class ADC(dl.detector_layers.DetectorLayer):
