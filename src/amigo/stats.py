@@ -1,6 +1,7 @@
 import jax.numpy as np
 from jax import vmap, lax
 from jax.scipy.stats import multivariate_normal as mvn
+import pkg_resources as pkg
 
 
 # Noise modelling
@@ -72,12 +73,8 @@ def posterior(model, exposure, per_pix=True, return_im=False):
     return np.nansum(posterior_vec)
 
 
-# def loss_fn(model, exposure):
-#     return -np.array(posterior(model, exposure, per_pix=True)).sum()
-
-
-# def batch_loss_fn(model, batch):
-#     return -np.array([posterior(model, exp, per_pix=True) for exp in batch]).sum()
+def reg_loss_fn(model, exposure, args):
+    return -np.array(posterior(model, exposure, per_pix=True)).sum()
 
 
 def check_symmetric(mat):
@@ -93,3 +90,33 @@ def check_positive_semi_definite(mat):
         lambda x: np.all(np.linalg.eigvals(mat) >= 0),
         mat,
     )
+
+
+def variance_model(model, exposure, true_read_noise=False, read_noise=10):
+    """
+    True read noise will use the CRDS read noise array, else it will use a constant
+    value as determined by the input. true_read_noise therefore supersedes read_noise.
+    Using a flat value of 10 seems to be more accurate that the CRDS array.
+
+    That said I think the data has overly ambitious variances as a consequence of the
+    sigma clipping that is performed. We could determine the variance analytically from
+    the variance of the individual pixel values, but we will look at this later.
+    """
+
+    nan_mask = np.isnan(exposure.slopes)
+
+    # Estimate the photon covariance
+    slopes = model.model(exposure)
+
+    slopes = slopes.at[np.where(nan_mask)].set(np.nan)
+    variance = slopes / exposure.nints
+
+    # Read noise covariance
+    if true_read_noise:
+        rn = np.load(pkg.resource_filename(__name__, "data/SUB80_readnoise.npy"))
+    else:
+        rn = read_noise
+    read_variance = (rn**2) * np.ones((80, 80)) / exposure.nints
+    variance += read_variance[None, ...]
+
+    return slopes, variance

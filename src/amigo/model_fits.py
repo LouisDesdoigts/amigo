@@ -4,11 +4,17 @@ import dLux as dl
 import dLux.utils as dlu
 import jax.numpy as np
 from abc import abstractmethod
-from jax import jit, lax, vmap
-from .modelling import planck
+from jax import lax, vmap
 from .ramp_models import model_ramp
-from .interferometry import apply_vis, to_uv, from_uv
-from .vis_models import build_vis_pts, get_mean_wavelength, get_uv_coords, sample_spline
+from .misc import planck
+from .vis_models import (
+    build_vis_pts,
+    get_mean_wavelength,
+    get_uv_coords,
+    sample_spline,
+    to_uv,
+    from_uv,
+)
 
 
 class ModelFit(zdx.Base):
@@ -56,10 +62,6 @@ class ModelFit(zdx.Base):
         if param in ["shifts", "contrasts"]:
             return f"{param}.{exposure.get_key(param)}"
 
-        # # TODO: Add mapping
-        # if param == "dispersion":
-        #     return f"{param}.{exposure.get_key(param)}"
-
         if param == "fluxes":
             return f"{param}.{exposure.get_key(param)}"
 
@@ -101,8 +103,6 @@ class ModelFit(zdx.Base):
                 coefficients = lax.stop_gradient(coefficients)
             optics = optics.set("pupil_mask.amp_coeffs", coefficients)
 
-        if "wfs_opd" in optics.layers.keys():
-            optics = optics.set("wfs_opd.opd", exposure.opd)
         return optics
 
     def model_wfs(self, model, exposure):
@@ -152,9 +152,6 @@ class ModelFit(zdx.Base):
         if "one_on_fs" in model.params.keys():
             model = model.set("read.one_on_fs", model.one_on_fs[exposure.key])
 
-        # if "biases" in model.params.keys():
-        #     model = model.set("read.bias", model.biases[exposure.key])
-
         # Add the zero point to the ramp
         zpoint = exposure.zero_point[None, ...]
         zpoint = np.where(np.isnan(zpoint), 0, zpoint)
@@ -166,13 +163,6 @@ class ModelFit(zdx.Base):
         ramp = model.read.apply(ramp)
 
         return np.diff(ramp.data, axis=0)
-
-        # # Return the slopes if required
-        # if slopes:
-        #     return np.diff(ramp.data, axis=0)
-
-        # # Return the ramp
-        # return ramp.data
 
 
 class PointFit(ModelFit):
@@ -284,86 +274,6 @@ class SplineVisFit(PointFit):
         return psf
 
 
-class FringeFit(PointFit):
-
-    def model_wfs(self, model, exposure):
-        wavels, weights = self.get_spectra(model, exposure)
-        optics = self.update_optics(model, exposure)
-
-        pos1 = dlu.arcsec2rad(model.positions[exposure.key])
-        wfs1 = eqx.filter_jit(optics.propagate)(wavels, pos1, weights, return_wf=True)
-
-        pos2 = pos1 + dlu.arcsec2rad(model.shifts[exposure.filter])
-        wfs2 = eqx.filter_jit(optics.propagate)(wavels, pos2, weights, return_wf=True)
-
-        contrast = 10 ** model.contrasts[exposure.filter]
-        f1, f2 = np.array([1, contrast]) / (1 + contrast)
-        combined_phasors = (f1 * wfs1.phasor) + (f2 * wfs2.phasor)
-        wfs = wfs1.set(
-            ["amplitude", "phase"], [np.abs(combined_phasors), np.angle(combined_phasors)]
-        )
-
-        # Convert Cartesian to Angular wf
-        if wfs.units == "Cartesian":
-            wfs = wfs.multiply("pixel_scale", 1 / optics.focal_length)
-            wfs = wfs.set(["plane", "units"], ["Focal", "Angular"])
-        return wfs
-
-    def __call__(self, model, exposure):
-        psf = self.model_psf(model, exposure)
-        psf = self.model_detector(psf, model, exposure)
-        ramp = self.model_ramp(psf, model, exposure)
-        return self.model_read(ramp, model, exposure)
-
-
-class VisFit(ModelFit):
-    pad: int = eqx.field(static=True)
-
-    def __init__(self, pad=2):
-        self.pad = int(pad)
-
-    def get_key(self, exposure, param):
-        if param in ["shifts", "contrasts"]:
-            return exposure.filter
-        return super().get_key(exposure, param)
-
-    def model_vis(self, wfs, model, exposure, cplx=False):
-        # Get the bits we need
-        basis = model.visibilities.basis[exposure.filter]
-        weights = model.visibilities.weight[exposure.filter]
-        inv_support = model.visibilities.inv_support[exposure.filter]
-
-        # Get visibilities
-        key = self.get_key(exposure, "amplitudes")
-        vis = model.amplitudes[key] * np.exp(1j * model.phases[key])
-
-        # Apply the visibilities
-        psfs = wfs.psf
-        vis_fn = vmap(lambda *args: apply_vis(vis, *args), 4 * (0,))
-        pad_fn = vmap(lambda x: dlu.resize(x, self.pad * psfs.shape[-1]))
-        cplx_psfs = jit(vis_fn)(pad_fn(psfs), basis, weights, inv_support)
-
-        # Crop back to original size
-        cplx_psfs = vmap(lambda x: dlu.resize(x, psfs.shape[-1]))(cplx_psfs)
-
-        # Return complex or psf
-        if cplx:
-            return cplx_psfs
-        return np.abs(cplx_psfs)
-        # return dl.PSF(np.abs(cplx_psfs), wfs.pixel_scale.mean(0))
-
-    def model_psf(self, model, exposure):
-        wfs = self.model_wfs(model, exposure)
-        psfs = self.model_vis(wfs, model, exposure)
-        return dl.PSF(psfs.sum(0), wfs.pixel_scale.mean(0))
-
-    def __call__(self, model, exposure):
-        psf = self.model_psf(model, exposure)
-        psf = self.model_detector(psf, model, exposure)
-        ramp = self.model_ramp(psf, model, exposure)
-        return self.model_read(ramp, model, exposure)
-
-
 class BinaryFit(ModelFit):
 
     # Maybe overwrite this to get the binary spectra
@@ -398,102 +308,5 @@ class BinaryFit(ModelFit):
         wfs = self.model_wfs(model, exposure)
         psf = dl.PSF(wfs.psf.sum(0, 1), wfs.pixel_scale.mean((0, 1)))
         psf = self.model_detector(wfs, model, exposure)
-        ramp = self.model_ramp(psf, model, exposure)
-        return self.model_read(ramp, model, exposure)
-
-
-class DispersedFit(ModelFit):
-
-    def model_wfs(self, model, exposure):
-        wavels, weights = self.get_spectra(model, exposure)
-        pos = dlu.arcsec2rad(model.positions[exposure.key])
-        optics = self.update_optics(model, exposure)
-        return eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
-
-    def model_psf(self, model, exposure):
-        wavels, weights = self.get_spectra(model, exposure)
-        optics = self.update_optics(model, exposure)
-
-        # Model the optics
-        pos = dlu.arcsec2rad(model.positions[exposure.key])
-
-        # Dispersion contrast
-        contrast = 10**model.contrast
-        flux_weights = np.array([contrast * 1, 1]) / (1 + contrast)
-
-        # Model the primary psf
-        wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
-        primary_psfs = flux_weights[0] * wfs.psf
-
-        # Model the dispersed psf
-        wf_prop = lambda *args: optics.propagate_mono(*args, return_wf=True)
-        prop_fn = lambda wav, disp: wf_prop(wav, pos + disp)
-
-        # # This one does free-floating (x, y)
-        # dispersion = dlu.arcsec2rad(model.dispersion[exposure.filter])
-
-        # This one does furthest point (x, y)
-        xmax, ymax = dlu.arcsec2rad(model.dispersion[exposure.filter])
-        xs = np.linspace(-xmax, xmax, len(wavels))
-        ys = np.linspace(-ymax, ymax, len(wavels))
-        dispersion = np.array([xs, ys]).T
-
-        # Apply it
-        wfs = eqx.filter_jit(eqx.filter_vmap(prop_fn))(wavels, dispersion)
-        wfs = wfs.multiply("amplitude", weights[:, None, None] ** 0.5)
-        secondary_psfs = flux_weights[1] * wfs.psf
-        psfs = primary_psfs + secondary_psfs
-
-        return dl.PSF(psfs.sum(0), wfs.pixel_scale.mean(0))
-
-    def __call__(self, model, exposure):
-        psf = self.model_psf(model, exposure)
-        psf = self.model_detector(psf, model, exposure)
-        ramp = self.model_ramp(psf, model, exposure)
-        return self.model_read(ramp, model, exposure)
-
-
-from jax.nn import sigmoid
-
-
-class PolarisedFit(ModelFit):
-
-    def model_psf(self, model, exposure):
-        wavels, weights = self.get_spectra(model, exposure)
-        optics = self.update_optics(model, exposure)
-        pos = dlu.arcsec2rad(model.positions[exposure.key])
-
-        # Get the polarisation keys - is this just all of pupil_mask?
-        polarisation_keys = [
-            "abb_coeffs",
-            "amp_coeffs",
-            "holes",
-            "f2f",
-            "transformation",
-        ]
-
-        # Partition the optics - assumed the model is already partition-vectorised
-        filter_spec = zdx.boolean_filter(optics, polarisation_keys)
-        polarised, unpolarised = eqx.partition(optics, filter_spec)
-
-        # Function to evaluate the polarised optics
-        def fn(polar_optics, null_optics):
-            optics = eqx.combine(polar_optics, null_optics)
-            return eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
-
-        # Model the psf
-        wfs = eqx.filter_jit(eqx.filter_vmap(fn, (0, None)))(polarised, unpolarised)
-
-        # Get the polarisation contrast
-        contrast = sigmoid(model.contrasts[exposure.filter])
-        contrasts = np.array([contrast, 1 - contrast])[:, None, None, None]
-
-        # Apply the contrast and return
-        psfs = (contrasts * wfs.psf).sum(0)
-        return dl.PSF(psfs, wfs.pixel_scale.mean((0, 1)))
-
-    def __call__(self, model, exposure):
-        psf = self.model_psf(model, exposure)
-        psf = self.model_detector(psf, model, exposure)
         ramp = self.model_ramp(psf, model, exposure)
         return self.model_read(ramp, model, exposure)
