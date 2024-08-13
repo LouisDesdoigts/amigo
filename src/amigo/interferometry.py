@@ -5,21 +5,6 @@ from jax import vmap
 from dLuxWebbpsf.basis import get_noll_indices
 
 
-# class UVHexikes(zdx.Base):
-#     basis: Array
-#     weight: Array
-#     support: Array
-#     inv_support: Array
-
-#     def __init__(self, basis, weight, support):
-#         self.basis = basis
-#         self.weight = weight
-#         self.support = support
-
-#         # calculating the inverse support mask
-#         self.inv_support = 1.0 - support
-
-
 # Mask generation and baselines
 def osamp_freqs(n, dx, osamp=1):
     df = 1 / (n * dx)
@@ -240,54 +225,8 @@ def splodge_mask(basis, vis):
     return dlu.eval_basis(basis, coeffs)
 
 
-# def apply_visibilities(psf, vis, basis, weights, inv_support, pad_to=None):
-#     # normalise the basis
-#     basis = dlu.nandiv(basis, weights, 0.0)
-
-#     # zero padding to correct size
-#     if pad_to is not None:
-#         # padding normalised basis
-#         vmapped_shapes = basis.shape[:2]
-#         npix_in = basis.shape[2:]
-#         padder = vmap(lambda arr: dlu.resize(arr, pad_to))  # vmap function
-#         basis = padder(basis.reshape(-1, *npix_in))  # vmapping
-#         basis = basis.reshape(*vmapped_shapes, *basis.shape[1:])  # reshaping back
-
-#         # padding inverse support mask with ones
-#         inv_support = np.pad(
-#             inv_support,
-#             (pad_to - inv_support.shape[0]) // 2,
-#             constant_values=1.0,
-#         )
-
-#     # We dont use np.where here because we have soft edges on the boundary of the mask
-#     return from_uv(to_uv(psf) * (splodge_mask(basis, vis) + inv_support))
-
-
 def visibilities(amplitudes, phases):
     return amplitudes * np.exp(1j * phases)
-
-
-# def uv_model(vis, psfs, hexikes, cplx=False, pad=2):
-#     # Get the sizes
-#     npix = psfs.shape[-1]
-#     npix_pad = pad * npix  # array size to pad mask and psfs to
-
-#     # unpacking from hexikes
-#     basis = hexikes.basis
-#     weights = hexikes.weight
-#     inv_support = hexikes.inv_support
-
-#     # Pad, apply the splodges, and crop
-#     psfs_pad = vmap(lambda x: dlu.resize(x, npix_pad))(psfs)
-#     vis_applyer = vmap(apply_visibilities, (0, None, 0, 0, 0, None))
-#     cplx_psfs_pad = vis_applyer(psfs_pad, vis, basis, weights, inv_support, npix_pad)
-#     cplx_psfs = vmap(lambda x: dlu.resize(x, npix))(cplx_psfs_pad)
-
-#     # Return complex or magnitude
-#     if cplx:
-#         return cplx_psfs
-#     return np.abs(cplx_psfs)
 
 
 def applied_splodges(masks, vis):

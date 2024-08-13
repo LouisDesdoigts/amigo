@@ -20,13 +20,6 @@ def pix2arr(coords, pscale=1):
     return (coords / pscale) + shift
 
 
-# def model_ramp(psf, ngroups):
-#     """Applies an 'up the ramp' model of the input 'optical' PSF. Input PSF.data
-#     should have shape (npix, npix) and return shape (ngroups, npix, npix)"""
-#     lin_ramp = (np.arange(ngroups) + 1) / ngroups
-#     return psf[None, ...] * lin_ramp[..., None, None]
-
-
 class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
 
     FF: jax.Array

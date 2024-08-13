@@ -7,12 +7,6 @@ from jax import Array, vmap
 from jax.scipy.signal import convolve
 
 
-# def model_dark_current(dark_current, ngroups):
-#     """Models the dark current as a constant background value added cumulatively to
-#     each group. For now we assume that the dark current is a float."""
-#     return (dark_current * (np.arange(ngroups) + 1))[..., None, None]
-
-
 class IPC(dl.detector_layers.DetectorLayer):
     ipc: Array
 

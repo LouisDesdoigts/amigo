@@ -12,8 +12,6 @@ from tqdm.notebook import tqdm
 from xara.core import determine_origin
 import dLux.utils as dlu
 
-# from .core_models import Exposure
-
 
 def summarise_files(files, extra_keys=[]):
     main_keys = []
@@ -141,77 +139,6 @@ def find_position(psf, pixel_scale=0.065524085):
     origin += np.array([0.5, 0.5])
     position = origin * pixel_scale * np.array([1, -1])
     return position
-
-
-# def initialise_params(
-#     exposures,
-#     optics,
-#     # pre_calc_FDA=False,
-#     amp_order=1,
-#     fit_one_on_fs=True,
-#     fit_reflectivity=True,
-#     visibility_orders=0,
-# ):
-#     positions = {}
-#     fluxes = {}
-#     aberrations = {}
-#     one_on_fs = {}
-#     aberrations = {}
-#     reflectivity = {}
-#     for exp in exposures:
-
-#         im = exp.slopes[0]
-#         psf = np.where(np.isnan(im), 0.0, im)
-#         flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.slopes[0]))
-
-#         if hasattr(optics, "focal_length"):
-#             pixel_scale = dlu.rad2arcsec(1e-6 * optics.psf_pixel_scale / optics.focal_length)
-#         else:
-#             pixel_scale = optics.psf_pixel_scale
-#         position = find_position(psf, pixel_scale)
-
-#         # if pre_calc_FDA:
-#         #     file_path = pkg.resource_filename(__name__, "data/FDA_coeffs.npy")
-#         #     coeffs = np.load(file_path)[:, :n_fda]
-#         # else:
-#         #     coeffs = np.zeros((7, n_fda))
-
-#         pos_key = exp.fit.get_key(exp, "positions")
-#         positions[pos_key] = position
-
-#         #
-#         abb_key = exp.fit.get_key(exp, "aberrations")
-#         aberrations[abb_key] = np.zeros_like(optics.pupil_mask.abb_coeffs)
-
-#         #
-#         amp_key = exp.fit.get_key(exp, "reflectivity")
-#         reflectivity[amp_key] = np.zeros_like(optics.pupil_mask.amp_coeffs)
-
-#         #
-#         flux_key = exp.fit.get_key(exp, "fluxes")
-#         fluxes[flux_key] = flux
-
-#         #
-#         one_on_fs_key = exp.fit.get_key(exp, "one_on_fs")
-#         one_on_fs[one_on_fs_key] = np.zeros((exp.ngroups, 80, amp_order + 1))
-
-#     params = {"positions": positions, "fluxes": fluxes, "aberrations": aberrations}
-
-#     if visibility_orders > 0:
-#         params["amplitudes"] = get_amplitudes(
-#             exposures, radial_orders=np.arange(visibility_orders), dc=True
-#         )
-#         params["phases"] = get_phases(
-#             exposures, radial_orders=np.arange(visibility_orders), dc=True
-#         )
-
-#     if fit_one_on_fs:
-#         params["one_on_fs"] = one_on_fs
-
-#     if fit_reflectivity:
-#         params["reflectivity"] = reflectivity
-
-#     return params
 
 
 def get_default_params(exposures, optics, amp_order=1):
@@ -537,115 +464,6 @@ def repopulate(model, history, index=-1):
     return model
 
 
-# bases, weights, supports, inv_supports
-# def get_uv_hexikes(
-#     exposures,
-#     optics,
-#     # filters,
-#     radial_orders=None,
-#     noll_indices=None,
-#     hexike_cache="files/uv_hexikes",
-#     verbose=False,
-#     nwavels=9,
-# ):
-#     """
-#     Note caches masks to disk for faster loading. The cache is indexed _relative_ to
-#     where the file is run from.
-#     """
-
-#     # # Get the filter dictionary (wavels and weights)
-#     # filters = get_filters(files)
-
-#     filters = {}
-#     for filt in list(set([exp.filter for exp in exposures])):
-#         filters[filt] = calc_throughput(filt) #, nwavels=nwavels)
-
-#     # Dealing with the radial_orders and noll_indices arguments
-#     if radial_orders is not None and noll_indices is not None:
-#         print("Warning: Both radial_orders and noll_indices provided. Using noll_indices.")
-#         radial_orders = None
-
-#     if noll_indices is None:
-#         noll_indices = get_noll_indices(radial_orders, noll_indices)
-
-#     # Check whether the specified cache directory exists
-#     if not os.path.exists(hexike_cache):
-#         os.makedirs(hexike_cache)
-
-#     # defining known desired array sizes for different filters
-#     # TODO: This should scale with optical oversample
-#     crop_dict = {
-#         "F277W": 714,
-#         "F380M": 486,
-#         "F430M": 426,
-#         "F480M": 384,
-#     }
-
-#     # hexikes = {}
-#     bases = {}
-#     weights = {}
-#     supports = {}
-#     # for file in files:
-#     for exp in exposures:
-#         filt = exp.filter
-#         if filt in bases.keys():
-#             continue
-#         wavels = filters[filt][0]
-
-#         calc_pad = 3  # 3x oversample on the mask calculation for soft edges
-#         uv_pad = 2  # 2x oversample on the UV transform
-#         crop_npix = crop_dict[filt]  # cropping masks
-
-#         _bases = []
-#         _weights = []
-#         _supports = []
-
-#         looper = tqdm(wavels) if verbose else wavels
-#         for wavelength in looper:
-#             wl_key = f"{int(wavelength*1e9)}"  # The nearest nm
-#             noll_key = "".join([str(n) for n in noll_indices])  # recording the noll indices
-#             file_key = f"{hexike_cache}/{wl_key}_{optics.oversample}_{noll_key}"
-#             try:
-#                 basis = np.load(f"{file_key}_basis.npy")
-#                 weight = np.load(f"{file_key}_weight.npy")
-#                 support = np.load(f"{file_key}_support.npy")
-
-#             except FileNotFoundError:
-#                 basis, weight, support = build_hexikes(
-#                     optics.pupil_mask.holes,
-#                     optics.pupil_mask.f2f,
-#                     optics.pupil_mask.transformation,
-#                     wavelength,
-#                     optics.psf_pixel_scale,
-#                     optics.psf_npixels,
-#                     optics.oversample,
-#                     uv_pad,
-#                     calc_pad,
-#                     radial_orders=radial_orders,
-#                     noll_indices=noll_indices,
-#                     crop_npix=crop_npix,
-#                 )
-#                 np.save(f"{file_key}_basis.npy", basis)
-#                 np.save(f"{file_key}_weight.npy", weight)
-#                 np.save(f"{file_key}_support.npy", support)
-
-#             _bases.append(basis)
-#             _weights.append(weight)
-#             _supports.append(support)
-
-#         bases[filt] = np.array(_bases)
-#         weights[filt] = np.array(_weights)
-#         supports[filt] = np.array(_supports)
-#     inv_supports = jtu.tree_map(lambda x: 1.0 - x, supports)
-
-#     return VisModel(bases, weights, supports, inv_supports)
-
-# # Import here to avoid circular imports
-# from amigo.core import HexikeVis
-
-# return HexikeVis(bases, weights, supports)
-
-
 def calc_splodge_masks(
     exposures,
     optics,
@@ -659,48 +477,6 @@ def calc_splodge_masks(
     verbose=False,
     recalculate=False,
 ):
-
-    # _bases = []
-    # _weights = []
-    # _supports = []
-
-    # looper = tqdm(wavels) if verbose else wavels
-    # for wavelength in looper:
-    #     wl_key = f"{int(wavelength*1e9)}"  # The nearest nm
-    #     noll_key = "".join([str(n) for n in noll_indices])  # recording the noll indices
-    #     file_key = f"{hexike_cache}/{wl_key}_{optics.oversample}_{noll_key}"
-    #     try:
-    #         basis = np.load(f"{file_key}_basis.npy")
-    #         weight = np.load(f"{file_key}_weight.npy")
-    #         support = np.load(f"{file_key}_support.npy")
-
-    #     except FileNotFoundError:
-    #         basis, weight, support = build_hexikes(
-    #             optics.pupil_mask.holes,
-    #             optics.pupil_mask.f2f,
-    #             optics.pupil_mask.transformation,
-    #             wavelength,
-    #             optics.psf_pixel_scale,
-    #             optics.psf_npixels,
-    #             optics.oversample,
-    #             uv_pad,
-    #             calc_pad,
-    #             radial_orders=radial_orders,
-    #             noll_indices=noll_indices,
-    #             crop_npix=crop_npix,
-    #         )
-    #         np.save(f"{file_key}_basis.npy", basis)
-    #         np.save(f"{file_key}_weight.npy", weight)
-    #         np.save(f"{file_key}_support.npy", support)
-
-    #     _bases.append(basis)
-    #     _weights.append(weight)
-    #     _supports.append(support)
-
-    # return np.array(_bases), np.array(_weights), np.array(_supports)
-
-    # # Get the filter dictionary (wavels and weights)
-    # filters = get_filters(files)
 
     if hasattr(optics, "focal_length"):
         pixel_scale = dlu.rad2arcsec(1e-6 * optics.psf_pixel_scale / optics.focal_length)
