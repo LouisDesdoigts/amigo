@@ -5,12 +5,8 @@ from astroquery.simbad import Simbad
 import pyia
 import pkg_resources as pkg
 import numpy as onp
-from .misc import slope_im
-from .interferometry import uv_hex_mask
-from webbpsf import mast_wss
-from xara.core import determine_origin
-from tqdm.notebook import tqdm
-import amigo
+import dLux.utils as dlu
+from .misc import find_position
 
 
 def summarise_files(files, extra_keys=[]):
@@ -133,45 +129,157 @@ def get_Teff(targ_name):
     return -1
 
 
-def get_filters(files, nwavels=9):
+def get_Teffs(files, default=4500, skip_search=False, Teff_cache="files/Teffs"):
+    # def get_Teffs(exposures, default=4500, skip_search=False, Teff_cache="files/Teffs"):
+    # Check whether the specified cache directory exists
+    if not os.path.exists(Teff_cache):
+        os.makedirs(Teff_cache)
 
-    filters = {}
+    Teffs = {}
     for file in files:
-        filt = file[0].header["FILTER"]
-        if filt in filters.keys():
+        prop_name = file[0].header["TARGPROP"]
+
+        # if os.exists(f"{Teff_cache}/{prop_name}.npy"):
+        try:
+            Teffs[prop_name] = np.load(f"{Teff_cache}/{prop_name}.npy")
+            continue
+        except FileNotFoundError:
+            pass
+
+        if prop_name in Teffs:
             continue
 
-        if filt not in ["F380M", "F430M", "F480M", "F277W"]:
-            raise ValueError("Supported filters are F380M, F430M, F480M, F277W.")
+        # Temporary measure to get around gaia archive being dead
+        if skip_search:
+            Teffs[prop_name] = default
+            print("Warning using default Teff")
+            continue
 
-        # filter_path = os.path.join()
-        file_path = pkg.resource_filename(__name__, f"/data/filters/{filt}.dat")
-        wl_array, throughput_array = np.array(onp.loadtxt(file_path, unpack=True))
+        Teff = get_Teff(file[0].header["TARGNAME"])
 
-        edges = np.linspace(wl_array.min(), wl_array.max(), nwavels + 1)
-        wavels = np.linspace(wl_array.min(), wl_array.max(), 2 * nwavels + 1)[1::2]
+        if Teff == -1:
+            print(f"No Teff found for {prop_name}, defaulting to 4500K")
+            Teffs[prop_name] = default
+        else:
+            Teffs[prop_name] = Teff
+            np.save(f"{Teff_cache}/{prop_name}.npy", Teff)
 
-        areas = []
-        for i in range(nwavels):
-            cond1 = edges[i] < wl_array
-            cond2 = wl_array < edges[i + 1]
-            throughput = np.where(cond1 & cond2, throughput_array, 0)
-            areas.append(jsp.integrate.trapezoid(y=throughput, x=wl_array))
-
-        areas = np.array(areas)
-        weights = areas / areas.sum()
-
-        wavels *= 1e-10
-        filters[filt] = np.array([wavels, weights])
-    return filters
+    return Teffs
 
 
-def estimate_psf_and_bias(data):
-    ngroups = len(data)
-    ramp_bottom = data[:2]
-    ramp_bottom = np.where(np.isnan(ramp_bottom), 0, ramp_bottom)
-    psf, bias = slope_im(ramp_bottom)  # Estimate from the bottom of the ramp
-    return psf * ngroups, bias
+def get_default_params(exposures, optics, amp_order=1):
+
+    # These are the default parameters, they are _always_ present
+    positions = {}
+    fluxes = {}
+    aberrations = {}
+    one_on_fs = {}
+    one_on_fs = {}
+    reflectivity = {}
+    for exp in exposures:
+
+        im = exp.slopes[0]
+        psf = np.where(np.isnan(im), 0.0, im)
+
+        # Get pixel scale in arcseconds
+        if hasattr(optics, "focal_length"):
+            pixel_scale = dlu.rad2arcsec(1e-6 * optics.psf_pixel_scale / optics.focal_length)
+        else:
+            pixel_scale = optics.psf_pixel_scale
+        position = find_position(psf, pixel_scale)
+        positions[exp.fit.get_key(exp, "positions")] = position
+
+        flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.slopes[0]))
+        fluxes[exp.fit.get_key(exp, "fluxes")] = flux
+
+        abers = np.zeros_like(optics.pupil_mask.abb_coeffs)
+        aberrations[exp.fit.get_key(exp, "aberrations")] = abers
+
+        if optics.pupil_mask.amp_coeffs is not None:
+            reflects = np.zeros_like(optics.pupil_mask.amp_coeffs)
+            reflectivity[exp.fit.get_key(exp, "reflectivity")] = reflects
+
+        one_on_f = np.zeros((exp.ngroups, 80, amp_order + 1))
+        one_on_fs[exp.fit.get_key(exp, "one_on_fs")] = one_on_f
+
+    return {
+        "positions": positions,
+        "fluxes": fluxes,
+        "aberrations": aberrations,
+        "reflectivity": reflectivity,
+        "one_on_fs": one_on_fs,
+    }
+
+
+def initialise_vis(vis_model, exposures):
+    """At present this assumes that we are fitting a spline visibility"""
+
+    params = {
+        "amplitudes": {},
+        "phases": {},
+    }
+    n = vis_model.knots[0].size // 2
+    for exp in exposures:
+        params["amplitudes"][f"{exp.get_key('amplitudes')}"] = np.ones(n)
+        params["phases"][f"{exp.get_key('phases')}"] = np.zeros(n)
+    return params
+
+
+def initialise_params(
+    exposures,
+    optics,
+    fit_one_on_fs=False,
+    fit_reflectivity=False,
+    vis_model=None,
+):
+    # NOTE: At present this assume the _same_ fit is being applied to all the exposures
+
+    params = get_default_params(exposures, optics)
+
+    if not fit_one_on_fs:
+        params.pop("one_on_fs")
+
+    if not fit_reflectivity:
+        params.pop("reflectivity")
+
+    if vis_model is not None:
+        params.update(initialise_vis(vis_model, exposures))
+
+    return params
+
+
+def get_filters(files, nwavels=9):
+    filters = list(set([file[0].header["FILTER"] for file in files]))
+    filter_dict = {}
+    for filt in filters:
+        filter_dict[filt] = calc_throughput(filt, nwavels=nwavels)
+    return filter_dict
+
+
+def calc_throughput(filt, nwavels=9):
+
+    if filt not in ["F380M", "F430M", "F480M", "F277W"]:
+        raise ValueError("Supported filters are F380M, F430M, F480M, F277W.")
+
+    # filter_path = os.path.join()
+    file_path = pkg.resource_filename(__name__, f"/data/filters/{filt}.dat")
+    wl_array, throughput_array = np.array(onp.loadtxt(file_path, unpack=True))
+
+    edges = np.linspace(wl_array.min(), wl_array.max(), nwavels + 1)
+    wavels = np.linspace(wl_array.min(), wl_array.max(), 2 * nwavels + 1)[1::2]
+
+    areas = []
+    for i in range(nwavels):
+        cond1 = edges[i] < wl_array
+        cond2 = wl_array < edges[i + 1]
+        throughput = np.where(cond1 & cond2, throughput_array, 0)
+        areas.append(jsp.integrate.trapezoid(y=throughput, x=wl_array))
+
+    areas = np.array(areas)
+    weights = areas / areas.sum()
+
+    wavels *= 1e-10
+    return np.array([wavels, weights])
 
 
 def prep_data(file, ms_thresh=None, as_psf=False):
@@ -195,199 +303,39 @@ def prep_data(file, ms_thresh=None, as_psf=False):
     supp_mask = ~np.isnan(data.sum(0)) & ~dq
 
     # Nan the bad pixels
-    support = np.where(supp_mask)
+    support = np.array(np.where(supp_mask))
     data = data.at[:, ~supp_mask].set(np.nan)
     var = var.at[..., ~supp_mask].set(np.nan)
 
     return data, var, support
 
 
-def get_wss_ops(files):
-    opds = {}
-    opd_files = []
+def get_exposures(files, fit, ms_thresh=None, as_psf=False):
+    from amigo.core_models import Exposure
+
+    exposures = []
     for file in files:
-        date = file[0].header["DATE-BEG"]
-        opd0, opd1, t0, t1 = mast_wss.mast_wss_opds_around_date_query(date, verbose=False)
-        closest_fn, closest_dt = (opd1, t1) if abs(t1) < abs(t0) else (opd0, t0)
-        opd_file = mast_wss.mast_retrieve_opd(closest_fn)
-        if opd_file not in opds.keys():
-            opd = mast_wss.import_wss_opd(opd_file)[0].data
-            opds[opd_file] = np.asarray(opd, float)
-        opd_files.append(opds[opd_file])
-    return opd_files
+        data, variance, support = prep_data(file, ms_thresh=ms_thresh, as_psf=as_psf)
+        data = np.asarray(data, float)
+        variance = np.asarray(variance, float)
+        support = np.asarray(support, int)
+        exposures.append(Exposure(file, data, variance, support, fit))  # key_fn, fit))
+    return exposures
 
 
-def get_Teffs(files, default=4500, straight_default=False, Teff_cache="files/Teffs"):
-    # Check whether the specified cache directory exists
-    if not os.path.exists(Teff_cache):
-        os.makedirs(Teff_cache)
+def repopulate(model, history, index=-1):
 
-    Teffs = {}
-    for file in files:
-        prop_name = file[0].header["TARGPROP"]
+    # Populate parameters
+    for param_key, value in history.params.items():
+        if isinstance(value, dict):
+            for exp_key, sub_value in value.items():
+                try:
+                    model = model.set(f"{param_key}.{exp_key}", sub_value[index])
 
-        # if os.exists(f"{Teff_cache}/{prop_name}.npy"):
-        try:
-            Teffs[prop_name] = np.load(f"{Teff_cache}/{prop_name}.npy")
-            continue
-        except FileNotFoundError:
-            pass
-
-        if prop_name in Teffs:
-            continue
-
-        # Temporary measure to get around gaia archive being dead
-        if straight_default:
-            Teffs[prop_name] = default
-            print("Warning using default Teff")
-            continue
-
-        Teff = get_Teff(file[0].header["TARGNAME"])
-
-        if Teff == -1:
-            print(f"No Teff found for {prop_name}, defaulting to 4500K")
-            Teffs[prop_name] = default
+                # Catch key not existing since we might not have a certain exposure here
+                except KeyError:
+                    pass
         else:
-            Teffs[prop_name] = Teff
-            np.save(f"{Teff_cache}/{prop_name}.npy", Teff)
+            model = model.set(param_key, value[index])
 
-    return Teffs
-
-
-def get_amplitudes(exposures, dc=False):
-    """If dc is True, an extra value for the dc term is included"""
-    if dc:
-        n = 22
-    else:
-        n = 21
-    amplitudes = {}
-    for exp in exposures:
-        key = "_".join([exp.star, exp.filter])
-        if key not in amplitudes.keys():
-            amplitudes[key] = np.ones(n)
-    return amplitudes
-
-
-def get_phases(exposures, dc=False):
-    """If dc is True, an extra value for the dc term is included"""
-    if dc:
-        n = 22
-    else:
-        n = 21
-    phases = {}
-    for exp in exposures:
-        key = "_".join([exp.star, exp.filter])
-        if key not in phases.keys():
-            phases[key] = np.zeros(n)
-    return phases
-
-
-def get_coherence(exposures):
-    coherences = {}
-    for exp in exposures:
-        coherences[exp.key] = np.zeros(7)
-    return coherences
-
-
-def find_position(psf, pixel_scale=0.065524085):
-    origin = np.array(determine_origin(psf, verbose=False))
-    origin -= (np.array(psf.shape) - 1) / 2
-    position = origin * pixel_scale * np.array([1, -1])
-    return position
-
-
-# def get_exposures(files, add_read_noise=False):
-def get_exposures(files, optics, ms_thresh=None, as_psf=False):
-    print("Prepping exposures...")
-    opds = get_wss_ops(files)
-    return [
-        amigo.core.ExposureFit(file, optics, opd=opd, ms_thresh=ms_thresh)
-        for file, opd in zip(files, opds)
-    ]
-
-
-def initialise_params(exposures):
-    positions = {}
-    fluxes = {}
-    aberrations = {}
-    one_on_fs = {}
-    aberrations = {}
-    for exp in exposures:
-        positions[exp.key] = exp.position
-        aberrations[exp.key] = exp.aberrations
-        fluxes[exp.key] = exp.flux
-        one_on_fs[exp.key] = exp.one_on_fs
-    return {
-        "positions": positions,
-        "fluxes": fluxes,
-        "aberrations": aberrations,
-        "one_on_fs": one_on_fs,
-    }
-
-
-def full_to_SUB80(full_arr, npix_out=80, fill=0.0):
-    """
-    This is taken from the JWST pipeline, so its probably correct.
-
-    The padding adds zeros to the edges of the array, keeping the SUB80 array centered.
-    """
-    xstart = 1045
-    ystart = 1
-    xsize = 80
-    ysize = 80
-    xstop = xstart + xsize - 1
-    ystop = ystart + ysize - 1
-    SUB80 = full_arr[ystart - 1 : ystop, xstart - 1 : xstop]
-    if npix_out != 80:
-        pad = (npix_out - 80) // 2
-        SUB80 = np.pad(SUB80, pad, constant_values=fill)
-    return SUB80
-
-
-def get_uv_masks(files, optics, filters, mask_cache="files/uv_masks", verbose=False):
-    """
-    Note caches masks to disk for faster loading. The cache is indexed _relative_ to
-    where the file is run from.
-    """
-
-    # Check whether the specified cache directory exists
-    if not os.path.exists(mask_cache):
-        os.makedirs(mask_cache)
-
-    masks = {}
-    for file in files:
-        filt = file[0].header["FILTER"]
-        if filt in masks.keys():
-            continue
-        wavels = filters[filt][0]
-
-        calc_pad = 3  # 3x oversample on the mask calculation for soft edges
-        uv_pad = 2  # 2x oversample on the UV transform
-
-        _masks = []
-        looper = tqdm(wavels) if verbose else wavels
-        for wavelength in looper:
-            wl_key = f"{int(wavelength*1e9)}"  # The nearest nm
-            file_key = f"{mask_cache}/{wl_key}_{optics.oversample}"
-            try:
-                mask = np.load(f"{file_key}.npy")
-            except FileNotFoundError:
-                mask = uv_hex_mask(
-                    optics.pupil_mask.holes,
-                    optics.pupil_mask.f2f,
-                    optics.pupil_mask.transformation,
-                    wavelength,
-                    optics.psf_pixel_scale,
-                    optics.psf_npixels,
-                    optics.oversample,
-                    uv_pad,
-                    calc_pad,
-                )
-                np.save(f"{file_key}.npy", mask)
-            _masks.append(mask)
-
-        masks[filt] = np.array(_masks)
-    return masks
-
-
-#
+    return model

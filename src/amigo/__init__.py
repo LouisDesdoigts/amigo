@@ -2,28 +2,36 @@ import importlib.metadata
 
 __version__ = importlib.metadata.version("amigo")
 
-from . import core
-from . import BFE
-from . import CNN
+from . import core_models
+from . import optical_models
+from . import vis_models
+from . import detector_models
+from . import ramp_models
+from . import read_models
+from . import model_fits
 from . import files
-from . import FIM
+from . import fisher
 from . import fitting
-from . import interferometry
-from . import misc
-from . import optical_layers
-from . import detector_layers
 from . import stats
+from . import training
+from . import pipelines
+from . import plotting
+from . import misc
 
 __all__ = [
-    core,
-    BFE,
-    CNN,
+    core_models,
+    optical_models,
+    vis_models,
+    detector_models,
+    ramp_models,
+    read_models,
+    model_fits,
     files,
-    FIM,
+    fisher,
     fitting,
-    interferometry,
-    misc,
-    optical_layers,
-    detector_layers,
     stats,
+    training,
+    pipelines,
+    plotting,
+    misc,
 ]
