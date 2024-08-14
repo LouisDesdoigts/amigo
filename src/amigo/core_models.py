@@ -118,14 +118,13 @@ class BaseModeller(zdx.Base):
         return values
 
 
-def initialise_calibration_model(
+def initialise_model(
     files,
-    fit,
-    optics=None,
-    detector=None,
-    ramp=None,
-    read=None,
-    fit_vis=True,
+    fit=SplineVisFit(),
+    optics=AMIOptics(),
+    detector=LinearDetectorModel(),
+    ramp=SimpleRamp(),
+    read=ReadModel(),
     nwavels=9,
     Teff_cache="files/Teff_cache",
 ):
