@@ -1,8 +1,10 @@
 import jax.numpy as np
+import jax.scipy as jsp
 import numpy as onp
 from scipy.ndimage import center_of_mass
 from scipy.interpolate import griddata
 from astropy.stats import sigma_clip
+import pkg_resources as pkg
 
 
 def planck(wav, T):
@@ -92,3 +94,47 @@ def apply_sigma_clip(array, sigma=5.0, axis=0):
     masked = onp.ma.masked_invalid(array, copy=True)
     clipped = sigma_clip(masked, axis=axis, sigma=sigma)
     return onp.ma.filled(clipped, fill_value=onp.nan)
+
+
+def calc_throughput(filt, nwavels=9):
+
+    if filt not in ["F380M", "F430M", "F480M", "F277W"]:
+        raise ValueError("Supported filters are F380M, F430M, F480M, F277W.")
+
+    # filter_path = os.path.join()
+    file_path = pkg.resource_filename(__name__, f"/data/filters/{filt}.dat")
+    wl_array, throughput_array = np.array(onp.loadtxt(file_path, unpack=True))
+
+    edges = np.linspace(wl_array.min(), wl_array.max(), nwavels + 1)
+    wavels = np.linspace(wl_array.min(), wl_array.max(), 2 * nwavels + 1)[1::2]
+
+    areas = []
+    for i in range(nwavels):
+        cond1 = edges[i] < wl_array
+        cond2 = wl_array < edges[i + 1]
+        throughput = np.where(cond1 & cond2, throughput_array, 0)
+        areas.append(jsp.integrate.trapezoid(y=throughput, x=wl_array))
+
+    areas = np.array(areas)
+    weights = areas / areas.sum()
+
+    wavels *= 1e-10
+    return np.array([wavels, weights])
+
+
+def convert_adjacent_to_true(bool_array, n=1, corners=False):
+    for i in range(n):
+        trues = np.array(np.where(bool_array))
+        trues = np.swapaxes(trues, 0, 1)
+        for i in range(len(trues)):
+            y, x = trues[i]
+            bool_array = bool_array.at[y, x + 1].set(True)
+            bool_array = bool_array.at[y, x - 1].set(True)
+            bool_array = bool_array.at[y + 1, x].set(True)
+            bool_array = bool_array.at[y - 1, x].set(True)
+            if corners:
+                bool_array = bool_array.at[y + 1, x + 1].set(True)
+                bool_array = bool_array.at[y - 1, x - 1].set(True)
+                bool_array = bool_array.at[y + 1, x - 1].set(True)
+                bool_array = bool_array.at[y - 1, x + 1].set(True)
+    return bool_array

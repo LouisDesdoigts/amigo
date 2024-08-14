@@ -225,7 +225,6 @@ def optimise(
     # Epoch loop
     losses = []
     looper = tqdm(range(0, epochs))
-    epoch_loss = 0.0
     t0 = time.time()
     for idx in looper:
         model, args, key = args_fn(model, args, key, idx)
@@ -265,10 +264,15 @@ def optimise(
         reg_history = reg_history.append(reg_model)  # could be JIT'd with work
 
         # Update the looper
-        batch_loss = np.array(batch_losses).mean()
-        looper.set_description(f"Loss: {epoch_loss:,.2f}, \u0394: {batch_loss - epoch_loss:,.2f}")
+        loss = np.array(batch_losses).mean()
+        if idx == 0:
+            looper.set_description(f"Loss: {loss:,.2f}")
+            prev_loss = loss  # This line is here to make the linter happy
+        else:
+            looper.set_description(f"Loss: {loss:,.2f}, \u0394: {loss - prev_loss:,.2f}")
+        prev_loss = loss
+
         losses.append(batch_losses)
-        epoch_loss = batch_loss / batch_size
 
         # Save progress along the way
         if save_every is not None and ((idx + 1) % save_every) == 0:
@@ -282,7 +286,7 @@ def optimise(
         if idx == 0:
             compile_time = int(time.time() - t0)
             print(f"Compile Time: {str(timedelta(seconds=compile_time))}")
-            print(f"Initial Loss: {epoch_loss:,.2f}")
+            print(f"Initial Loss: {loss:,.2f}")
             t1 = time.time()
         if idx == 1:
             epoch_time = time.time() - t1
@@ -295,6 +299,9 @@ def optimise(
     formatted_time = str(timedelta(seconds=int(elapsed_time)))
 
     print(f"Full Time: {formatted_time}")
-    print(f"Final Loss: {epoch_loss:,.2f}")
+    print(f"Final Loss: {loss:,.2f}")
 
-    return model, losses, (reg_history, batch_history), (reg_state, batch_state)
+    batch_model = jtu.tree_map(lambda x: np.array(x[-batch_size:]).mean(axis=0), batch_model)
+    final_state = reg_model.set("params", {**reg_model.params, **batch_model.params})
+    history = reg_history.set("params", {**reg_history.params, **batch_history.params})
+    return model, losses, final_state, history

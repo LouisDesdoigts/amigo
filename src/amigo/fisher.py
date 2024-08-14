@@ -8,16 +8,17 @@ from .stats import posterior, variance_model
 from tqdm.notebook import tqdm
 
 
-def fisher_fn(model, exposure, params, new_diag=False):
-    return FIM(model, params, posterior, exposure, new_diag=new_diag)
+def fisher_fn(model, exposure, params):
+    return FIM(model, params, posterior, exposure)
 
 
-def self_fisher_fn(model, exposure, params, read_noise=10, true_read_noise=False, new_diag=False):
+def self_fisher_fn(model, exposure, params, read_noise=10, true_read_noise=False):
     slopes, variance = variance_model(
         model, exposure, true_read_noise=true_read_noise, read_noise=read_noise
     )
     exposure = exposure.set(["slopes", "variance"], [slopes, variance])
-    return fisher_fn(model, exposure, params, new_diag=new_diag)
+    # return fisher_fn(model, exposure, params)
+    return FIM(model, params, posterior, exposure)
 
 
 def calc_fisher(
@@ -28,7 +29,6 @@ def calc_fisher(
     recalculate=False,
     save=True,
     overwrite=False,
-    new_diag=False,
 ):
     # Check that the param exists - caught later
     try:
@@ -49,7 +49,7 @@ def calc_fisher(
 
             # Overwrite shape miss-matches
             if overwrite:
-                fisher = self_fisher_fn(model, exposure, [param], new_diag=new_diag)
+                fisher = self_fisher_fn(model, exposure, [param])
                 if save:
                     np.save(file_path, fisher)
             else:
@@ -57,7 +57,7 @@ def calc_fisher(
 
     # Calculate and save
     else:
-        fisher = self_fisher_fn(model, exposure, [param], new_diag=new_diag)
+        fisher = self_fisher_fn(model, exposure, [param])
         if save:
             np.save(file_path, fisher)
     return fisher
@@ -71,7 +71,6 @@ def calc_fishers(
     recalculate=False,
     overwrite=False,
     save=True,
-    new_diag=False,
     verbose=True,
     cache="files/fishers",
 ):
@@ -111,9 +110,7 @@ def calc_fishers(
                 param_path = param_map_fn(model, exp, param)
 
             # Calculate fisher for each exposure
-            fisher = calc_fisher(
-                model, exp, param_path, file_path, recalculate, save, overwrite, new_diag
-            )
+            fisher = calc_fisher(model, exp, param_path, file_path, recalculate, save, overwrite)
 
             # Store the fisher
             if fisher is not None:
@@ -148,17 +145,11 @@ def hessian(f, x):
     return np.stack([hvp(e) for e in basis]).reshape(x.shape + x.shape)
 
 
-# TODO: Update this to take the matrix mapper class
 def FIM(
     pytree,
     parameters,
     loglike_fn,
     *loglike_args,
-    shape_dict={},
-    save_ram=True,
-    vmapped=False,
-    diag=False,
-    new_diag=False,
     **loglike_kwargs,
 ):
     # Build X vec

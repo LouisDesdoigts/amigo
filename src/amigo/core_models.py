@@ -5,10 +5,14 @@ import equinox as eqx
 import zodiax as zdx
 from jax.lax import dynamic_slice as lax_slice
 from .optical_models import AMIOptics
+from .vis_models import SplineVis
 from .detector_models import LinearDetectorModel
 from .ramp_models import SimpleRamp
 from .read_models import ReadModel
-from .files import get_Teffs, get_filters
+from .files import initialise_params, get_exposures
+from .search_Teffs import get_Teffs
+from .misc import calc_throughput
+from .model_fits import SplineVisFit
 
 
 class Exposure(zdx.Base):
@@ -114,45 +118,65 @@ class BaseModeller(zdx.Base):
         return values
 
 
+def initialise_calibration_model(
+    files,
+    fit,
+    optics=None,
+    detector=None,
+    ramp=None,
+    read=None,
+    fit_vis=True,
+    nwavels=9,
+    Teff_cache="files/Teff_cache",
+):
+    exposures = get_exposures(files, fit)
+
+    if optics is None:
+        optics = AMIOptics()
+
+    if detector is None:
+        detector = LinearDetectorModel()
+
+    if ramp is None:
+        ramp = SimpleRamp()
+
+    if read is None:
+        read = ReadModel()
+
+    if isinstance(fit, SplineVisFit):
+        visibilities = SplineVis(optics)
+    else:
+        visibilities = None
+
+    filters = {}
+    for filt in list(set([exp.filter for exp in exposures])):
+        filters[filt] = calc_throughput(filt, nwavels=nwavels)
+
+    Teffs = get_Teffs(files, Teff_cache=Teff_cache)
+    params = initialise_params(exposures, optics)
+    model = AmigoModel(params, optics, ramp, detector, read, Teffs, filters, visibilities)
+
+    return model, exposures
+
+
 class AmigoModel(BaseModeller):
     Teffs: dict
     filters: dict
-    optics: AMIOptics
+    optics: None
     visibilities: None
     detector: None
     ramp: None
     read: None
 
-    def __init__(
-        self,
-        files,
-        params,
-        optics=None,
-        ramp=None,
-        detector=None,
-        read=None,
-        visibilities=None,
-        Teff_cache="files/Teff_cache",
-    ):
-
-        if optics is None:
-            optics = AMIOptics()
-        if detector is None:
-            detector = LinearDetectorModel()
-        if ramp is None:
-            ramp = SimpleRamp()
-        if read is None:
-            read = ReadModel()
-
-        self.Teffs = get_Teffs(files, Teff_cache=Teff_cache)
-        self.filters = get_filters(files)
-
+    def __init__(self, params, optics, ramp, detector, read, Teffs, filters, visibilities=None):
+        self.params = params
+        self.filters = filters
+        self.Teffs = Teffs
         self.optics = optics
         self.detector = detector
         self.ramp = ramp
         self.read = read
         self.visibilities = visibilities
-        self.params = params
 
     def model(self, exposure, **kwargs):
         return exposure.fit(self, exposure, **kwargs)

@@ -135,7 +135,7 @@ class SplineVis(zdx.Base):
     hole_inds: np.ndarray
     bls_map: np.ndarray
 
-    def __init__(self, optics, x_osamp=2, y_osamp=1, x_pad=1, y_pad=2):
+    def __init__(self, optics, x_osamp=3, y_osamp=2, x_pad=1, y_pad=2):
 
         # Get the baseline coordinates OTF coordinates
         cen_holes = optics.holes - optics.holes.mean(0)[None, :]
