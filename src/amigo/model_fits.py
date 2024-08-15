@@ -153,7 +153,7 @@ class ModelFit(zdx.Base):
             model = model.set("read.one_on_fs", model.one_on_fs[exposure.key])
 
         # Add the zero point to the ramp
-        zpoint = exposure.zero_point[None, ...]
+        zpoint = exposure.ramp[:1]
         zpoint = np.where(np.isnan(zpoint), 0, zpoint)
         slopes = np.diff(ramp.data, axis=0)
         true_ramp = np.concatenate([zpoint, zpoint + np.cumsum(slopes, axis=0)])

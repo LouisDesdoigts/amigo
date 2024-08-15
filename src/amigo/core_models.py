@@ -9,10 +9,20 @@ from .vis_models import SplineVis
 from .detector_models import LinearDetectorModel
 from .ramp_models import SimpleRamp
 from .read_models import ReadModel
-from .files import initialise_params, get_exposures
+from .files import initialise_params
 from .search_Teffs import get_Teffs
 from .misc import calc_throughput
 from .model_fits import SplineVisFit
+
+# def initialise_exposures(files, fit, ms_thresh=None, as_psf=False):
+
+#     exposures = []
+#     for file in files:
+#         slopes = np.array(file["SLOPE"].data, float)
+#         variance = np.array(file["SLOPE_ERR"].data, float) ** 2
+#         support = np.where(~np.array(file["BADPIX"].data, bool))
+#         exposures.append(Exposure(file, slopes, variance, support, fit))
+#     return exposures
 
 
 class Exposure(zdx.Base):
@@ -25,9 +35,10 @@ class Exposure(zdx.Base):
     # Arrays
     slopes: jax.Array
     variance: jax.Array
-    zero_point: jax.Array
-    zero_point_variance: jax.Array
+    ramp: jax.Array
+    ramp_variance: jax.Array
     support: jax.Array
+    badpix: jax.Array
     nints: int = eqx.field(static=True)
     filter: str = eqx.field(static=True)
     star: str = eqx.field(static=True)
@@ -39,14 +50,15 @@ class Exposure(zdx.Base):
     calibrator: bool = eqx.field(static=True)
     fit: object = eqx.field(static=True)
 
-    def __init__(self, file, slopes, variance, support, fit):
-        self.slopes = slopes
-        self.variance = variance
-        self.support = support
-        self.zero_point = np.asarray(file["ZPOINT"].data, float)
-        self.zero_point_variance = np.asarray(file["ZPOINT_VAR"].data, float)
-        self.fit = fit
+    # def __init__(self, file, slopes, variance, support, fit):
+    def __init__(self, file, fit):
 
+        self.slopes = np.array(file["SLOPE"].data, float)
+        self.variance = np.array(file["SLOPE_ERR"].data, float) ** 2
+        self.badpix = np.array(file["BADPIX"].data, bool)
+        self.support = np.where(~np.array(file["BADPIX"].data, bool))
+        self.ramp = np.asarray(file["RAMP"].data, float)
+        self.ramp_variance = np.asarray(file["RAMP_ERR"].data, float) ** 2
         self.nints = file[0].header["NINTS"]
         self.filter = file[0].header["FILTER"]
         self.star = file[0].header["TARGPROP"]
@@ -56,6 +68,7 @@ class Exposure(zdx.Base):
         self.dither = file[0].header["EXPOSURE"]
         self.calibrator = bool(file[0].header["IS_PSF"])
         self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
+        self.fit = fit
 
     def print_summary(self):
         print(
@@ -128,7 +141,7 @@ def initialise_model(
     nwavels=9,
     Teff_cache="files/Teff_cache",
 ):
-    exposures = get_exposures(files, fit)
+    exposures = [Exposure(file, fit) for file in files]
 
     if isinstance(fit, SplineVisFit):
         visibilities = SplineVis(optics)

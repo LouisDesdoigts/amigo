@@ -1,5 +1,4 @@
 import jax.numpy as np
-import pkg_resources as pkg
 import dLux.utils as dlu
 from .misc import find_position
 
@@ -63,7 +62,7 @@ def get_default_params(exposures, optics, amp_order=1):
     reflectivity = {}
     for exp in exposures:
 
-        im = exp.slopes[0]
+        im = np.where(exp.badpix, np.nan, exp.slopes[0])
         psf = np.where(np.isnan(im), 0.0, im)
 
         # Get pixel scale in arcseconds
@@ -127,51 +126,9 @@ def initialise_params(
         params.pop("reflectivity")
 
     if vis_model is not None:
-        # if isinstance(exposures[0].fit, SplineVisFit):
         params.update(initialise_vis(vis_model, exposures))
 
     return params
-
-
-def prep_data(file, ms_thresh=None, as_psf=False):
-    data = np.asarray(file["SCI"].data, float)
-    var = np.asarray(file["SCI_VAR"].data, float)
-    dq = np.asarray(file["PIXELDQ"].data > 0, bool)
-
-    if ms_thresh is not None:
-        dq = dq.at[np.mean(data, axis=0) <= ms_thresh].set(True)
-
-    badpix = np.load(pkg.resource_filename(__name__, "data/badpix.npy"))
-    dq = dq | badpix
-
-    if as_psf:
-        supp_mask = ~np.isnan(data) & ~dq
-        support = np.where(supp_mask)
-        data = data.at[~supp_mask].set(np.nan)
-        var = var.at[~supp_mask].set(np.nan)
-        return data, var, support
-
-    supp_mask = ~np.isnan(data.sum(0)) & ~dq
-
-    # Nan the bad pixels
-    support = np.array(np.where(supp_mask))
-    data = data.at[:, ~supp_mask].set(np.nan)
-    var = var.at[..., ~supp_mask].set(np.nan)
-
-    return data, var, support
-
-
-def get_exposures(files, fit, ms_thresh=None, as_psf=False):
-    from amigo.core_models import Exposure
-
-    exposures = []
-    for file in files:
-        data, variance, support = prep_data(file, ms_thresh=ms_thresh, as_psf=as_psf)
-        data = np.asarray(data, float)
-        variance = np.asarray(variance, float)
-        support = np.asarray(support, int)
-        exposures.append(Exposure(file, data, variance, support, fit))  # key_fn, fit))
-    return exposures
 
 
 def repopulate(model, history, index=-1):

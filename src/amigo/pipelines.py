@@ -1,9 +1,11 @@
 import os
 import shutil
 import jax.numpy as np
-from tqdm.notebook import tqdm
+import numpy as onp
 from astropy.io import fits
-from .misc import apply_sigma_clip, calc_mean_and_std_var
+from astropy.stats import sigma_clip
+from tqdm.notebook import tqdm
+import pkg_resources as pkg
 
 
 def delete_contents(path):
@@ -43,7 +45,7 @@ def process_calslope(
         output_dir += "/"
 
     # Get the files
-    files = [directory + f for f in os.listdir(directory) if f.endswith("_ramp.fits")]
+    files = [directory + f for f in os.listdir(directory) if f.endswith("_uncal.fits")]
 
     # Check if there are any files to process
     if len(files) == 0:
@@ -59,7 +61,7 @@ def process_calslope(
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
-    # Clear the existsing files (since we might use different chunk sizes, and we do not
+    # Clear the existing files (since we might use different chunk sizes, and we do not
     # want to have old files hang around)
     if clean_dir:
         print("Cleaning existing directory")
@@ -68,8 +70,6 @@ def process_calslope(
     # Iterate over files
     print("Running calslope processing...")
     for file_path in tqdm(files):
-        file_name = file_path.split("/")[-1]
-        file_root = "_".join(file_name.split("_")[:-2])
 
         file = fits.open(file_path)
 
@@ -84,7 +84,7 @@ def process_calslope(
             continue
 
         # Get the data
-        data = np.array(file["SCI"].data)
+        data = np.array(file["SCI"].data, int)
         file.close()
 
         if chunk_size == 0:
@@ -97,8 +97,11 @@ def process_calslope(
             else:
                 nchunks = np.round(nints / chunk_size).astype(int)
             chunks = np.array_split(data, nchunks)
+            print(f"Breaking into {nchunks} chunks")
 
-        print(f"Breaking into {nchunks} chunks")
+        # Get the root of the file name
+        file_name = file_path.split("/")[-1]
+        file_root = "_".join(file_name.split("_")[:-2])
 
         for i, chunk in enumerate(chunks):
 
@@ -112,9 +115,8 @@ def process_calslope(
             # Open new file
             file = fits.open(file_calslope, mode="update")
 
-            # Remove the redundant extensions
-            del file["GROUPDQ"]
-            del file["ERR"]
+            # Remove the redundant or undesired extensions
+            del file["SCI"]
             del file["GROUP"]
             del file["INT_TIMES"]
 
@@ -126,40 +128,8 @@ def process_calslope(
             file[0].header["FILENAME"] = file_name
             file[0].header["SIGMA"] = sigma
 
-            # Sigma clip the data, not the slopes. We sigma clip the data since the detector
-            # can not distinguish between real signal and bias, so its value couples
-            # through pixel non-linearities (ie pixel response, BFE)
-            if sigma > 0:
-                chunk = apply_sigma_clip(chunk, sigma=sigma)
-
-            # Get slopes
-            slopes = np.diff(chunk, axis=1)
-            slope, slope_var = calc_mean_and_std_var(slopes)
-
-            # Zero-point - We may actually want to track this to feed into the
-            # forwards model. The bias/zero point will couple into the BFE, and so exposures
-            # the 'zero-point' of a dim exposure will be different to a bright exposure. As
-            # such we need to track this. With this zero-point, we theoretically should be
-            # able to fully re-build the data
-            zero_point, zero_point_var = calc_mean_and_std_var(chunk[:, 0])
-
-            # Save the data
-            file["SCI"].data = slope
-
-            # Save the variance as a separate extension
-            header = fits.Header()
-            header["EXTNAME"] = "SCI_VAR"
-            file.append(fits.ImageHDU(data=slope_var, header=header))
-
-            # Save the zero point as a separate extension
-            header = fits.Header()
-            header["EXTNAME"] = "ZPOINT"
-            file.append(fits.ImageHDU(data=zero_point, header=header))
-
-            # Save the zero point variance as a separate extension
-            header = fits.Header()
-            header["EXTNAME"] = "ZPOINT_VAR"
-            file.append(fits.ImageHDU(data=zero_point_var, header=header))
+            # Process the chunk
+            file = process_data(file, chunk, sigma=sigma)
 
             # Save as calslope
             file.writeto(file_calslope, overwrite=True)
@@ -167,3 +137,86 @@ def process_calslope(
 
     print("Done\n")
     return output_path
+
+
+def apply_sigma_clip(data, sigma=5.0, axis=0):
+    """NOTE: casts bad values to nan, so output must be float array"""
+    # Mask invalid values (nans, infs, etc.)
+    masked = onp.ma.masked_invalid(data, copy=True)
+
+    # Apply sigma clipping
+    clipped = sigma_clip(masked, axis=axis, sigma=sigma)
+
+    # Fill clipped/invalid values with -1
+    data = np.array(onp.ma.filled(clipped, fill_value=-1), dtype=float)
+
+    # Cast bad values to nan now that it is guaranteed a float array
+    return data.at[np.where(data == -1.0)].set(np.nan)
+
+
+def calc_mean_and_standard_error(data, axis=0):
+    support = np.asarray(~np.isnan(data), int).sum(axis=axis)
+    mean = np.nanmean(data, axis=axis)
+    std_err = np.nanstd(data, axis=axis) / np.sqrt(support)
+    return mean, std_err, support
+
+
+def process_data(file, data, sigma=5.0):
+    """
+    Processes the data and saves the outputs to the file
+
+    Note we sigma clip the data first to catch vary large or small values after things
+    like cosmic ray hits, etc. Then we take the slopes and sigma clip those to catch
+    any outliers that might have been missed in the first pass. We then calculate the
+    mean and standard error of the ramp and the slope.
+    """
+
+    # Clip the data first
+    clipped_data = apply_sigma_clip(data, sigma=sigma, axis=0)
+
+    # Calculate the ramp mean and standard error
+    ramp, ramp_err, ramp_support = calc_mean_and_standard_error(clipped_data, axis=0)
+
+    # Calculate the slopes and sigma clip
+    slopes = np.diff(clipped_data, axis=1)
+    clipped_slopes = apply_sigma_clip(slopes, sigma=sigma, axis=0)
+
+    # Calculate the slope mean and standard error
+    slope, slope_err, slope_support = calc_mean_and_standard_error(clipped_slopes, axis=0)
+
+    # Get the bad pixel array
+    badpix = np.load(pkg.resource_filename(__name__, "data/badpix.npy")).astype(int)
+
+    # Save the Outputs
+    header = fits.Header()
+    header["EXTNAME"] = "RAMP"
+    file.append(fits.ImageHDU(data=ramp, header=header))
+
+    header = fits.Header()
+    header["EXTNAME"] = "RAMP_ERR"
+    file.append(fits.ImageHDU(data=ramp_err, header=header))
+
+    header = fits.Header()
+    header["EXTNAME"] = "RAMP_SUP"
+    file.append(fits.ImageHDU(data=ramp_support, header=header))
+
+    header = fits.Header()
+    header["EXTNAME"] = "SLOPE"
+    file.append(fits.ImageHDU(data=slope, header=header))
+
+    header = fits.Header()
+    header["EXTNAME"] = "SLOPE_ERR"
+    file.append(fits.ImageHDU(data=slope_err, header=header))
+
+    header = fits.Header()
+    header["EXTNAME"] = "SLOPE_SUP"
+    file.append(fits.ImageHDU(data=slope_support, header=header))
+
+    header = fits.Header()
+    header["EXTNAME"] = "BADPIX"
+    file.append(fits.ImageHDU(data=badpix, header=header))
+
+    # Move the ASDF extention to the end
+    file.append(file.pop("ASDF"))
+
+    return file

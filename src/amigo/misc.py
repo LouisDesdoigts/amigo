@@ -3,7 +3,6 @@ import jax.scipy as jsp
 import numpy as onp
 from scipy.ndimage import center_of_mass
 from scipy.interpolate import griddata
-from astropy.stats import sigma_clip
 import pkg_resources as pkg
 
 
@@ -48,6 +47,8 @@ def interp_badpix(array):
 
 
 def find_position(psf, pixel_scale=0.065524085):
+    # TODO: Maybe iterate this operation to gain resilience to bad pixels?
+
     # Interpolate the bad pixels
     psf = onp.array(interp_badpix(psf))
 
@@ -81,19 +82,6 @@ def full_to_SUB80(full_arr, npix_out=80, fill=0.0):
         pad = (npix_out - 80) // 2
         SUB80 = np.pad(SUB80, pad, constant_values=fill)
     return SUB80
-
-
-def calc_mean_and_std_var(data, axis=0):
-    support = np.asarray(~np.isnan(data), int).sum(axis)
-    mean = np.nanmean(data, axis=axis)
-    std_var = np.nanvar(data, axis=axis) / support
-    return mean, std_var
-
-
-def apply_sigma_clip(array, sigma=5.0, axis=0):
-    masked = onp.ma.masked_invalid(array, copy=True)
-    clipped = sigma_clip(masked, axis=axis, sigma=sigma)
-    return onp.ma.filled(clipped, fill_value=onp.nan)
 
 
 def calc_throughput(filt, nwavels=9):
@@ -138,3 +126,8 @@ def convert_adjacent_to_true(bool_array, n=1, corners=False):
                 bool_array = bool_array.at[y + 1, x - 1].set(True)
                 bool_array = bool_array.at[y - 1, x + 1].set(True)
     return bool_array
+
+
+def nearest_fn(pt, coords):
+    dist = np.hypot(*(coords - pt[:, None, None]))
+    return dist == dist.min()
