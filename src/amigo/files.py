@@ -1,12 +1,5 @@
-# import os
 import jax.numpy as np
-
-# import jax.scipy as jsp
-# from astroquery.simbad import Simbad
-# import pyia
 import pkg_resources as pkg
-
-# import numpy as onp
 import dLux.utils as dlu
 from .misc import find_position
 
@@ -124,8 +117,7 @@ def initialise_params(
     fit_reflectivity=False,
     vis_model=None,
 ):
-    # NOTE: At present this assume the _same_ fit is being applied to all the exposures
-
+    """Assumes all exposures have the same fit"""
     params = get_default_params(exposures, optics)
 
     if not fit_one_on_fs:
@@ -135,43 +127,10 @@ def initialise_params(
         params.pop("reflectivity")
 
     if vis_model is not None:
+        # if isinstance(exposures[0].fit, SplineVisFit):
         params.update(initialise_vis(vis_model, exposures))
 
     return params
-
-
-# def get_filters(exposures, nwavels=9):
-#     filters = list(set([exp.filter for exp in exposures]))
-#     filter_dict = {}
-#     for filt in filters:
-#         filter_dict[filt] = calc_throughput(filt, nwavels=nwavels)
-#     return filter_dict
-
-
-# def calc_throughput(filt, nwavels=9):
-
-#     if filt not in ["F380M", "F430M", "F480M", "F277W"]:
-#         raise ValueError("Supported filters are F380M, F430M, F480M, F277W.")
-
-#     # filter_path = os.path.join()
-#     file_path = pkg.resource_filename(__name__, f"/data/filters/{filt}.dat")
-#     wl_array, throughput_array = np.array(onp.loadtxt(file_path, unpack=True))
-
-#     edges = np.linspace(wl_array.min(), wl_array.max(), nwavels + 1)
-#     wavels = np.linspace(wl_array.min(), wl_array.max(), 2 * nwavels + 1)[1::2]
-
-#     areas = []
-#     for i in range(nwavels):
-#         cond1 = edges[i] < wl_array
-#         cond2 = wl_array < edges[i + 1]
-#         throughput = np.where(cond1 & cond2, throughput_array, 0)
-#         areas.append(jsp.integrate.trapezoid(y=throughput, x=wl_array))
-
-#     areas = np.array(areas)
-#     weights = areas / areas.sum()
-
-#     wavels *= 1e-10
-#     return np.array([wavels, weights])
 
 
 def prep_data(file, ms_thresh=None, as_psf=False):

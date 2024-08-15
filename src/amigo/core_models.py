@@ -130,18 +130,6 @@ def initialise_model(
 ):
     exposures = get_exposures(files, fit)
 
-    if optics is None:
-        optics = AMIOptics()
-
-    if detector is None:
-        detector = LinearDetectorModel()
-
-    if ramp is None:
-        ramp = SimpleRamp()
-
-    if read is None:
-        read = ReadModel()
-
     if isinstance(fit, SplineVisFit):
         visibilities = SplineVis(optics)
     else:
@@ -152,7 +140,7 @@ def initialise_model(
         filters[filt] = calc_throughput(filt, nwavels=nwavels)
 
     Teffs = get_Teffs(files, Teff_cache=Teff_cache)
-    params = initialise_params(exposures, optics)
+    params = initialise_params(exposures, optics, vis_model=visibilities)
     model = AmigoModel(params, optics, ramp, detector, read, Teffs, filters, visibilities)
 
     return model, exposures
