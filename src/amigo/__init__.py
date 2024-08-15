@@ -13,7 +13,6 @@ from . import files
 from . import fisher
 from . import fitting
 from . import stats
-from . import training
 from . import pipelines
 from . import plotting
 from . import misc
@@ -30,7 +29,6 @@ __all__ = [
     fisher,
     fitting,
     stats,
-    training,
     pipelines,
     plotting,
     misc,
