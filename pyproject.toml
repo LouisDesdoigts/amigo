@@ -21,6 +21,7 @@ dependencies = [
   "uncertainties",
   "interpax",
   "IPython",
+  "matplotlib",
 ]
 
 classifiers=[
