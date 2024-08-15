@@ -123,10 +123,6 @@ def calc_lrs(model, exposures, fishers, params=None, order=1):
     return lr_model
 
 
-# def reg_loss_fn(model, exposure, args):
-#     return -np.array(posterior(model, exposure, per_pix=True)).sum()
-
-
 def optimise(
     model,
     exposures,
@@ -292,7 +288,7 @@ def optimise(
             epoch_time = time.time() - t1
             est_runtime = compile_time + epoch_time * (epochs - 1)
             print("Est time per epoch: ", str(timedelta(seconds=int(epoch_time))))
-            print("Est run remaining: ", str(timedelta(seconds=int(est_runtime))))
+            print("Est run time: ", str(timedelta(seconds=int(est_runtime))))
 
     # Final execution time
     elapsed_time = time.time() - t0
@@ -301,7 +297,6 @@ def optimise(
     print(f"Full Time: {formatted_time}")
     print(f"Final Loss: {loss:,.2f}")
 
-    batch_model = jtu.tree_map(lambda x: np.array(x[-batch_size:]).mean(axis=0), batch_model)
     final_state = reg_model.set("params", {**reg_model.params, **batch_model.params})
     history = reg_history.set("params", {**reg_history.params, **batch_history.params})
     return model, losses, final_state, history
