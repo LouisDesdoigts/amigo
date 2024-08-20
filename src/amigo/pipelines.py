@@ -5,7 +5,7 @@ import numpy as onp
 from astropy.io import fits
 from astropy.stats import sigma_clip
 import pkg_resources as pkg
-from .tqdm import tqdm
+from .misc import tqdm
 
 
 def delete_contents(path):

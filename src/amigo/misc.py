@@ -6,6 +6,17 @@ from scipy.interpolate import griddata
 import pkg_resources as pkg
 
 
+# Import tqdm appropriately. Note we need the # noqa to get ruff to allow this syntax
+from IPython import get_ipython
+
+if get_ipython() is not None:
+    # Running in Jupyter Notebook
+    from tqdm.notebook import tqdm  # noqa
+else:
+    # Running in a script or other non-Jupyter environment
+    from tqdm import tqdm  # noqa
+
+
 def planck(wav, T):
     """
     Planck's Law:

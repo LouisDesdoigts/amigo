@@ -12,7 +12,7 @@ from datetime import timedelta
 from .core_models import ModelParams, ModelHistory
 from .stats import reg_loss_fn
 from zodiax.experimental import serialise
-from .tqdm import tqdm
+from .misc import tqdm
 
 
 def scheduler(lr, start, *args):
