@@ -74,6 +74,9 @@ def summarise_fit(
     vmax = np.maximum(np.nanmax(np.abs(effective_data)), np.nanmax(np.abs(effective_psf)))
     vmin = np.minimum(np.nanmin(np.abs(effective_data)), np.nanmin(np.abs(effective_psf)))
 
+    inferno.set_bad("k", 0.5)
+    seismic.set_bad("k", 0.5)
+
     skip = False
     if np.isnan(vmin) or np.isnan(vmax):
         skip = True
@@ -81,8 +84,6 @@ def summarise_fit(
     if not skip:
         if residuals:
             norm = colors.PowerNorm(gamma=pow, vmin=-vmin, vmax=vmax)
-            inferno.set_bad("k", 0.5)
-            seismic.set_bad("k", 0.5)
 
             plt.figure(figsize=(15, 4))
             plt.subplot(1, 3, 1)
@@ -197,13 +198,16 @@ def summarise_fit(
             )
 
         optics = model.optics
-        mask, amp, abb = pupil_mask.calculate(optics.wf_npixels, optics.diameter)
+        amp = pupil_mask.calc_transmission()
+        mask = pupil_mask.calc_mask(optics.wf_npixels, optics.diameter)
+        abb = pupil_mask.calc_aberrations()
+        # mask, amp, abb = pupil_mask.calculate(optics.wf_npixels, optics.diameter)
         amp_in = np.where(mask < 1.0, np.nan, mask * amp)
         abb_in = np.where(mask < 1.0, np.nan, 1e9 * abb)
 
         # # Get the applied opds in nm and flip to match the mask
-        static_opd = np.flipud(exposure.opd) * 1e9
-        total_opd = np.where(mask < 1.0, np.nan, static_opd + abb_in)
+        # static_opd = np.flipud(exposure.opd) * 1e9
+        # total_opd = np.where(mask < 1.0, np.nan, abb_in)
 
         plt.figure(figsize=(15, 4))
 
@@ -219,11 +223,11 @@ def summarise_fit(
         plt.imshow(abb_in, cmap=seismic, vmin=-v, vmax=v)
         plt.colorbar(label="OPD (nm)")
 
-        v = np.nanmax(np.abs(total_opd))
-        plt.subplot(1, 3, 3)
-        plt.title("Total OPD")
-        plt.imshow(total_opd, cmap=seismic, vmin=-v, vmax=v)
-        plt.colorbar(label="OPD (nm)")
+        # v = np.nanmax(np.abs(total_opd))
+        # plt.subplot(1, 3, 3)
+        # plt.title("Total OPD")
+        # plt.imshow(total_opd, cmap=seismic, vmin=-v, vmax=v)
+        # plt.colorbar(label="OPD (nm)")
 
         plt.tight_layout()
         plt.show()
@@ -354,10 +358,9 @@ def _plot_ax(leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, e
 
 def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
     """This is the ugly gross function that is necessary"""
-    # print(start, end)
     arr = arr[start:end]
     epochs = np.arange(len(arr))
-    ax.set(xlabel="Epochs", title=param)  # , xlim=(start, epochs[end]))
+    ax.set(xlabel="Epochs", title=param)
 
     match param:
         case "positions":
@@ -435,8 +438,8 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.set(ylabel="Dark Current")
 
         case "jitter.r":
-            ax.plot(epochs, arr, **kwargs)
-            ax.set(ylabel="Jitter Magnitude")
+            ax.plot(epochs, 1e3 * arr, **kwargs)
+            ax.set(ylabel="Jitter Magnitude (mas)")
 
         case "amplitudes":
             norm_amplitudes = arr

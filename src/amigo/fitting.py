@@ -10,7 +10,7 @@ import dLux.utils as dlu
 from jax import vmap, config
 from datetime import timedelta
 from .core_models import ModelParams, ModelHistory
-from .stats import posterior
+from .stats import reg_loss_fn
 from zodiax.experimental import serialise
 from .tqdm import tqdm
 
@@ -64,7 +64,7 @@ def get_optimiser(pytree, optimisers, parameters=None):
     return model_params, optim, state
 
 
-def calc_lrs(model, exposures, fishers, params=None, order=1):
+def calc_lrs(model, exposures, fishers, params=None, fmax=1e6):
     # Get the parameters from the fishers
     if params is None:
         params = []
@@ -107,15 +107,14 @@ def calc_lrs(model, exposures, fishers, params=None, order=1):
             param_path = exp.map_param(param)
             fisher_model = fisher_model.add(param_path, fishers[exp.key][param])
 
+    # Clip the fisher matrix to the max value
+    fisher_model = jtu.tree_map(lambda x: np.clip(x, -fmax, fmax), fisher_model)
+
     # Convert fisher to lr model
     inv_fn = lambda fmat, leaf: dlu.nandiv(-1, np.diag(fmat), 1).reshape(leaf.shape)
     lr_model = jtu.tree_map(inv_fn, fisher_model, model)
     lr_model = eqx.combine(lr_model, large_lr_model)
     return lr_model
-
-
-def reg_loss_fn(model, exposure, args):
-    return -np.array(posterior(model, exposure, per_pix=True)).sum()
 
 
 def optimise(
@@ -216,7 +215,6 @@ def optimise(
     # Epoch loop
     losses = []
     looper = tqdm(range(0, epochs))
-    epoch_loss = 0.0
     t0 = time.time()
     for idx in looper:
         model, args, key = args_fn(model, args, key, idx)
@@ -256,10 +254,15 @@ def optimise(
         reg_history = reg_history.append(reg_model)  # could be JIT'd with work
 
         # Update the looper
-        batch_loss = np.array(batch_losses).mean()
-        looper.set_description(f"Loss: {epoch_loss:,.2f}, Change: {batch_loss - epoch_loss:,.2f}")
+        loss = np.array(batch_losses).mean()
+        if idx == 0:
+            looper.set_description(f"Loss: {loss:,.2f}")
+            prev_loss = loss  # This line is here to make the linter happy
+        else:
+            looper.set_description(f"Loss: {loss:,.2f}, \u0394: {loss - prev_loss:,.2f}")
+        prev_loss = loss
+
         losses.append(batch_losses)
-        epoch_loss = batch_loss
 
         # Save progress along the way
         if save_every is not None and ((idx + 1) % save_every) == 0:
@@ -273,19 +276,21 @@ def optimise(
         if idx == 0:
             compile_time = int(time.time() - t0)
             print(f"Compile Time: {str(timedelta(seconds=compile_time))}")
-            print(f"Initial Loss: {epoch_loss:,.2f}")
+            print(f"Initial Loss: {loss:,.2f}")
             t1 = time.time()
         if idx == 1:
             epoch_time = time.time() - t1
             est_runtime = compile_time + epoch_time * (epochs - 1)
             print("Est time per epoch: ", str(timedelta(seconds=int(epoch_time))))
-            print("Est run remaining: ", str(timedelta(seconds=int(est_runtime))))
+            print("Est run time: ", str(timedelta(seconds=int(est_runtime))))
 
     # Final execution time
     elapsed_time = time.time() - t0
     formatted_time = str(timedelta(seconds=int(elapsed_time)))
 
     print(f"Full Time: {formatted_time}")
-    print(f"Final Loss: {epoch_loss:,.2f}")
+    print(f"Final Loss: {loss:,.2f}")
 
-    return model, losses, (reg_history, batch_history), (reg_state, batch_state)
+    final_state = reg_model.set("params", {**reg_model.params, **batch_model.params})
+    history = reg_history.set("params", {**reg_history.params, **batch_history.params})
+    return model, losses, final_state, history

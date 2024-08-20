@@ -5,10 +5,104 @@ import equinox as eqx
 import zodiax as zdx
 from jax.lax import dynamic_slice as lax_slice
 from .optical_models import AMIOptics
+from .vis_models import SplineVis
 from .detector_models import LinearDetectorModel
 from .ramp_models import SimpleRamp
 from .read_models import ReadModel
-from .files import get_Teffs, get_filters
+from .files import initialise_params
+from .search_Teffs import get_Teffs
+from .misc import calc_throughput
+from .model_fits import SplineVisFit
+
+# def initialise_exposures(files, fit, ms_thresh=None, as_psf=False):
+
+#     exposures = []
+#     for file in files:
+#         slopes = np.array(file["SLOPE"].data, float)
+#         variance = np.array(file["SLOPE_ERR"].data, float) ** 2
+#         support = np.where(~np.array(file["BADPIX"].data, bool))
+#         exposures.append(Exposure(file, slopes, variance, support, fit))
+#     return exposures
+
+
+class Exposure(zdx.Base):
+    """
+    A class to hold all the data relevant to a single exposure, allowing it to be
+    modelled.
+
+    """
+
+    # Arrays
+    slopes: jax.Array
+    variance: jax.Array
+    ramp: jax.Array
+    ramp_variance: jax.Array
+    support: jax.Array
+    badpix: jax.Array
+    nints: int = eqx.field(static=True)
+    filter: str = eqx.field(static=True)
+    star: str = eqx.field(static=True)
+    filename: str = eqx.field(static=True)
+    program: str = eqx.field(static=True)
+    observation: str = eqx.field(static=True)
+    act_id: str = eqx.field(static=True)
+    dither: str = eqx.field(static=True)
+    calibrator: bool = eqx.field(static=True)
+    fit: object = eqx.field(static=True)
+
+    # def __init__(self, file, slopes, variance, support, fit):
+    def __init__(self, file, fit):
+
+        self.slopes = np.array(file["SLOPE"].data, float)
+        self.variance = np.array(file["SLOPE_ERR"].data, float) ** 2
+        self.badpix = np.array(file["BADPIX"].data, bool)
+        self.support = np.where(~np.array(file["BADPIX"].data, bool))
+        self.ramp = np.asarray(file["RAMP"].data, float)
+        self.ramp_variance = np.asarray(file["RAMP_ERR"].data, float) ** 2
+        self.nints = file[0].header["NINTS"]
+        self.filter = file[0].header["FILTER"]
+        self.star = file[0].header["TARGPROP"]
+        self.observation = file[0].header["OBSERVTN"]
+        self.program = file[0].header["PROGRAM"]
+        self.act_id = file[0].header["ACT_ID"]
+        self.dither = file[0].header["EXPOSURE"]
+        self.calibrator = bool(file[0].header["IS_PSF"])
+        self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
+        self.fit = fit
+
+    def print_summary(self):
+        print(
+            f"File {self.key}\n"
+            f"Star {self.star}\n"
+            f"Filter {self.filter}\n"
+            f"nints {self.nints}\n"
+            f"ngroups {len(self.slopes)+1}\n"
+        )
+
+    # Simple method to give nice syntax for getting keys
+    def get_key(self, param):
+        return self.fit.get_key(self, param)
+
+    def map_param(self, param):
+        return self.fit.map_param(self, param)
+
+    @property
+    def ngroups(self):
+        return len(self.slopes) + 1
+
+    @property
+    def nslopes(self):
+        return len(self.slopes)
+
+    @property
+    def key(self):
+        return "_".join([self.program, self.observation, self.act_id, self.dither])
+
+    def to_vec(self, image):
+        return image[..., *self.support].T
+
+    def from_vec(self, vec, fill=np.nan):
+        return (fill * np.ones((80, 80))).at[*self.support].set(vec)
 
 
 class BaseModeller(zdx.Base):
@@ -37,70 +131,53 @@ class BaseModeller(zdx.Base):
         return values
 
 
+def initialise_model(
+    files,
+    fit=SplineVisFit(),
+    optics=AMIOptics(),
+    detector=LinearDetectorModel(),
+    ramp=SimpleRamp(),
+    read=ReadModel(),
+    nwavels=9,
+    Teff_cache="files/Teff_cache",
+):
+    exposures = [Exposure(file, fit) for file in files]
+
+    if isinstance(fit, SplineVisFit):
+        visibilities = SplineVis(optics)
+    else:
+        visibilities = None
+
+    filters = {}
+    for filt in list(set([exp.filter for exp in exposures])):
+        filters[filt] = calc_throughput(filt, nwavels=nwavels)
+
+    Teffs = get_Teffs(files, Teff_cache=Teff_cache)
+    params = initialise_params(exposures, optics, vis_model=visibilities)
+    model = AmigoModel(params, optics, ramp, detector, read, Teffs, filters, visibilities)
+
+    return model, exposures
+
+
 class AmigoModel(BaseModeller):
     Teffs: dict
     filters: dict
-    # dispersion: dict
-    # contrast: float
-    optics: AMIOptics
+    optics: None
     visibilities: None
     detector: None
     ramp: None
     read: None
 
-    def __init__(
-        self,
-        files,
-        # exposures,
-        params,
-        optics=None,
-        ramp=None,
-        detector=None,
-        read=None,
-        visibilities=None,
-        # dispersion_mag=0.0,  # arcseconds
-        # contrast=-2,
-        Teff_cache="files/Teff_cache",
-    ):
-
-        if optics is None:
-            optics = AMIOptics()
-        if detector is None:
-            detector = LinearDetectorModel()
-        if ramp is None:
-            ramp = SimpleRamp()
-        if read is None:
-            read = ReadModel()
-
-        self.Teffs = get_Teffs(files, Teff_cache=Teff_cache)
-        self.filters = get_filters(files)
-
-        # # Dispersion hacking - randomly perturb the position of each wavelength
-        # if dispersion_mag > 0.0:
-        #     self.dispersion = {}
-
-        #     # # This one is free-floating value per wavelength
-        #     # for filt, (wavels, weights) in self.filters.items():
-        #     #     rand_positions = jr.normal(jr.PRNGKey(0), (len(wavels), 2))
-        #     #     self.dispersion[filt] = dispersion_mag * rand_positions
-
-        #     # This one is parameterised by (x, y) - the point at which the longest
-        #     # wavelength reaches
-        #     for filt in self.filters.keys():
-        #         self.dispersion[filt] = np.array([dispersion_mag, dispersion_mag])
-
-        # # else:
-        # #     self.dispersion = None
-        # self.contrast = np.asarray(contrast, float)
-
+    def __init__(self, params, optics, ramp, detector, read, Teffs, filters, visibilities=None):
+        self.params = params
+        self.filters = filters
+        self.Teffs = Teffs
         self.optics = optics
         self.detector = detector
         self.ramp = ramp
         self.read = read
         self.visibilities = visibilities
-        self.params = params
 
-    # def model(self, exposure, model_fit, **kwargs):
     def model(self, exposure, **kwargs):
         return exposure.fit(self, exposure, **kwargs)
 
@@ -121,108 +198,6 @@ class AmigoModel(BaseModeller):
         if hasattr(self.visibilities, key):
             return getattr(self.visibilities, key)
         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
-
-
-class Exposure(zdx.Base):
-    """
-    A class to hold all the data relevant to a single exposure, allowing it to be
-    modelled.
-
-    """
-
-    # Arrays
-    slopes: jax.Array
-    variance: jax.Array
-    zero_point: jax.Array
-    support: jax.Array
-    opd: jax.Array
-
-    # Exposure metadata
-    nints: int = eqx.field(static=True)
-
-    # Star and filter
-    filter: str = eqx.field(static=True)
-    star: str = eqx.field(static=True)
-
-    # Key identifiers
-    filename: str = eqx.field(static=True)
-    # key: str = eqx.field(static=True)
-    program: str = eqx.field(static=True)
-    observation: str = eqx.field(static=True)
-    act_id: str = eqx.field(static=True)
-    dither: str = eqx.field(static=True)
-
-    #
-    calibrator: bool = eqx.field(static=True)
-
-    #
-    fit: object = eqx.field(static=True)
-
-    # Simple method to give nice syntax for getting keys
-    def get_key(self, param):
-        return self.fit.get_key(self, param)
-
-    def map_param(self, param):
-        return self.fit.map_param(self, param)
-
-    @property
-    def ngroups(self):
-        return len(self.slopes) + 1
-
-    @property
-    def nslopes(self):
-        return len(self.slopes)
-
-    @property
-    def key(self):
-        return "_".join([self.program, self.observation, self.act_id, self.dither])
-
-    def __init__(self, file, slopes, variance, support, opd, fit):
-
-        # self.data = data
-        self.slopes = slopes
-        self.variance = variance
-        self.support = support
-        self.opd = opd
-        self.zero_point = np.asarray(file["ZPOINT"].data, float)
-
-        #
-        self.nints = file[0].header["NINTS"]
-        # self.ngroups = file[0].header["NGROUPS"]
-        # self.nslopes = file[0].header["NGROUPS"] - 1
-
-        #
-        self.filter = file[0].header["FILTER"]
-        self.star = file[0].header["TARGPROP"]
-
-        #
-        self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
-        # self.key = key_fn(file)
-        self.program = file[0].header["PROGRAM"]
-        self.observation = file[0].header["OBSERVTN"]
-        self.act_id = file[0].header["ACT_ID"]
-        self.dither = file[0].header["EXPOSURE"]
-
-        #
-        self.calibrator = bool(file[0].header["IS_PSF"])
-
-        #
-        self.fit = fit
-
-    def print_summary(self):
-        print(
-            f"File {self.key}\n"
-            f"Star {self.star}\n"
-            f"Filter {self.filter}\n"
-            f"nints {self.nints}\n"
-            f"ngroups {len(self.slopes)+1}\n"
-        )
-
-    def to_vec(self, image):
-        return image[..., *self.support].T
-
-    def from_vec(self, vec, fill=np.nan):
-        return (fill * np.ones((80, 80))).at[*self.support].set(vec)
 
 
 class NNWrapper(zdx.Base):
