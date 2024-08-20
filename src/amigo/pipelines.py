@@ -4,8 +4,8 @@ import jax.numpy as np
 import numpy as onp
 from astropy.io import fits
 from astropy.stats import sigma_clip
-from tqdm.notebook import tqdm
 import pkg_resources as pkg
+from .misc import tqdm
 
 
 def delete_contents(path):

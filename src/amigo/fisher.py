@@ -3,9 +3,7 @@ import zodiax as zdx
 import jax.numpy as np
 from jax import jit, grad, linearize, lax
 from .stats import posterior, variance_model
-
-# TODO: Update to proper import
-from tqdm.notebook import tqdm
+from .misc import tqdm
 
 
 def fisher_fn(model, exposure, params):
