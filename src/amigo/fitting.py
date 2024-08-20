@@ -73,7 +73,7 @@ def get_optimiser(pytree, optimisers, parameters=None):
     return model_params, optim, state
 
 
-def calc_lrs(model, exposures, fishers, params=None, order=1):
+def calc_lrs(model, exposures, fishers, params=None, fmax=1e6):
     # Get the parameters from the fishers
     if params is None:
         params = []
@@ -115,6 +115,9 @@ def calc_lrs(model, exposures, fishers, params=None, order=1):
 
             param_path = exp.map_param(param)
             fisher_model = fisher_model.add(param_path, fishers[exp.key][param])
+
+    # Clip the fisher matrix to the max value
+    fisher_model = jtu.tree_map(lambda x: np.clip(x, -fmax, fmax), fisher_model)
 
     # Convert fisher to lr model
     inv_fn = lambda fmat, leaf: dlu.nandiv(-1, np.diag(fmat), 1).reshape(leaf.shape)

@@ -71,7 +71,7 @@ class GaussianJitter(dl.layers.detector_layers.DetectorLayer):
 
     def generate_kernel(self, pixel_scale):
         # Generate distribution
-        extent = pixel_scale * self.kernel_size  # kernel size in arcseconds
+        extent = pixel_scale * self.kernel_size
         x = np.linspace(0, extent, self.kernel_oversample * self.kernel_size) - 0.5 * extent
         xs, ys = np.meshgrid(x, x)
 

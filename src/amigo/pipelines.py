@@ -113,7 +113,8 @@ def process_calslope(
             shutil.copy(file_path, file_calslope)
 
             # Open new file
-            file = fits.open(file_calslope, mode="update")
+            # file = fits.open(file_calslope, mode="update")
+            file = fits.open(file_calslope)
 
             # Remove the redundant or undesired extensions
             del file["SCI"]
