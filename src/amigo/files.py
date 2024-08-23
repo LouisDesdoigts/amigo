@@ -60,6 +60,7 @@ def get_default_params(exposures, optics, amp_order=1):
     one_on_fs = {}
     one_on_fs = {}
     reflectivity = {}
+    biases = {}
     for exp in exposures:
 
         im = np.where(exp.badpix, np.nan, exp.slopes[0])
@@ -85,6 +86,7 @@ def get_default_params(exposures, optics, amp_order=1):
 
         one_on_f = np.zeros((exp.ngroups, 80, amp_order + 1))
         one_on_fs[exp.fit.get_key(exp, "one_on_fs")] = one_on_f
+        biases[exp.fit.get_key(exp, "biases")] = np.zeros((80, 80))
 
     return {
         "positions": positions,
@@ -92,6 +94,7 @@ def get_default_params(exposures, optics, amp_order=1):
         "aberrations": aberrations,
         "reflectivity": reflectivity,
         "one_on_fs": one_on_fs,
+        "biases": biases,
     }
 
 

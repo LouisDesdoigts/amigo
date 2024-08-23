@@ -152,15 +152,17 @@ def initialise_model(
     for filt in list(set([exp.filter for exp in exposures])):
         filters[filt] = calc_throughput(filt, nwavels=nwavels)
 
-    Teffs = get_Teffs(files, Teff_cache=Teff_cache)
     params = initialise_params(exposures, optics, vis_model=visibilities)
-    model = AmigoModel(params, optics, ramp, detector, read, Teffs, filters, visibilities)
+
+    # Add Teffs to params so we can fit it
+    params["Teffs"] = get_Teffs(files, Teff_cache=Teff_cache)
+    model = AmigoModel(params, optics, ramp, detector, read, filters, visibilities)
 
     return model, exposures
 
 
 class AmigoModel(BaseModeller):
-    Teffs: dict
+    # Teffs: dict
     filters: dict
     optics: None
     visibilities: None
@@ -168,10 +170,10 @@ class AmigoModel(BaseModeller):
     ramp: None
     read: None
 
-    def __init__(self, params, optics, ramp, detector, read, Teffs, filters, visibilities=None):
+    def __init__(self, params, optics, ramp, detector, read, filters, visibilities=None):
         self.params = params
         self.filters = filters
-        self.Teffs = Teffs
+        # self.Teffs = Teffs
         self.optics = optics
         self.detector = detector
         self.ramp = ramp

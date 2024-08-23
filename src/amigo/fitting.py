@@ -64,7 +64,7 @@ def get_optimiser(pytree, optimisers, parameters=None):
     return model_params, optim, state
 
 
-def calc_lrs(model, exposures, fishers, params=None, fmax=1e6):
+def calc_lrs(model, exposures, fishers, params=None, fmax=1e64):
     # Get the parameters from the fishers
     if params is None:
         params = []

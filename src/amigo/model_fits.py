@@ -47,6 +47,12 @@ class ModelFit(zdx.Base):
         if param == "one_on_fs":
             return exposure.key
 
+        if param == "biases":
+            return exposure.key
+
+        if param == "Teffs":
+            return exposure.star
+
         raise ValueError(f"Parameter {param} has no key")
 
     def map_param(self, exposure, param):
@@ -75,6 +81,12 @@ class ModelFit(zdx.Base):
             return f"{param}.{exposure.get_key(param)}"
 
         if param == "one_on_fs":
+            return f"{param}.{exposure.get_key(param)}"
+
+        if param == "biases":
+            return f"{param}.{exposure.get_key(param)}"
+
+        if param == "Teffs":
             return f"{param}.{exposure.get_key(param)}"
 
         # Else its global
@@ -126,12 +138,26 @@ class ModelFit(zdx.Base):
     def model_detector(self, psf, model, exposure):
         return eqx.filter_jit(model.detector.apply)(psf)
 
+    # def get_est_bias(self, psf, flux, oversample, exposure):
+    #     # Need to get the _true_ bias to feed to NN
+    #     zpoint = exposure.ramp[0]  # Includes first group of photons
+    #     bias = model.biases[self.get_key(exposure, "biases")]
+    #     dsamp_psf = dlu.downsample(psf.data * flux, oversample, mean=False)
+    #     first_group = model_ramp(dsamp_psf, exposure.ngroups)[0]
+    #     est_bias = bias + zpoint - first_group
+
     def model_ramp(self, psf, model, exposure, to_BFE=False):
 
         # Get the hyper-parameters for the non-linear model
-        key = self.get_key(exposure, "fluxes")
-        flux = 10 ** model.fluxes[key]
+        flux = 10 ** model.fluxes[self.get_key(exposure, "fluxes")]
         oversample = model.optics.oversample
+        bias = model.biases[self.get_key(exposure, "biases")]
+
+        # Need to get the _true_ bias to feed to NN
+        zpoint = exposure.ramp[0]  # Includes first group of photons
+        dsamp_psf = dlu.downsample(psf.data * flux, oversample, mean=False)
+        est_bias = bias + zpoint - model_ramp(dsamp_psf, exposure.ngroups)[0]
+        # Note this bis estimate will be poor when the psf is in-accurate
 
         # Return the BFE and required meta-data
         if to_BFE:
@@ -140,10 +166,18 @@ class ModelFit(zdx.Base):
         # Non linear model always goes from unit psf, flux, oversample to an 80x80 ramp
         # NOTE: Should be able to remove this if statement and just use SimpleRamp
         if model.ramp is not None:
-            ramp = eqx.filter_jit(model.ramp.apply)(psf, flux, exposure, oversample)
+            from amigo.ramp_models import PolyBias
+
+            if isinstance(model.ramp, PolyBias):
+                ramp = eqx.filter_jit(model.ramp.apply)(psf, flux, est_bias, exposure, oversample)
+            else:
+                ramp = eqx.filter_jit(model.ramp.apply)(psf, flux, exposure, oversample)
         else:
             psf_data = dlu.downsample(psf.data * flux, oversample, mean=False)
             ramp = psf.set("data", model_ramp(psf_data, exposure.ngroups))
+
+        # Re-add the bias to the ramp
+        ramp = ramp.set("data", ramp.data + est_bias)
 
         return ramp
 
@@ -152,12 +186,13 @@ class ModelFit(zdx.Base):
         if "one_on_fs" in model.params.keys():
             model = model.set("read.one_on_fs", model.one_on_fs[exposure.key])
 
-        # Add the zero point to the ramp
-        zpoint = exposure.ramp[:1]
-        zpoint = np.where(np.isnan(zpoint), 0, zpoint)
-        slopes = np.diff(ramp.data, axis=0)
-        true_ramp = np.concatenate([zpoint, zpoint + np.cumsum(slopes, axis=0)])
-        ramp = ramp.set("data", true_ramp)
+        # Zero point is added in the ramp modelling
+        # # Add the zero point to the ramp
+        # zpoint = exposure.ramp[:1]
+        # zpoint = np.where(np.isnan(zpoint), 0, zpoint)
+        # slopes = np.diff(ramp.data, axis=0)
+        # true_ramp = np.concatenate([zpoint, zpoint + np.cumsum(slopes, axis=0)])
+        # ramp = ramp.set("data", true_ramp)
 
         # Apply the read effects
         ramp = model.read.apply(ramp)

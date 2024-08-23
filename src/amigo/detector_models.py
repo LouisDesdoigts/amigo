@@ -113,7 +113,7 @@ class LinearDetectorModel(LayeredDetector):
         oversample=4,
         npixels_in=80,
         rot_angle=-0.56126717,
-        jitter_amplitude=6.5e-4,
+        jitter_amplitude=4.5e-4,
         SRF=None,
         FF=None,
         jitter=True,
