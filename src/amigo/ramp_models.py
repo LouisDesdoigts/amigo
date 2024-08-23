@@ -372,11 +372,15 @@ class MinimalConv(PredictivePoly):
         layers = self.conv._layers
 
         x = psf[None, ...]
-        for i, layer in enumerate(layers[:-1]):
-            if i == len(layers) // 2:
-                x = jax.nn.relu(self.pool(layer(x)))
-            else:
-                x = jax.nn.relu(layer(x))
+        if len(layers) == 2:
+            # Handle special case of depth of 1
+            x = jax.nn.relu(self.pool(layers[0](x)))
+        else:
+            for i, layer in enumerate(layers[:-1]):
+                if i == len(layers) // 2:
+                    x = jax.nn.relu(self.pool(layer(x)))
+                else:
+                    x = jax.nn.relu(layer(x))
         return self.pool(layers[-1](x))
 
     def eval_ramp(self, psf, flux, ngroups):
