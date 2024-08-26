@@ -240,12 +240,9 @@ def optimise(
             # Check for NaNs
             if np.isnan(_loss):
                 print(f"Loss is NaN on {idx} th epoch, exiting loop")
-                return (
-                    model,
-                    losses,
-                    (reg_history, batch_history),
-                    (reg_state, batch_state),
-                )
+                final_state = reg_model.set("params", {**reg_model.params, **batch_model.params})
+                history = reg_history.set("params", {**reg_history.params, **batch_history.params})
+                return model, losses, final_state, history
 
         # Update the reg params
         model, reg_model, reg_state, key = update_reg(
