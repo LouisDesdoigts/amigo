@@ -85,6 +85,11 @@ def process_calslope(
 
         # Get the data
         data = np.array(file["SCI"].data, int)
+
+        # Copying header information
+        sci_header = file["SCI"].header.copy(strip=True)
+        sci_header.remove("EXTNAME")
+
         file.close()
 
         if chunk_size == 0:
@@ -128,6 +133,7 @@ def process_calslope(
             file[0].header["NINTS"] = int(chunk.shape[0])
             file[0].header["FILENAME"] = file_name
             file[0].header["SIGMA"] = sigma
+            file[0].header.extend(sci_header)  # Copy the science header
 
             # Process the chunk
             file = process_data(file, chunk, sigma=sigma)
