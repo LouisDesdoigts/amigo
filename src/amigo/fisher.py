@@ -19,6 +19,15 @@ def self_fisher_fn(model, exposure, params, read_noise=10, true_read_noise=False
     return FIM(model, params, posterior, exposure)
 
 
+def calc_and_save(model, exposure, param, file_path, save=True):
+    fisher = self_fisher_fn(model, exposure, [param])
+    if np.isnan(fisher).any():
+        raise ValueError(f"Found NaN in {param}")
+    if save:
+        np.save(file_path, fisher)
+    return fisher
+
+
 def calc_fisher(
     model,
     exposure,
@@ -43,21 +52,33 @@ def calc_fisher(
     # Check if we need to recalculate
     if exists and not recalculate:
         fisher = np.load(file_path)
+
+        # Check if the saved value is Nan
+        if np.isnan(fisher).any():
+            fisher = calc_and_save(model, exposure, param, file_path, save)
+            # print(f"Found NaN in {param}, recalculating")
+            # fisher = self_fisher_fn(model, exposure, [param])
+            # if save:
+            #     np.save(file_path, fisher)
+
+        # Check shape
         if fisher.shape[0] != N:
 
             # Overwrite shape miss-matches
             if overwrite:
                 fisher = self_fisher_fn(model, exposure, [param])
-                if save:
-                    np.save(file_path, fisher)
+                # fisher = self_fisher_fn(model, exposure, [param])
+                # if save:
+                #     np.save(file_path, fisher)
             else:
                 raise ValueError(f"Shape mismatch for {param}")
 
     # Calculate and save
     else:
-        fisher = self_fisher_fn(model, exposure, [param])
-        if save:
-            np.save(file_path, fisher)
+        fisher = calc_and_save(model, exposure, param, file_path, save)
+        # fisher = self_fisher_fn(model, exposure, [param])
+        # if save:
+        # np.save(file_path, fisher)
     return fisher
 
 

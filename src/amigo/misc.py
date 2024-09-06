@@ -142,3 +142,15 @@ def convert_adjacent_to_true(bool_array, n=1, corners=False):
 def nearest_fn(pt, coords):
     dist = np.hypot(*(coords - pt[:, None, None]))
     return dist == dist.min()
+
+
+def nuke_brightest(file, n=0):
+    im = np.array(file["SLOPE"].data.sum(0))
+    badpix = np.array(file["BADPIX"].data)
+    im = np.where(badpix, np.nan, im)
+
+    for i in range(n):
+        badpix = badpix.at[np.where(im == np.nanmax(im))].set(1)
+        im = np.where(badpix, np.nan, im)
+
+    file["BADPIX"].data = badpix

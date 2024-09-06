@@ -46,6 +46,7 @@ class Exposure(zdx.Base):
     program: str = eqx.field(static=True)
     observation: str = eqx.field(static=True)
     act_id: str = eqx.field(static=True)
+    visit: str = eqx.field(static=True)
     dither: str = eqx.field(static=True)
     calibrator: bool = eqx.field(static=True)
     fit: object = eqx.field(static=True)
@@ -65,6 +66,7 @@ class Exposure(zdx.Base):
         self.observation = file[0].header["OBSERVTN"]
         self.program = file[0].header["PROGRAM"]
         self.act_id = file[0].header["ACT_ID"]
+        self.visit = file[0].header["VISITGRP"]
         self.dither = file[0].header["EXPOSURE"]
         self.calibrator = bool(file[0].header["IS_PSF"])
         self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
@@ -96,7 +98,7 @@ class Exposure(zdx.Base):
 
     @property
     def key(self):
-        return "_".join([self.program, self.observation, self.act_id, self.dither])
+        return "_".join([self.program, self.observation, self.act_id, self.visit, self.dither])
 
     def to_vec(self, image):
         return image[..., *self.support].T
