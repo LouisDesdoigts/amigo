@@ -259,9 +259,11 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
 
 
 class AMIOptics(dl.optical_systems.AngularOpticalSystem):
+    filters: dict
 
     def __init__(
         self,
+        filters=None,
         radial_orders=6,
         pupil_mask=None,
         opd=None,
@@ -280,6 +282,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         static_opd=False,
     ):
         """Free space locations can be 'before', 'after'"""
+        self.filters = filters
         self.wf_npixels = wf_npixels
         self.diameter = diameter
         self.psf_npixels = psf_npixels

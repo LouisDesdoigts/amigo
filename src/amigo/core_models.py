@@ -14,16 +14,6 @@ from .search_Teffs import get_Teffs
 from .misc import calc_throughput
 from .model_fits import SplineVisFit
 
-# def initialise_exposures(files, fit, ms_thresh=None, as_psf=False):
-
-#     exposures = []
-#     for file in files:
-#         slopes = np.array(file["SLOPE"].data, float)
-#         variance = np.array(file["SLOPE_ERR"].data, float) ** 2
-#         support = np.where(~np.array(file["BADPIX"].data, bool))
-#         exposures.append(Exposure(file, slopes, variance, support, fit))
-#     return exposures
-
 
 class Exposure(zdx.Base):
     """
@@ -97,6 +87,10 @@ class Exposure(zdx.Base):
         return len(self.slopes)
 
     @property
+    def std(self):
+        return np.sqrt(self.variance)
+
+    @property
     def key(self):
         return "_".join([self.program, self.observation, self.act_id, self.visit, self.dither])
 
@@ -140,47 +134,53 @@ def initialise_model(
     detector=LinearDetectorModel(),
     ramp=SimpleRamp(),
     read=ReadModel(),
+    vis_model=None,
     nwavels=9,
     Teff_cache="files/Teff_cache",
 ):
     exposures = [Exposure(file, fit) for file in files]
 
-    if isinstance(fit, SplineVisFit):
-        visibilities = SplineVis(optics)
-    else:
-        visibilities = None
-
     filters = {}
     for filt in list(set([exp.filter for exp in exposures])):
         filters[filt] = calc_throughput(filt, nwavels=nwavels)
+    optics = optics.set("filters", filters)
 
-    params = initialise_params(exposures, optics, vis_model=visibilities)
+    if isinstance(fit, SplineVisFit):
+        if vis_model is None:
+            vis_model = SplineVis(optics)
+        else:
+            vis_model = vis_model
+    else:
+        vis_model = None
+
+    params = initialise_params(exposures, optics, vis_model=vis_model)
 
     # Add Teffs to params so we can fit it
     params["Teffs"] = get_Teffs(files, Teff_cache=Teff_cache)
-    model = AmigoModel(params, optics, ramp, detector, read, filters, visibilities)
+    model = AmigoModel(params, optics, ramp, detector, read, vis_model)
 
     return model, exposures
 
 
 class AmigoModel(BaseModeller):
     # Teffs: dict
-    filters: dict
+    # filters: dict
     optics: None
-    visibilities: None
+    vis_model: None
     detector: None
     ramp: None
     read: None
 
-    def __init__(self, params, optics, ramp, detector, read, filters, visibilities=None):
+    # def __init__(self, params, optics, ramp, detector, read, filters, vis_model=None):
+    def __init__(self, params, optics, ramp, detector, read, vis_model=None):
         self.params = params
-        self.filters = filters
+        # self.filters = filters
         # self.Teffs = Teffs
         self.optics = optics
         self.detector = detector
         self.ramp = ramp
         self.read = read
-        self.visibilities = visibilities
+        self.vis_model = vis_model
 
     def model(self, exposure, **kwargs):
         return exposure.fit(self, exposure, **kwargs)
@@ -199,8 +199,8 @@ class AmigoModel(BaseModeller):
             return getattr(self.ramp, key)
         if hasattr(self.read, key):
             return getattr(self.read, key)
-        if hasattr(self.visibilities, key):
-            return getattr(self.visibilities, key)
+        if hasattr(self.vis_model, key):
+            return getattr(self.vis_model, key)
         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
 
 

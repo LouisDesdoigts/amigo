@@ -9,11 +9,6 @@ from .ramp_models import model_ramp
 from .misc import planck
 from .vis_models import (
     build_vis_pts,
-    get_mean_wavelength,
-    get_uv_coords,
-    sample_spline,
-    to_uv,
-    from_uv,
 )
 
 
@@ -210,16 +205,17 @@ class PointFit(ModelFit):
 
 
 class SplineVisFit(PointFit):
-    uv_pad: int = eqx.field(static=True)
-    crop_size: int = eqx.field(static=True)
+    # uv_pad: int = eqx.field(static=True)
+    # crop_size: int = eqx.field(static=True)
     joint_fit: bool = eqx.field(static=True)
-    per_wavelength: bool = eqx.field(static=True)
+    # per_wavelength: bool = eqx.field(static=True)
 
-    def __init__(self, uv_pad=2, crop_size=160, joint_fit=True, per_wavelength=True):
-        self.uv_pad = int(uv_pad)
-        self.crop_size = int(crop_size)
+    # def __init__(self, uv_pad=2, crop_size=160, joint_fit=True, per_wavelength=True):
+    def __init__(self, joint_fit=True):
+        # self.uv_pad = int(uv_pad)
+        # self.crop_size = int(crop_size)
         self.joint_fit = bool(joint_fit)
-        self.per_wavelength = bool(per_wavelength)
+        # self.per_wavelength = bool(per_wavelength)
 
     def get_key(self, exposure, param):
 
@@ -230,77 +226,85 @@ class SplineVisFit(PointFit):
 
         return super().get_key(exposure, param)
 
-    def get_uv_coords(self, model, exposure):
-        pscale = dlu.arcsec2rad(model.optics.psf_pixel_scale / model.optics.oversample)
-        full_size = self.uv_pad * model.optics.psf_npixels * model.optics.oversample
+    # def get_uv_coords(self, model, exposure):
+    #     pscale = dlu.arcsec2rad(model.optics.psf_pixel_scale / model.optics.oversample)
+    #     full_size = self.uv_pad * model.optics.psf_npixels * model.optics.oversample
 
-        # Per wavelength, we need to calculate the UV coordinates for each wavelength
-        if self.per_wavelength:
-            wavels = model.filters[exposure.filter][0]
-            coord_fn = lambda lam: get_uv_coords(lam, pscale, full_size, self.crop_size)
-            return vmap(coord_fn)(wavels)
+    #     # Per wavelength, we need to calculate the UV coordinates for each wavelength
+    #     if self.per_wavelength:
+    #         wavels = model.filters[exposure.filter][0]
+    #         coord_fn = lambda lam: get_uv_coords(lam, pscale, full_size, self.crop_size)
+    #         return vmap(coord_fn)(wavels)
 
-        # Otherwise, we can just use the weighted mean wavelength
-        lam = get_mean_wavelength(*self.get_spectra(model, exposure))
-        return get_uv_coords(lam, pscale, full_size, self.crop_size)
+    #     # Otherwise, we can just use the weighted mean wavelength
+    #     lam = get_mean_wavelength(*self.get_spectra(model, exposure))
+    #     return get_uv_coords(lam, pscale, full_size, self.crop_size)
 
-    def get_vis_pts(self, model, exposure):
-        return build_vis_pts(
-            model.amplitudes[self.get_key(exposure, "amplitudes")],
-            model.phases[self.get_key(exposure, "phases")],
-            model.visibilities.knots[0].shape,
-        )
+    # def get_vis_pts(self, model, exposure):
+    #     return build_vis_pts(
+    #         model.amplitudes[self.get_key(exposure, "amplitudes")],
+    #         model.phases[self.get_key(exposure, "phases")],
+    #         model.vis_model.knots[0].shape,
+    #     )
 
-    def get_vis_map(self, model, exposure):
-        # Get the inputs
-        vis_pts = self.get_vis_pts(model, exposure)
+    # def get_vis_map(self, model, exposure):
+    #     # Get the inputs
+    #     vis_pts = self.get_vis_pts(model, exposure)
 
-        # If per_wavelength, this has an extra dimension
-        uv_coords = np.array(self.get_uv_coords(model, exposure))
-        knots = model.visibilities.knots
+    #     # # If per_wavelength, this has an extra dimension
+    #     # uv_coords = np.array(self.get_uv_coords(model, exposure))
+    #     # knots = model.vis_model.knots
 
-        # Interpolate the visibilities
-        if self.per_wavelength:
-            uv_coords = np.swapaxes(uv_coords, 0, 1)
-            interp_fn = lambda im, coords: sample_spline(im, knots, coords)
-            amp_map = vmap(interp_fn, (None, 0))(np.abs(vis_pts), uv_coords)
-            phase_map = vmap(interp_fn, (None, 0))(np.angle(vis_pts), uv_coords)
-        else:
-            interp_fn = lambda im: sample_spline(im, knots, uv_coords)
-            amp_map = interp_fn(np.abs(vis_pts))
-            phase_map = interp_fn(np.angle(vis_pts))
-        return np.maximum(amp_map, 0) * np.exp(1j * phase_map)
+    #     # # Interpolate the vis_model
+    #     # if self.per_wavelength:
+    #     #     uv_coords = np.swapaxes(uv_coords, 0, 1)
+    #     #     interp_fn = lambda im, coords: sample_spline(im, knots, coords)
+    #     #     amp_map = vmap(interp_fn, (None, 0))(np.abs(vis_pts), uv_coords)
+    #     #     phase_map = vmap(interp_fn, (None, 0))(np.angle(vis_pts), uv_coords)
+    #     # else:
+    #     #     interp_fn = lambda im: sample_spline(im, knots, uv_coords)
+    #     #     amp_map = interp_fn(np.abs(vis_pts))
+    #     #     phase_map = interp_fn(np.angle(vis_pts))
+    #     # return np.maximum(amp_map, 0) * np.exp(1j * phase_map)
 
-    def calc_vis_psf(self, wfs, model, exposure):
-        psfs = wfs.psf
-        npix_in = psfs.shape[-1]
-        npix_pad = self.uv_pad * npix_in
+    # def calc_vis_psf(self, wfs, model, exposure):
 
-        if self.per_wavelength:
-            splodges = vmap(lambda psf: to_uv(dlu.resize(psf, npix_pad)))(psfs)
-            resize_fn = lambda vis_map: dlu.resize(vis_map, npix_pad)
-            vis_map = vmap(resize_fn)(self.get_vis_map(model, exposure))
+    #     psfs = wfs.psf
+    #     filter = exposure.filter
+    #     vis_pts = self.get_vis_pts(model, exposure)
+    #     model.vis_model.apply_vis(psfs, vis_pts, filter)
 
-            amps = np.abs(splodges)
-            norm_amps = amps / np.max(amps, axis=(1, 2), keepdims=True)
-            applied = np.where(norm_amps > 1e-3, splodges * vis_map, splodges)
+    # if self.per_wavelength:
+    #     splodges = vmap(lambda psf: to_uv(dlu.resize(psf, npix_pad)))(psfs)
+    #     resize_fn = lambda vis_map: dlu.resize(vis_map, npix_pad)
+    #     vis_map = vmap(resize_fn)(self.get_vis_map(model, exposure))
 
-            psf_fn = lambda cplx: np.abs(dlu.resize(from_uv(cplx), npix_in))
-            return vmap(psf_fn)(applied).sum(0)
+    #     amps = np.abs(splodges)
+    #     norm_amps = amps / np.max(amps, axis=(1, 2), keepdims=True)
+    #     applied = np.where(norm_amps > 1e-3, splodges * vis_map, splodges)
 
-        else:
-            psf = wfs.psf.sum(0)
-            vis_map = dlu.resize(self.get_vis_map(model, exposure), npix_pad)
-            splodges = to_uv(dlu.resize(psf, npix_pad))
+    #     psf_fn = lambda cplx: np.abs(dlu.resize(from_uv(cplx), npix_in))
+    #     return vmap(psf_fn)(applied).sum(0)
 
-            # The support threshold is some what arbitrary and determined experimentally
-            # To be safe, in future we should normalise the splodge map first
-            applied = np.where(np.abs(splodges) > 1e-3, splodges * vis_map, splodges)
-            np.where(np.abs(splodges) > 1e-3, vis_map, np.nan)
-            return dlu.resize(np.abs(from_uv(applied)), npix_in)
+    # else:
+    #     psf = wfs.psf.sum(0)
+    #     vis_map = dlu.resize(self.get_vis_map(model, exposure), npix_pad)
+    #     splodges = to_uv(dlu.resize(psf, npix_pad))
+
+    #     # The support threshold is some what arbitrary and determined experimentally
+    #     # To be safe, in future we should normalise the splodge map first
+    #     applied = np.where(np.abs(splodges) > 1e-3, splodges * vis_map, splodges)
+    #     np.where(np.abs(splodges) > 1e-3, vis_map, np.nan)
+    #     return dlu.resize(np.abs(from_uv(applied)), npix_in)
 
     def model_vis(self, wfs, model, exposure):
-        psf = self.calc_vis_psf(wfs, model, exposure)
+        vis_pts = build_vis_pts(
+            model.amplitudes[self.get_key(exposure, "amplitudes")],
+            model.phases[self.get_key(exposure, "phases")],
+            model.vis_model.knots[0].shape,
+        )
+        # vis_pts = self.get_vis_pts(model, exposure)
+        psf = model.vis_model.apply_vis(wfs.psf, vis_pts, exposure.filter)
         return dl.PSF(psf, wfs.pixel_scale.mean(0))
 
     def model_psf(self, model, exposure):
