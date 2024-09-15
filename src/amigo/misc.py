@@ -58,11 +58,29 @@ def interp_badpix(array):
     return np.where(np.isnan(fixed), 0.0, fixed)
 
 
-def find_position(psf, pixel_scale=0.065524085):
+def find_position(psf, pixel_scale=0.065524085, window_size: int = 35):
     # TODO: Maybe iterate this operation to gain resilience to bad pixels?
 
     # Interpolate the bad pixels
     psf = onp.array(interp_badpix(psf))
+
+    if window_size is not None:
+
+        # grabbing index of the peak pixel
+        idx = np.unravel_index(np.argmax(psf), psf.shape)
+
+        # checking to see the window is within the subarray
+        for size in [idx[0], idx[1], psf.shape[0] - idx[0], psf.shape[1] - idx[1]]:
+
+            # if the window is too big, reduce it
+            if window_size // 2 > size:
+                window_size = 2 * size
+
+        # zeroing out outside the window
+        psf[: idx[0] - window_size // 2, :] = 0
+        psf[idx[0] + window_size // 2 :, :] = 0
+        psf[:, : idx[1] - window_size // 2] = 0
+        psf[:, idx[1] + window_size // 2 :] = 0
 
     # Compute the center of mass
     cen = np.array(center_of_mass(psf))
