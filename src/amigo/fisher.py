@@ -53,7 +53,7 @@ def calc_fisher(
     if exists and not recalculate:
         fisher = np.load(file_path)
 
-        # Check if the saved value is Nan
+        # Check if the saved value is nan
         if np.isnan(fisher).any():
             fisher = calc_and_save(model, exposure, param, file_path, save)
             # print(f"Found NaN in {param}, recalculating")
@@ -86,7 +86,7 @@ def calc_fishers(
     model,
     exposures,
     parameters,
-    param_map_fn=None,
+    # param_map_fn=None,
     recalculate=False,
     overwrite=False,
     save=True,
@@ -124,9 +124,9 @@ def calc_fishers(
             # Get path correct for parameters
             param_path = exp.map_param(param)
 
-            # Allows for custom mapping of parameters
-            if param_map_fn is not None:
-                param_path = param_map_fn(model, exp, param)
+            # # Allows for custom mapping of parameters
+            # if param_map_fn is not None:
+            #     param_path = param_map_fn(model, exp, param)
 
             # Calculate fisher for each exposure
             fisher = calc_fisher(model, exp, param_path, file_path, recalculate, save, overwrite)

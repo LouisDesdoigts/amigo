@@ -4,15 +4,17 @@ import dLux as dl
 import dLux.utils as dlu
 import jax
 from jax.scipy.stats import multivariate_normal
-import interpax as ipx
+from .misc import interp
+
+# import interpax as ipx
 
 
-def interp(image, knots, sample_coords, extrap=0.0):
-    xs, ys = knots[0, 0, :], knots[1, :, 0]
-    xpts, ypts = sample_coords.reshape(2, -1)
-    return ipx.interp2d(ypts, xpts, ys, xs, image, method="cubic2", extrap=extrap).reshape(
-        sample_coords[0].shape
-    )
+# def interp(image, knots, sample_coords, extrap=0.0):
+#     xs, ys = knots[0, 0, :], knots[1, :, 0]
+#     xpts, ypts = sample_coords.reshape(2, -1)
+#     return ipx.interp2d(ypts, xpts, ys, xs, image, method="cubic2", extrap=extrap).reshape(
+#         sample_coords[0].shape
+#     )
 
 
 class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
@@ -40,16 +42,28 @@ class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
 
 
 class Rotate(dl.layers.detector_layers.DetectorLayer):
-    angle: float
+    rotation: float
 
-    def __init__(self, angle):
-        self.angle = angle
+    def __init__(self, rotation):
+        self.rotation = np.array(rotation, float)
 
     def apply(self, PSF):
         coords = dlu.pixel_coords(PSF.data.shape[0], 2)
-        rot_coords = dlu.rotate_coords(coords, dlu.deg2rad(self.angle))
-        rotated = interp(PSF.data, coords, rot_coords)
-        return PSF.set("data", rotated)
+        rot_coords = dlu.rotate_coords(coords, dlu.deg2rad(self.rotation))
+        return PSF.set("data", interp(PSF.data, coords, rot_coords, "cubic2"))
+
+
+class PixelAnisotropy(dl.layers.detector_layers.DetectorLayer):
+    anisotropy: np.ndarray
+
+    def __init__(self, anisotropy=1.0):
+        self.anisotropy = np.array(anisotropy, float)
+
+    def apply(self, PSF):
+        npix = PSF.data.shape[0]
+        coords = dlu.pixel_coords(npix, npix * PSF.pixel_scale)
+        new_coords = coords * np.array([1.0, self.anisotropy])[:, None, None]
+        return PSF.set("data", interp(PSF.data, coords, new_coords, "cubic2"))
 
 
 class GaussianJitter(dl.layers.detector_layers.DetectorLayer):
@@ -113,17 +127,16 @@ class LinearDetectorModel(LayeredDetector):
         oversample=4,
         npixels_in=80,
         rot_angle=-0.56126717,
+        anisotropy=1.0,
         jitter_amplitude=4.5e-4,
         SRF=None,
         FF=None,
-        jitter=True,
     ):
-        layers = [("rotate", Rotate(rot_angle))]
-
-        if jitter:
-            layers.append(
-                ("jitter", GaussianJitter(jitter_amplitude, kernel_size=19, kernel_oversample=3))
-            )
+        layers = [
+            ("rotate", Rotate(rot_angle)),
+            ("pixel_anisotropy", PixelAnisotropy(anisotropy)),
+            ("jitter", GaussianJitter(jitter_amplitude, kernel_size=19, kernel_oversample=3)),
+        ]
 
         # Load the FF
         if FF is None:

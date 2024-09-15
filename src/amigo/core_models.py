@@ -206,10 +206,11 @@ class AmigoModel(BaseModeller):
 
 class NNWrapper(zdx.Base):
     values: list
+    # tree_def: None = eqx.field(static=True)
+    tree_def: None
     shapes: list = eqx.field(static=True)
     sizes: list = eqx.field(static=True)
     starts: list = eqx.field(static=True)
-    tree_def: None = eqx.field(static=True)
 
     def __init__(self, network):
         values, tree_def = jtu.tree_flatten(network)

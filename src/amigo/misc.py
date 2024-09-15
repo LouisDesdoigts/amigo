@@ -4,7 +4,8 @@ import numpy as onp
 from scipy.ndimage import center_of_mass
 from scipy.interpolate import griddata
 import pkg_resources as pkg
-
+import interpax as ipx
+import equinox as eqx
 
 # Import tqdm appropriately. Note we need the # noqa to get ruff to allow this syntax
 from IPython import get_ipython
@@ -154,3 +155,32 @@ def nuke_brightest(file, n=0):
         im = np.where(badpix, np.nan, im)
 
     file["BADPIX"].data = badpix
+
+
+@eqx.filter_jit
+def interp(image, knot_coords, sample_coords, method="linear"):
+    xs, ys = knot_coords
+    xpts, ypts = sample_coords.reshape(2, -1)
+
+    return ipx.interp2d(ypts, xpts, ys[:, 0], xs[0], image, method=method, extrap=0.0).reshape(
+        sample_coords[0].shape
+    )
+
+
+def populate_from_state(model, state):
+    if not isinstance(state, dict):
+        state = state.params
+
+    # Populate parameters
+    for param_key, value in state.items():
+        if isinstance(value, dict):
+            for exp_key, sub_value in value.items():
+                try:
+                    model = model.set(f"{param_key}.{exp_key}", sub_value)
+
+                # Catch key not existing since we might not have a certain exposure here
+                except KeyError:
+                    pass
+        else:
+            model = model.set(param_key, value)
+    return model

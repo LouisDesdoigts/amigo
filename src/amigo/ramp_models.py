@@ -298,26 +298,41 @@ class PolyBias(eqx.Module):
 #         return ramp + bleed_ramp
 
 
-def build_pooled_layers(width, depth, poly_order=4, seed=0):
+def build_pooled_layers(width, depth, poly_order=4, seed=0, pooling="max"):
     key = jr.PRNGKey(seed)
-    pooling_layer = eqx.nn.AvgPool2d(kernel_size=2, stride=(2, 2))
-    conv_fn = lambda in_ch, out_ch, key: eqx.nn.Conv2d(
-        in_channels=in_ch,
-        out_channels=out_ch,
-        kernel_size=3,
-        padding=(1, 1),
-        use_bias=False,
-        key=key,
-    )
+    if pooling == "avg":
+        pooling_layer = eqx.nn.AvgPool2d(kernel_size=2, stride=(2, 2))
+    elif pooling == "max":
+        pooling_layer = eqx.nn.MaxPool2d(kernel_size=2, stride=(2, 2))
+    else:
+        raise ValueError("Pooling must be 'avg' or 'max'")
+    # conv_fn = lambda in_ch, out_ch, key: eqx.nn.Conv2d(
+    #     in_channels=in_ch,
+    #     out_channels=out_ch,
+    #     kernel_size=3,
+    #     padding=(1, 1),
+    #     use_bias=False,
+    #     key=key,
+    # )
 
     keys = jr.split(key, (depth + 1,))
-    layers = [conv_fn(1, width, keys[0])]
-    for i in range(depth):
-        if i == depth - 1:
-            layers.append(conv_fn(width, poly_order, keys[i + 1]))
-        else:
-            layers.append(conv_fn(width, width, keys[i + 1]))
+    widths = np.linspace(width, poly_order, depth).astype(int)
+    widths = np.concatenate([np.array([1]), widths])
 
+    layers = []
+    for i in range(depth):
+        # layers.append(conv_fn(widths[i], widths[i + 1], keys[i]))
+
+        layers.append(
+            eqx.nn.Conv2d(
+                in_channels=widths[i],
+                out_channels=widths[i + 1],
+                kernel_size=3,
+                padding=(1, 1),
+                use_bias=False,
+                key=keys[i],
+            )
+        )
     return layers, pooling_layer
 
 

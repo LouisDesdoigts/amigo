@@ -105,7 +105,8 @@ def initialise_vis(vis_model, exposures):
         "amplitudes": {},
         "phases": {},
     }
-    n = vis_model.knots[0].size // 2
+    # n = vis_model.knot_map.size // 2
+    n = vis_model.knot_inds.size
     for exp in exposures:
         params["amplitudes"][f"{exp.get_key('amplitudes')}"] = np.ones(n)
         params["phases"][f"{exp.get_key('phases')}"] = np.zeros(n)

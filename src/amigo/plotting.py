@@ -408,7 +408,7 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.set(ylabel="$\Delta$ Bias")
 
         case "rotation":
-            arr = dlu.rad2deg(arr)
+            # arr = dlu.rad2deg(arr)
             norm_rot = arr
             ax.plot(epochs, norm_rot, **kwargs)
             ax.set(ylabel="Rotation (deg)")
