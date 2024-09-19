@@ -6,7 +6,7 @@ from jax import vmap
 from jax.scipy.signal import correlate
 from scipy.ndimage import binary_dilation
 from jax.numpy.fft import fftshift, fftfreq
-from .misc import interp
+from .misc import interp, nearest_fn
 
 
 def pairwise_vectors(points):
@@ -187,13 +187,46 @@ def from_uv_odd(splodges):
     return from_uv(splodges)[:-1, :-1]
 
 
+def get_hole_mask(pt, mask, coords, k=100):
+    inds = np.where(nearest_fn(pt, coords))
+    i, j = inds[0][0], inds[1][0]
+    sy, ey, sx, ex = i - k, i + k, j - k, j + k
+    return mask.at[sy:ey, sx:ex].set(True)
+
+
+def calc_splodge_masks(optics, thresh=1e-3):
+
+    holes = optics.holes
+    mask = optics.calc_mask(optics.wf_npixels, optics.diameter)
+    coords = dlu.pixel_coords(optics.wf_npixels, optics.diameter)
+
+    splodge_masks = {}
+    for i in range(len(holes)):
+        for j in range(len(holes)):
+            if i == j or (j, i) in splodge_masks.keys():
+                continue
+
+            pt1, pt2 = holes[i], holes[j]
+            hole_mask = np.zeros_like(mask, bool)
+            hole_mask = get_hole_mask(pt1, hole_mask, coords)
+            hole_mask = get_hole_mask(pt2, hole_mask, coords)
+
+            reduced_mask = mask * hole_mask
+            corr = correlate(reduced_mask, reduced_mask, method="fft")
+            corr /= corr.max()
+            splodge_masks[(i, j)] = (corr > thresh).astype(float)
+    return splodge_masks
+
+
 class SplineVis(zdx.Base):
     """knots is (x, y) indexed."""
 
     uv_pad: int = eqx.field(static=True)
     crop_size: int = eqx.field(static=True)
     method: str = eqx.field(static=True)
+    splodge_masks: dict
     otf_masks: dict
+    otf_coords: np.ndarray
     uv_coords: np.ndarray
     knot_coords: np.ndarray
     knot_map: np.ndarray
@@ -221,20 +254,23 @@ class SplineVis(zdx.Base):
         mask = optics.calc_mask(optics.wf_npixels, optics.diameter)
         otf_mask = calculate_otf_mask(mask)
 
+        # Get the splodge masks
+        self.splodge_masks = calc_splodge_masks(optics)
+
         # Get knot coords
         otf_diam = len(otf_mask) * optics.diameter / optics.wf_npixels
         self.knot_coords = dlu.pixel_coords(n_knots, otf_diam)
 
         # Get mask interpolator
-        otf_coords = dlu.pixel_coords(len(otf_mask), otf_diam)
-        uv_masks_fn = vmap(lambda wavel: interp(otf_mask, otf_coords, wavel * self.uv_coords))
+        self.otf_coords = dlu.pixel_coords(len(otf_mask), otf_diam)
+        uv_masks_fn = vmap(lambda wavel: interp(otf_mask, self.otf_coords, wavel * self.uv_coords))
 
         masks = {}
         for filt, (wls, weights) in optics.filters.items():
             masks[filt] = uv_masks_fn(wls)
         self.otf_masks = masks
 
-        full_knot_map = find_valid_knot_map(otf_mask, otf_coords, self.knot_coords, n_knots)
+        full_knot_map = find_valid_knot_map(otf_mask, self.otf_coords, self.knot_coords, n_knots)
 
         self.knot_map = find_knot_map(full_knot_map)
         self.knot_inds = np.array(find_knot_inds(full_knot_map))
@@ -273,6 +309,9 @@ class SplineVis(zdx.Base):
         applied = full_splodges.at[:, c - s : c + s + 1, c - s : c + s + 1].set(masked)
         applied_psf = np.abs(vmap(from_uv_odd)(applied))
         return vmap(dlu.resize, (0, None))(applied_psf, npix)
+
+    def resample_mask(self, mask, wavel):
+        return interp(mask, self.otf_coords, wavel * self.uv_coords)
 
 
 # class SplineVis(zdx.Base):

@@ -6,16 +6,11 @@ from .stats import posterior, variance_model
 from .misc import tqdm
 
 
-def fisher_fn(model, exposure, params):
-    return FIM(model, params, posterior, exposure)
-
-
 def self_fisher_fn(model, exposure, params, read_noise=10, true_read_noise=False):
     slopes, variance = variance_model(
         model, exposure, true_read_noise=true_read_noise, read_noise=read_noise
     )
     exposure = exposure.set(["slopes", "variance"], [slopes, variance])
-    # return fisher_fn(model, exposure, params)
     return FIM(model, params, posterior, exposure)
 
 
@@ -66,8 +61,9 @@ def calc_fisher(
 
             # Overwrite shape miss-matches
             if overwrite:
-                fisher = self_fisher_fn(model, exposure, [param])
                 # fisher = self_fisher_fn(model, exposure, [param])
+                # fisher = self_fisher_fn(model, exposure, [param])
+                fisher = calc_and_save(model, exposure, param, file_path, save)
                 # if save:
                 #     np.save(file_path, fisher)
             else:
@@ -86,7 +82,6 @@ def calc_fishers(
     model,
     exposures,
     parameters,
-    # param_map_fn=None,
     recalculate=False,
     overwrite=False,
     save=True,
@@ -123,10 +118,6 @@ def calc_fishers(
 
             # Get path correct for parameters
             param_path = exp.map_param(param)
-
-            # # Allows for custom mapping of parameters
-            # if param_map_fn is not None:
-            #     param_path = param_map_fn(model, exp, param)
 
             # Calculate fisher for each exposure
             fisher = calc_fisher(model, exp, param_path, file_path, recalculate, save, overwrite)

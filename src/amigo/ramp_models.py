@@ -298,7 +298,7 @@ class PolyBias(eqx.Module):
 #         return ramp + bleed_ramp
 
 
-def build_pooled_layers(width, depth, poly_order=4, seed=0, pooling="max"):
+def build_pooled_layers(width, depth, poly_order=4, seed=0, pooling="avg"):
     key = jr.PRNGKey(seed)
     if pooling == "avg":
         pooling_layer = eqx.nn.AvgPool2d(kernel_size=2, stride=(2, 2))
