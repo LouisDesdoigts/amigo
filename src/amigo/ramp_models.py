@@ -338,27 +338,83 @@ def build_pooled_layers(width, depth, poly_order=4, seed=0, pooling="avg"):
 
 class PredictivePoly(eqx.Module):
 
-    def eval_poly(self, coeffs, psf, flux, ngroups):
-        # Get the input coordinates for the polynomial - arbitrary norm
-        # sample_ratio = flux / 2e6
-        sample_ratio = flux / 2e6
+    # def eval_poly(self, coeffs, psf, flux, ngroups):
+    #     # Get the input coordinates for the polynomial - arbitrary norm
+    #     # sample_ratio = flux / 2e6
+    #     sample_ratio = flux / 2e6
 
-        # Re-normalise coefficients
-        coeffs = 2e6 * coeffs
-        # coeffs = 2e5 * coeffs
+    #     # Re-normalise coefficients
+    #     coeffs = 2e6 * coeffs
+    #     # coeffs = 2e5 * coeffs
 
-        # We dont want a constant term, so start from 1
+    #     # We dont want a constant term, so start from 1
+    #     pows = np.arange(0, len(coeffs)) + 1
+    #     sample_points = sample_ratio * (np.arange(ngroups) + 1) / ngroups
+
+    #     # Regular polynomial
+    #     eval_points = sample_points[:, None] ** pows[None, :]
+    #     bleed_ramp = np.sum(coeffs[None, ...] * eval_points[..., None, None], axis=1)
+
+    #     # Get the group flux coordinates and regular ramp
+    #     groups = flux * (np.arange(ngroups) + 1) / ngroups
+    #     ramp = groups[:, None, None] * dlu.downsample(psf, 4, mean=False)[None, ...]
+
+    #     return ramp, bleed_ramp
+
+    # def eval_poly(self, coeffs, psf, flux, ngroups):
+
+    #     arb_norm, null_peak_flux = 2e6, 700
+    #     norm = arb_norm * null_peak_flux / psf.max()
+
+    #     # Get the input coordinates for the polynomial - arbitrary norm
+    #     sample_ratio = flux / norm
+
+    #     # Re-normalise coefficients
+    #     coeffs = norm * coeffs
+
+    #     # We dont want a constant term, so start from 1
+    #     pows = np.arange(0, len(coeffs)) + 1
+    #     sample_points = sample_ratio * (np.arange(ngroups) + 1) / ngroups
+
+    #     # Regular polynomial
+    #     eval_points = sample_points[:, None] ** pows[None, :]
+    #     bleed_ramp = np.sum(coeffs[None, ...] * eval_points[..., None, None], axis=1)
+
+    #     # Get the group flux coordinates and regular ramp
+    #     groups = flux * (np.arange(ngroups) + 1) / ngroups
+    #     ramp = groups[:, None, None] * dlu.downsample(psf, 4, mean=False)[None, ...]
+
+    #     return ramp, bleed_ramp
+
+    def eval_poly(self, coeffs, psf, flux, ngroups, oversample):
+        # The value at which the x-evaluation point is 1
+        x_max = 2**16
+
+        # Downsample psf - (80, 80)
+        # NOTE: We got concretization errors if we use oversample
+        # x = dlu.downsample(psf, oversample, mean=False)
+        x = dlu.downsample(psf, 4, mean=False)
+        x_norm = 1 / x.max()
+
+        # Get the flux normalisation for the x-evaluation points
+        maxed_psf = x * x_norm * x_max
+        max_flux = maxed_psf.sum()
+
+        # For flux == max flux we want sample points to be [0, 1)
+        latent_x_pts = (np.arange(ngroups) + 1) / ngroups
+        x_pts = flux * latent_x_pts / max_flux
+
+        # Get the polynomial evaluation points
         pows = np.arange(0, len(coeffs)) + 1
-        sample_points = sample_ratio * (np.arange(ngroups) + 1) / ngroups
+        eval_points = x_pts[:, None] ** pows[None, :]
 
-        # Regular polynomial
-        eval_points = sample_points[:, None] ** pows[None, :]
-        bleed_ramp = np.sum(coeffs[None, ...] * eval_points[..., None, None], axis=1)
+        # Get the bleed ramp
+        latent_bleed_ramp = np.sum(coeffs[None, ...] * eval_points[..., None, None], axis=1)
+        bleed_ramp = max_flux * latent_bleed_ramp
 
         # Get the group flux coordinates and regular ramp
         groups = flux * (np.arange(ngroups) + 1) / ngroups
-        ramp = groups[:, None, None] * dlu.downsample(psf, 4, mean=False)[None, ...]
-
+        ramp = groups[:, None, None] * x[None, ...]
         return ramp, bleed_ramp
 
 
@@ -381,7 +437,7 @@ class MinimalConv(PredictivePoly):
         return calc_rfield(true_layers)
 
     def apply(self, psf, flux, exposure, oversample):
-        return Ramp(self.eval_ramp(psf.data, flux, exposure.ngroups), psf.pixel_scale)
+        return Ramp(self.eval_ramp(psf.data, flux, exposure.ngroups, oversample), psf.pixel_scale)
 
     def calc_conv(self, psf):
         layers = self.conv._layers
@@ -398,7 +454,8 @@ class MinimalConv(PredictivePoly):
                     x = jax.nn.relu(layer(x))
         return self.pool(layers[-1](x))
 
-    def eval_ramp(self, psf, flux, ngroups):
-        coeffs = self.calc_conv(psf / np.max(np.abs(psf)))
-        ramp, bleed_ramp = self.eval_poly(coeffs, psf, flux, ngroups)
+    def eval_ramp(self, psf, flux, ngroups, oversample):
+        # coeffs = self.calc_conv(psf / np.max(np.abs(psf)))
+        coeffs = self.calc_conv(psf / np.max(psf))
+        ramp, bleed_ramp = self.eval_poly(coeffs, psf, flux, ngroups, oversample)
         return ramp + bleed_ramp
