@@ -18,6 +18,12 @@ else:
     from tqdm import tqdm  # noqa
 
 
+def calc_laplacian(arr):
+    """Laplacian - ie scalar field divergence (I think)"""
+    lap_mat = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
+    return jsp.signal.convolve(arr, lap_mat, mode="same")
+
+
 def planck(wav, T):
     """
     Planck's Law:

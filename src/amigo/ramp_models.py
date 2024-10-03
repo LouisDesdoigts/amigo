@@ -417,16 +417,53 @@ class PredictivePoly(eqx.Module):
         ramp = groups[:, None, None] * x[None, ...]
         return ramp, bleed_ramp
 
+    def eval_poly_norm(self, coeffs, psf, flux, ngroups, oversample):
+
+        # Up the scale to keep outputs normalised
+        coeffs = 1e1 * coeffs
+
+        # The value at which the x-evaluation point is 1
+        x_max = 2**16
+
+        # Downsample psf - (80, 80)
+        # NOTE: We got concretization errors if we use oversample
+        # x = dlu.downsample(psf, oversample, mean=False)
+        x = dlu.downsample(psf, 4, mean=False)
+        x_norm = 1 / x.max()
+        norm_x = x * x_norm
+
+        # print(norm_x.shape)
+        maxed_psf = norm_x * x_max
+        max_flux = maxed_psf.sum()
+
+        single_x_pts = (np.arange(ngroups) + 1) / ngroups
+        x_pts = flux * single_x_pts / max_flux
+        true_x_pts = norm_x[None, ...] * x_pts[:, None, None]
+
+        # Get the bleed ramp
+        pows = np.arange(0, len(coeffs)) + 1
+        eval_points = true_x_pts[:, None, ...] ** pows[None, :, None, None]
+        ys = np.sum(coeffs[None, ...] * eval_points, axis=1)
+        bleed_ramp = ys * x_max
+
+        # Get the group flux coordinates and regular ramp
+        groups = flux * (np.arange(ngroups) + 1) / ngroups
+        ramp = groups[:, None, None] * x[None, ...]
+        return ramp, bleed_ramp
+
 
 class MinimalConv(PredictivePoly):
     conv: None
     pool: None
+    # norm: bool = eqx.field(static=True)
 
+    # def __init__(self, conv_layers, pooling_layer, init_scale=1, norm=False):
     def __init__(self, conv_layers, pooling_layer, init_scale=1):
         from amigo.core_models import NNWrapper
 
         self.conv = NNWrapper(conv_layers).multiply("values", init_scale)
         self.pool = pooling_layer
+        # self.norm = norm
 
     @property
     def FoR(self):
@@ -457,5 +494,14 @@ class MinimalConv(PredictivePoly):
     def eval_ramp(self, psf, flux, ngroups, oversample):
         # coeffs = self.calc_conv(psf / np.max(np.abs(psf)))
         coeffs = self.calc_conv(psf / np.max(psf))
+        # if self.norm:
+        #     ramp, bleed_ramp = self.eval_poly_norm(coeffs, psf, flux, ngroups, oversample)
+        # else:
         ramp, bleed_ramp = self.eval_poly(coeffs, psf, flux, ngroups, oversample)
         return ramp + bleed_ramp
+
+    # def eval_ramp(self, psf, flux, ngroups, oversample):
+    #     # coeffs = self.calc_conv(psf / np.max(np.abs(psf)))
+    #     coeffs = self.calc_conv(psf / np.max(psf))
+    #     ramp, bleed_ramp = self.eval_poly_norm(coeffs, psf, flux, ngroups, oversample)
+    #     return ramp + bleed_ramp

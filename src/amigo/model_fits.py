@@ -130,14 +130,6 @@ class ModelFit(zdx.Base):
     def model_detector(self, psf, model, exposure):
         return eqx.filter_jit(model.detector.apply)(psf)
 
-    # def get_est_bias(self, psf, flux, oversample, exposure):
-    #     # Need to get the _true_ bias to feed to NN
-    #     zpoint = exposure.ramp[0]  # Includes first group of photons
-    #     bias = model.biases[self.get_key(exposure, "biases")]
-    #     dsamp_psf = dlu.downsample(psf.data * flux, oversample, mean=False)
-    #     first_group = model_ramp(dsamp_psf, exposure.ngroups)[0]
-    #     est_bias = bias + zpoint - first_group
-
     def model_ramp(self, psf, model, exposure, to_BFE=False):
 
         # Get the hyper-parameters for the non-linear model
@@ -158,12 +150,15 @@ class ModelFit(zdx.Base):
         # Non linear model always goes from unit psf, flux, oversample to an 80x80 ramp
         # NOTE: Should be able to remove this if statement and just use SimpleRamp
         if model.ramp is not None:
-            from amigo.ramp_models import PolyBias
+            # from amigo.ramp_models import PolyBias
 
-            if isinstance(model.ramp, PolyBias):
-                ramp = eqx.filter_jit(model.ramp.apply)(psf, flux, est_bias, exposure, oversample)
-            else:
-                ramp = eqx.filter_jit(model.ramp.apply)(psf, flux, exposure, oversample)
+            # if isinstance(model.ramp, PolyBias):
+            #     ramp = eqx.filter_jit(model.ramp.apply)(
+            # psf, flux, est_bias, exposure, oversample
+            # )
+            # else:
+            # ramp = eqx.filter_jit(model.ramp.apply)(psf, flux, exposure, oversample)
+            ramp = eqx.filter_jit(model.ramp.apply(psf, flux, exposure, oversample))
         else:
             psf_data = dlu.downsample(psf.data * flux, oversample, mean=False)
             ramp = psf.set("data", model_ramp(psf_data, exposure.ngroups))

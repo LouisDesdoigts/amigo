@@ -133,6 +133,9 @@ I believe this efficient hessian diagonal methods only works _correctly_ if the 
 hessian is _naturally_ diagonal, else the results are spurious.
 """
 
+# import jax.numpy as np
+# from jax import jit, grad, linearize, lax
+
 
 def hessian(f, x):
     # Jit the sub-function here since it is called many times

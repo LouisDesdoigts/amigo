@@ -82,6 +82,30 @@ def summarise_fit(
         skip = True
 
     if not skip:
+
+        plt.figure(figsize=(15, 4))
+        plt.subplot(1, 3, 1)
+        plt.title(f"Pixel neg log posterior: {final_loss:,.1f}")
+        plt.imshow(-posterior_im, cmap=inferno)
+        plt.colorbar()
+
+        v = np.nanmax(np.abs(norm_res_slope.mean(0)))
+        plt.subplot(1, 3, 2)
+        plt.title("Mean noise normalised slope residual")
+        plt.imshow(norm_res_slope.mean(0), vmin=-v, vmax=v, cmap=seismic)
+        plt.colorbar()
+
+        ax = plt.subplot(1, 3, 3)
+        ax.set_title(f"Noise normalised residual sigma: {norm_res_vec.std():.3}")
+        ax.hist(norm_res_vec.flatten(), bins=50, density=True)
+
+        ax2 = ax.twinx()
+        ax2.plot(xs, ys, c="k")
+        ax2.set_ylim(0)
+
+        plt.tight_layout()
+        plt.show()
+
         if residuals:
             norm = colors.PowerNorm(gamma=pow, vmin=-vmin, vmax=vmax)
 
