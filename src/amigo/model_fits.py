@@ -157,8 +157,8 @@ class ModelFit(zdx.Base):
             # psf, flux, est_bias, exposure, oversample
             # )
             # else:
-            # ramp = eqx.filter_jit(model.ramp.apply)(psf, flux, exposure, oversample)
-            ramp = eqx.filter_jit(model.ramp.apply(psf, flux, exposure, oversample))
+            ramp = eqx.filter_jit(model.ramp.apply)(psf, flux, exposure, oversample)
+            # ramp = eqx.filter_jit(model.ramp.apply(psf, flux, exposure, oversample))
         else:
             psf_data = dlu.downsample(psf.data * flux, oversample, mean=False)
             ramp = psf.set("data", model_ramp(psf_data, exposure.ngroups))
