@@ -45,3 +45,5 @@ for directory in dirs:
 It's that simple (in theory). In practice the jwst pipeline can be difficult to get installed, this is left as an exercise for the user ;).
 
 And never forget, AMI go brrrrrrrr
+
+![AMIGO](amigo.jpg)
