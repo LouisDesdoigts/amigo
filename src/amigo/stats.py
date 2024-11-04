@@ -25,33 +25,40 @@ def build_cov(var):
     return cov
 
 
-def get_slope_cov(n_slope, read_noise):
+def get_slope_cov_mask(n_slope):
     tri = np.tri(n_slope, n_slope, 1)
     mask = (tri * tri.T) - np.eye(n_slope)
-    return -(read_noise**2) * mask
+    return -mask
+    # return -(read_noise**2) * mask
 
 
-def log_likelihood(slope, exposure, read_noise=0):
+def log_likelihood(slope, exposure, read_noise=0, return_im=False):
     """
     Note we have the infrastructure for dealing with the slope read noise
     covariance, but it seems to give nan likelihoods when read_noise > ~6. As such
     we leave the _capability_ here but set the read_noise to default of zero.
     """
-
     # Get the model, data, and variances
     slope_vec = exposure.to_vec(slope)
     data_vec = exposure.to_vec(exposure.slopes)
     var_vec = exposure.to_vec(exposure.variance)
 
-    # Get th build we need to deal with the covariance terms
-    cov = get_slope_cov(exposure.nslopes, read_noise) / exposure.nints
-    eye = np.eye(exposure.nslopes)
+    # Get the covariance matrix from the data variance (diagonal)
+    cov_vec = np.eye(exposure.nslopes)[None, ...] * var_vec[..., None]
 
-    # Bind the likelihood function
-    loglike_fn = lambda x, mu, var: mvn.logpdf(x, mu, (eye * var) + cov)
+    # Get the read noise covariance and combine with the data covariance
+    read_cov_mask = get_slope_cov_mask(exposure.nslopes)
+    cov_vec += (read_noise * read_cov_mask / exposure.nints)[None, ...]
 
     # Calculate per-pixel likelihood
-    return vmap(loglike_fn, (0, 0, 0))(slope_vec, data_vec, var_vec)
+    loglike_fn = vmap(lambda x, mu, cov: mvn.logpdf(x, mu, cov))
+    loglike_vec = loglike_fn(slope_vec, data_vec, cov_vec)
+
+    # Return image or vector
+    if return_im:
+        # NOTE: Adds nans to the empty spots
+        return exposure.from_vec(loglike_vec)
+    return loglike_vec
 
 
 def prior(*args):

@@ -12,7 +12,7 @@ from .read_models import ReadModel
 from .files import initialise_params
 from .search_Teffs import get_Teffs
 from .misc import calc_throughput
-from .model_fits import SplineVisFit
+from .model_fits import SplineVisFit, BinaryFit
 
 
 class Exposure(zdx.Base):
@@ -153,7 +153,10 @@ def initialise_model(
     else:
         vis_model = None
 
-    params = initialise_params(exposures, optics, vis_model=vis_model)
+    if isinstance(fit, BinaryFit):
+        params = initialise_params(exposures, optics, binary_fit=True)
+    else:
+        params = initialise_params(exposures, optics, vis_model=vis_model)
 
     # Add Teffs to params so we can fit it
     params["Teffs"] = get_Teffs(files, Teff_cache=Teff_cache)
@@ -163,19 +166,14 @@ def initialise_model(
 
 
 class AmigoModel(BaseModeller):
-    # Teffs: dict
-    # filters: dict
     optics: None
     vis_model: None
     detector: None
     ramp: None
     read: None
 
-    # def __init__(self, params, optics, ramp, detector, read, filters, vis_model=None):
     def __init__(self, params, optics, ramp, detector, read, vis_model=None):
         self.params = params
-        # self.filters = filters
-        # self.Teffs = Teffs
         self.optics = optics
         self.detector = detector
         self.ramp = ramp
@@ -206,18 +204,17 @@ class AmigoModel(BaseModeller):
 
 class NNWrapper(zdx.Base):
     values: list
-    # tree_def: None = eqx.field(static=True)
     tree_def: None
-    shapes: list = eqx.field(static=True)
-    sizes: list = eqx.field(static=True)
-    starts: list = eqx.field(static=True)
+    shapes: list
+    sizes: list
+    starts: list
 
     def __init__(self, network):
         values, tree_def = jtu.tree_flatten(network)
 
         self.values = np.concatenate([val.flatten() for val in values])
         self.shapes = [v.shape for v in values]
-        self.sizes = [v.size for v in values]
+        self.sizes = [int(v.size) for v in values]
         self.starts = [int(i) for i in np.cumsum(np.array([0] + self.sizes))]
         self.tree_def = tree_def
 

@@ -59,16 +59,6 @@ def get_baselines_and_inds(holes):
     return np.array(pairwise_vectors), np.array(hole_inds)
 
 
-# @eqx.filter_jit
-# def interp(image, knot_coords, sample_coords, method="linear"):
-#     xs, ys = knot_coords
-#     xpts, ypts = sample_coords.reshape(2, -1)
-
-#     return ipx.interp2d(ypts, xpts, ys[:, 0], xs[0], image, method=method, extrap=0.0).reshape(
-#         sample_coords[0].shape
-#     )
-
-
 def calc_vis_map(vis_pts, knot_coords, sample_coords, method="linear"):
     """Interpolates the visibility knots onto the UV coordinates."""
     interp_fn = lambda im, coords: interp(im, knot_coords, coords, method=method)
@@ -114,7 +104,8 @@ def find_valid_knot_map(otf_mask, otf_coords, knot_coords, n_knots):
     the otf mask and that tells us which knots are within the otf.
 
     You can also do this by finding a boolean map of the nearest pixel for each knot
-    coordinate, but that results in far larger arrays, so its better to do it this way.
+    coordinate, but that results in far larger arrays and can be ram limited, so its
+    better to do it this way.
     """
     size_ratio = (len(otf_coords[0]) + 1) / (len(knot_coords[0]) + 1)
     paraxial_knot_inds = dlu.nd_coords((n_knots, n_knots), indexing="ij")
@@ -126,11 +117,11 @@ def find_valid_knot_map(otf_mask, otf_coords, knot_coords, n_knots):
 def find_knot_map(full_knot_map):
     # Set the second half of the array to False (since visibilities conjugate)
     full_flat_knot_map = np.array(full_knot_map.flatten())
-    flat_knots_map = full_flat_knot_map.at[: len(full_flat_knot_map) // 2].set(False)
+    flat_knots_map = full_flat_knot_map.at[: (len(full_flat_knot_map) // 2) + 1].set(False)
     return flat_knots_map.reshape(full_knot_map.shape)
 
 
-def find_knot_inds(full_knot_map):  # otf_mask, otf_coords, knot_coords, n_knots):
+def find_knot_inds(full_knot_map):
 
     flat_knot_map = full_knot_map.flatten()
     n = len(flat_knot_map) // 2

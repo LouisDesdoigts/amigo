@@ -40,10 +40,19 @@ class ModelFit(zdx.Base):
             return exposure.key
 
         if param == "biases":
-            return exposure.key
+            return exposure.program
 
         if param == "Teffs":
             return exposure.star
+
+        if param == "contrasts":
+            return exposure.key
+
+        if param == "separations":
+            return exposure.key
+
+        if param == "position_angles":
+            return exposure.key
 
         raise ValueError(f"Parameter {param} has no key")
 
@@ -79,6 +88,15 @@ class ModelFit(zdx.Base):
             return f"{param}.{exposure.get_key(param)}"
 
         if param == "Teffs":
+            return f"{param}.{exposure.get_key(param)}"
+
+        if param == "contrasts":
+            return f"{param}.{exposure.get_key(param)}"
+
+        if param == "separations":
+            return f"{param}.{exposure.get_key(param)}"
+
+        if param == "position_angles":
             return f"{param}.{exposure.get_key(param)}"
 
         # Else its global
@@ -130,7 +148,7 @@ class ModelFit(zdx.Base):
     def model_detector(self, psf, model, exposure):
         return eqx.filter_jit(model.detector.apply)(psf)
 
-    def model_ramp(self, psf, model, exposure, to_BFE=False):
+    def model_ramp(self, psf, model, exposure, to_BFE=False, return_paths=False):
 
         # Get the hyper-parameters for the non-linear model
         flux = 10 ** model.fluxes[self.get_key(exposure, "fluxes")]
@@ -150,15 +168,12 @@ class ModelFit(zdx.Base):
         # Non linear model always goes from unit psf, flux, oversample to an 80x80 ramp
         # NOTE: Should be able to remove this if statement and just use SimpleRamp
         if model.ramp is not None:
-            # from amigo.ramp_models import PolyBias
-
-            # if isinstance(model.ramp, PolyBias):
-            #     ramp = eqx.filter_jit(model.ramp.apply)(
-            # psf, flux, est_bias, exposure, oversample
-            # )
-            # else:
-            ramp = eqx.filter_jit(model.ramp.apply)(psf, flux, exposure, oversample)
-            # ramp = eqx.filter_jit(model.ramp.apply(psf, flux, exposure, oversample))
+            if return_paths:
+                ramp, latent_paths = model.ramp.apply(
+                    psf, flux, exposure, oversample, return_paths
+                )
+            else:
+                ramp = model.ramp.apply(psf, flux, exposure, oversample)
         else:
             psf_data = dlu.downsample(psf.data * flux, oversample, mean=False)
             ramp = psf.set("data", model_ramp(psf_data, exposure.ngroups))
@@ -166,6 +181,8 @@ class ModelFit(zdx.Base):
         # Re-add the bias to the ramp
         ramp = ramp.set("data", ramp.data + est_bias)
 
+        if return_paths:
+            return ramp, latent_paths
         return ramp
 
     def model_read(self, ramp, model, exposure):  # , slopes=False):
@@ -182,18 +199,24 @@ class ModelFit(zdx.Base):
         # ramp = ramp.set("data", true_ramp)
 
         # Apply the read effects
-        ramp = model.read.apply(ramp)
-
-        return np.diff(ramp.data, axis=0)
+        return model.read.apply(ramp)
 
 
 class PointFit(ModelFit):
 
-    def __call__(self, model, exposure):
+    def __call__(self, model, exposure, return_paths=False, return_ramp=False):
         psf = self.model_psf(model, exposure)
         psf = self.model_detector(psf, model, exposure)
+        if return_paths:
+            ramp, latent_path = self.model_ramp(psf, model, exposure, return_paths=return_paths)
+            ramp = self.model_read(ramp, model, exposure)
+            return np.diff(ramp.data, axis=0), latent_path
+
         ramp = self.model_ramp(psf, model, exposure)
-        return self.model_read(ramp, model, exposure)
+        ramp = self.model_read(ramp, model, exposure)
+        if return_ramp:
+            return ramp.data
+        return np.diff(ramp.data, axis=0)
 
 
 class SplineVisFit(PointFit):
@@ -280,9 +303,9 @@ class BinaryFit(ModelFit):
         weights = flux_weights[:, None] * weights[None, :]
 
         # Get the binary positions
-        position = dlu.arcsec2rad(model.positions[exposure.key])
-        pos_angle = dlu.deg2rad(model.position_angles[exposure.star])
-        r = model.separations[exposure.star] / 2
+        position = dlu.arcsec2rad(model.positions[self.get_key(exposure, "positions")])
+        pos_angle = dlu.deg2rad(model.position_angles[self.get_key(exposure, "position_angles")])
+        r = model.separations[self.get_key(exposure, "separations")] / 2
         sep_vec = np.array([r * np.sin(pos_angle), r * np.cos(pos_angle)])
         positions = np.array([position + sep_vec, position - sep_vec])
         positions = vmap(dlu.arcsec2rad)(positions)
@@ -297,7 +320,7 @@ class BinaryFit(ModelFit):
 
     def __call__(self, model, exposure):
         wfs = self.model_wfs(model, exposure)
-        psf = dl.PSF(wfs.psf.sum(0, 1), wfs.pixel_scale.mean((0, 1)))
-        psf = self.model_detector(wfs, model, exposure)
+        psf = dl.PSF(wfs.psf.sum((0, 1)), wfs.pixel_scale.mean((0, 1)))
+        psf = self.model_detector(psf, model, exposure)
         ramp = self.model_ramp(psf, model, exposure)
         return self.model_read(ramp, model, exposure)

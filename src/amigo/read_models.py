@@ -82,7 +82,7 @@ class ADC(dl.detector_layers.DetectorLayer):
 
 class ReadModel(LayeredDetector):
 
-    def __init__(self, dark_current=0.0, ipc=True, one_on_fs=None, ADC_coeffs=np.zeros((4, 2))):
+    def __init__(self, dark_current=0.0, ipc=True, one_on_fs=None, ADC_coeffs=np.zeros((3, 2))):
         layers = []
         layers.append(("read", DarkCurrent(dark_current)))
         if ipc:

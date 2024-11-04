@@ -35,8 +35,14 @@ def calc_rfield(layers):
 
     Equations from here: https://theaisummer.com/receptive-field/
     """
+    #
+    true_layers = []
+    for layer in layers:
+        if isinstance(layer, eqx.Module):
+            true_layers.append(layer)
+
     vals = []
-    for i, layer in enumerate(layers):
+    for i, layer in enumerate(true_layers):
         if isinstance(layer, eqx.nn.Conv) or isinstance(layer, eqx.nn.Pool):
 
             def size_fn(layer):
@@ -46,8 +52,8 @@ def calc_rfield(layers):
 
         else:
             continue
-        mult = np.array([size_fn(layer) for layer in layers[:i]]).prod()
-        vals.append((layers[i].kernel_size[0] - 1) * mult)
+        mult = np.array([size_fn(layer) for layer in true_layers[:i]]).prod()
+        vals.append((true_layers[i].kernel_size[0] - 1) * mult)
     return int(np.array(vals).sum() + 1)
 
 
@@ -321,12 +327,11 @@ def build_pooled_layers(width, depth, poly_order=4, seed=0, pooling="avg"):
 
     layers = []
     for i in range(depth):
-        # layers.append(conv_fn(widths[i], widths[i + 1], keys[i]))
 
         layers.append(
             eqx.nn.Conv2d(
-                in_channels=widths[i],
-                out_channels=widths[i + 1],
+                in_channels=int(widths[i]),
+                out_channels=int(widths[i + 1]),
                 kernel_size=3,
                 padding=(1, 1),
                 use_bias=False,
@@ -498,6 +503,7 @@ class MinimalConv(PredictivePoly):
         #     ramp, bleed_ramp = self.eval_poly_norm(coeffs, psf, flux, ngroups, oversample)
         # else:
         ramp, bleed_ramp = self.eval_poly(coeffs, psf, flux, ngroups, oversample)
+        # ramp, bleed_ramp = self.eval_poly_norm(coeffs, psf, flux, ngroups, oversample)
         return ramp + bleed_ramp
 
     # def eval_ramp(self, psf, flux, ngroups, oversample):

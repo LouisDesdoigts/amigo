@@ -58,9 +58,11 @@ def get_default_params(exposures, optics, amp_order=1):
     fluxes = {}
     aberrations = {}
     one_on_fs = {}
-    one_on_fs = {}
     reflectivity = {}
     biases = {}
+    separations = {}
+    contrasts = {}
+    position_angles = {}
     for exp in exposures:
 
         im = np.where(exp.badpix, np.nan, exp.slopes[0])
@@ -88,6 +90,10 @@ def get_default_params(exposures, optics, amp_order=1):
         one_on_fs[exp.fit.get_key(exp, "one_on_fs")] = one_on_f
         biases[exp.fit.get_key(exp, "biases")] = np.zeros((80, 80))
 
+        separations[exp.fit.get_key(exp, "separations")] = 0.15  # arcsec, ~2 pixels
+        contrasts[exp.fit.get_key(exp, "contrasts")] = 2.0  # 100x contrast
+        position_angles[exp.fit.get_key(exp, "position_angles")] = 0.0  # degrees
+
     return {
         "positions": positions,
         "fluxes": fluxes,
@@ -95,6 +101,9 @@ def get_default_params(exposures, optics, amp_order=1):
         "reflectivity": reflectivity,
         "one_on_fs": one_on_fs,
         "biases": biases,
+        "separations": separations,
+        "contrasts": contrasts,
+        "position_angles": position_angles,
     }
 
 
@@ -116,6 +125,7 @@ def initialise_vis(vis_model, exposures):
 def initialise_params(
     exposures,
     optics,
+    binary_fit=False,
     fit_one_on_fs=True,
     fit_reflectivity=False,
     vis_model=None,
@@ -126,11 +136,16 @@ def initialise_params(
     if not fit_one_on_fs:
         params.pop("one_on_fs")
 
-    if not fit_reflectivity:
-        params.pop("reflectivity")
+    # if not fit_reflectivity:
+    # params.pop("reflectivity")
 
     if vis_model is not None:
         params.update(initialise_vis(vis_model, exposures))
+
+    if not binary_fit:
+        params.pop("contrasts")
+        params.pop("separations")
+        params.pop("position_angles")
 
     return params
 

@@ -248,16 +248,18 @@ def optimise(
         model, reg_model, reg_state, key = update_reg(
             model, reg_grads, reg_model, reg_state, args, key
         )
-        reg_history = reg_history.append(reg_model)  # could be JIT'd with work
+        reg_history = reg_history.append(reg_model)
 
         # Update the looper
-        loss = np.array(batch_losses).mean()
+        printed_loss = np.array(batch_losses).mean() / batch_size
         if idx == 0:
-            looper.set_description(f"Loss: {loss:,.2f}")
-            prev_loss = loss  # This line is here to make the linter happy
+            looper.set_description(f"Loss: {printed_loss:,.2f}")
+            prev_loss = printed_loss  # This line is here to make the linter happy
         else:
-            looper.set_description(f"Loss: {loss:,.2f}, \u0394: {loss - prev_loss:,.2f}")
-        prev_loss = loss
+            looper.set_description(
+                f"Loss: {printed_loss:,.2f}, \u0394: {printed_loss - prev_loss:,.2f}"
+            )
+        prev_loss = printed_loss
 
         losses.append(batch_losses)
 
@@ -273,7 +275,7 @@ def optimise(
         if idx == 0:
             compile_time = int(time.time() - t0)
             print(f"Compile Time: {str(timedelta(seconds=compile_time))}")
-            print(f"Initial Loss: {loss:,.2f}")
+            print(f"Initial Loss: {printed_loss:,.2f}")
             t1 = time.time()
         if idx == 1:
             epoch_time = time.time() - t1
@@ -286,7 +288,7 @@ def optimise(
     formatted_time = str(timedelta(seconds=int(elapsed_time)))
 
     print(f"Full Time: {formatted_time}")
-    print(f"Final Loss: {loss:,.2f}")
+    print(f"Final Loss: {printed_loss:,.2f}")
 
     final_state = reg_model.set("params", {**reg_model.params, **batch_model.params})
     history = reg_history.set("params", {**reg_history.params, **batch_history.params})

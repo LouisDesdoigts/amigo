@@ -125,6 +125,7 @@ class LinearDetectorModel(LayeredDetector):
     def __init__(
         self,
         oversample=4,
+        # oversample=3,
         npixels_in=80,
         rot_angle=-0.56126717,
         anisotropy=1.0,

@@ -42,7 +42,7 @@ class Polynomial(Func):
         return len(self.coeffs)
 
 
-class ODESolver(eqx.Module):
+class ODESolver(zdx.Base):
     ODE: ODEFunc
 
     def __init__(self, ODE):
@@ -65,7 +65,8 @@ class ODESolver(eqx.Module):
             adjoint=dfx.DirectAdjoint(),
             terms=dfx.ODETerm(self.ODE.derivative),
             stepsize_controller=dfx.PIDController(rtol=1e-3, atol=1e-3),
-            max_steps=4096,
+            # stepsize_controller=dfx.ConstantStepSize(),
+            max_steps=1024,
             throw=True,
         )
 

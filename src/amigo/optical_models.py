@@ -32,6 +32,40 @@ def distort_coords(coords, coeffs, pows):
     return coords + distortion
 
 
+### Fresnel propagators ###
+def transfer(coords, npixels, wavelength, pscale, distance):
+    scaling = npixels * pscale**2
+    rho_sq = ((coords / scaling) ** 2).sum(0)
+    return np.exp(-1.0j * np.pi * wavelength * distance * rho_sq)
+
+
+def _fft(phasor):
+    return 1 / phasor.shape[0] * np.fft.fft2(phasor)
+    # padded = dlu.resize(phasor, phasor.shape[0] * 2)
+    # # transformed = 1 / phasor.shape[0] * np.fft.fft2(padded)
+    # transformed = 1 / padded.shape[0] * np.fft.fft2(padded)
+    # return transformed, phasor.shape[0]
+
+
+def _ifft(phasor):
+    return phasor.shape[0] * np.fft.ifft2(phasor)
+    # # padded = dlu.resize(phasor, phasor.shape[0] * 2)
+    # # transformed = phasor.shape[0] * np.fft.ifft2(padded)
+    # transformed = phasor.shape[0] * np.fft.ifft2(phasor)
+    # return dlu.resize(transformed, phasor.shape[0])
+    # # return phasor.shape[0] * np.fft.ifft2(phasor)
+
+
+def _fftshift(phasor):
+    return np.fft.fftshift(phasor)
+
+
+def plane_to_plane(wf, distance):
+    tf = transfer(wf.coordinates, wf.npixels, wf.wavelength, wf.pixel_scale, distance)
+    phasor = _ifft(_fft(wf.phasor) * _fftshift(tf))
+    return wf.set(["amplitude", "phase"], [np.abs(phasor), np.angle(phasor)])
+
+
 class DistortedCoords(zdx.Base):
     powers: np.ndarray
     distortion: np.ndarray
@@ -260,34 +294,36 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
 
 class AMIOptics(dl.optical_systems.AngularOpticalSystem):
     filters: dict
+    defocus: np.ndarray
 
     def __init__(
         self,
         filters=None,
         radial_orders=6,
+        distortion_orders=5,
+        oversample=4,
         pupil_mask=None,
         opd=None,
         normalise=True,
         coherence_orders=None,
         psf_npixels=80,
-        oversample=4,
         pixel_scale=0.065524085,
         diameter=6.603464,
         wf_npixels=1024,
         f2f=0.80,
         oversize=1.1,
-        distortion_orders=5,
+        defocus=0.0,
         polike=False,
         unique_holes=False,
         static_opd=False,
     ):
-        """Free space locations can be 'before', 'after'"""
         self.filters = filters
         self.wf_npixels = wf_npixels
         self.diameter = diameter
         self.psf_npixels = psf_npixels
         self.oversample = oversample
         self.psf_pixel_scale = pixel_scale
+        self.defocus = np.array(defocus, float)
 
         layers = []
 
@@ -310,3 +346,45 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             )
         layers += [("pupil_mask", pupil_mask)]
         self.layers = dlu.list2dictionary(layers, ordered=True)
+
+    def propagate_mono(self, wavelength, offset=np.zeros(2), return_wf=False):
+        """
+        Propagates a monochromatic point source through the optical layers.
+
+        Parameters
+        ----------
+        wavelength : float, metres
+            The wavelength of the wavefront to propagate through the optical layers.
+        offset : Array, radians = np.zeros(2)
+            The (x, y) offset from the optical axis of the source.
+        return_wf: bool = False
+            Should the Wavefront object be returned instead of the psf Array?
+
+        Returns
+        -------
+        object : Array, Wavefront
+            if `return_wf` is False, returns the psf Array.
+            if `return_wf` is True, returns the Wavefront object.
+        """
+        # Initialise wavefront
+        wf = dl.Wavefront(self.wf_npixels, self.diameter, wavelength)
+        wf = wf.tilt(offset)
+
+        # Apply layers
+        for layer in list(self.layers.values()):
+            wf *= layer
+
+        # Propagate
+        true_pixel_scale = self.psf_pixel_scale / self.oversample
+        pixel_scale = dlu.arcsec2rad(true_pixel_scale)
+        psf_npixels = self.psf_npixels * self.oversample
+        wf = wf.propagate(psf_npixels, pixel_scale)
+
+        # Apply defocus
+        if self.defocus is not None:
+            wf = plane_to_plane(wf, self.defocus)
+
+        # Return PSF or Wavefront
+        if return_wf:
+            return wf
+        return wf.psf
