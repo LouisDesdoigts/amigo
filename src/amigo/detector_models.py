@@ -22,11 +22,7 @@ class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
     FF: jax.Array
     SRF: jax.Array
 
-    def __init__(
-        self,
-        FF,
-        SRF,
-    ):
+    def __init__(self, FF, SRF):
         self.FF = FF
         self.SRF = SRF
 

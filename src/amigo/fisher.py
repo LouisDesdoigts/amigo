@@ -4,6 +4,7 @@ import jax.numpy as np
 from jax import jit, grad, linearize, lax
 from .stats import posterior, variance_model
 from .misc import tqdm
+import jax
 
 
 def self_fisher_fn(model, exposure, params, read_noise=10, true_read_noise=False):
@@ -171,7 +172,8 @@ def FIM(
         parametric_pytree = _perturb(X, pytree, parameters, shapes, lengths)
         return loglike_fn(parametric_pytree, *loglike_args, **loglike_kwargs)
 
-    return hessian(loglike_fn_vec, X)
+    # return hessian(loglike_fn_vec, X)
+    return jax.hessian(loglike_fn_vec)(X)
 
 
 def _perturb(X, pytree, parameters, shapes, lengths):

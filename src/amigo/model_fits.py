@@ -3,17 +3,20 @@ import zodiax as zdx
 import dLux as dl
 import dLux.utils as dlu
 import jax.numpy as np
-from abc import abstractmethod
-from jax import lax, vmap
+from jax import lax
 from .ramp_models import model_ramp
 from .misc import planck
 
 
 class ModelFit(zdx.Base):
+    fit_one_on_fs: bool = eqx.field(static=True)
+    fit_reflectivity: bool = eqx.field(static=True)
+    fit_bias: bool = eqx.field(static=True)
 
-    @abstractmethod
-    def __call__(self, model, exposure):
-        pass
+    def __init__(self, fit_reflectivity=False, fit_one_on_fs=False, fit_bias=False):
+        self.fit_one_on_fs = fit_one_on_fs
+        self.fit_reflectivity = fit_reflectivity
+        self.fit_bias = fit_bias
 
     def get_key(self, exposure, param):
 
@@ -117,7 +120,7 @@ class ModelFit(zdx.Base):
                 coefficients = lax.stop_gradient(coefficients)
             optics = optics.set("pupil_mask.abb_coeffs", coefficients)
 
-        if "reflectivity" in model.params.keys():
+        if self.fit_reflectivity:
             coefficients = model.reflectivity[self.get_key(exposure, "reflectivity")]
 
             # Stop gradient for science targets
@@ -142,7 +145,6 @@ class ModelFit(zdx.Base):
 
     def model_psf(self, model, exposure):
         wfs = self.model_wfs(model, exposure)
-
         return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale.mean(0))
 
     def model_detector(self, psf, model, exposure):
@@ -153,13 +155,11 @@ class ModelFit(zdx.Base):
         # Get the hyper-parameters for the non-linear model
         flux = 10 ** model.fluxes[self.get_key(exposure, "fluxes")]
         oversample = model.optics.oversample
-        bias = model.biases[self.get_key(exposure, "biases")]
 
-        # Need to get the _true_ bias to feed to NN
-        zpoint = exposure.ramp[0]  # Includes first group of photons
-        dsamp_psf = dlu.downsample(psf.data * flux, oversample, mean=False)
-        est_bias = bias + zpoint - model_ramp(dsamp_psf, exposure.ngroups)[0]
-        # Note this bis estimate will be poor when the psf is in-accurate
+        if self.fit_bias:
+            bias = model.biases[self.get_key(exposure, "biases")]
+        else:
+            bias = 0
 
         # Return the BFE and required meta-data
         if to_BFE:
@@ -178,6 +178,12 @@ class ModelFit(zdx.Base):
             psf_data = dlu.downsample(psf.data * flux, oversample, mean=False)
             ramp = psf.set("data", model_ramp(psf_data, exposure.ngroups))
 
+        # Need to get the _true_ bias to feed to NN
+        zpoint = exposure.ramp[0]  # Includes first group of photons
+        dsamp_psf = dlu.downsample(psf.data * flux, oversample, mean=False)
+        est_bias = bias + zpoint - model_ramp(dsamp_psf, exposure.ngroups)[0]
+        # Note this bis estimate will be poor when the psf is in-accurate
+
         # Re-add the bias to the ramp
         ramp = ramp.set("data", ramp.data + est_bias)
 
@@ -187,7 +193,8 @@ class ModelFit(zdx.Base):
 
     def model_read(self, ramp, model, exposure):  # , slopes=False):
         # Model the read effects
-        if "one_on_fs" in model.params.keys():
+        if self.fit_one_on_fs:
+            # if "one_on_fs" in model.params.keys():
             model = model.set("read.one_on_fs", model.one_on_fs[exposure.key])
 
         # Zero point is added in the ramp modelling
@@ -200,9 +207,6 @@ class ModelFit(zdx.Base):
 
         # Apply the read effects
         return model.read.apply(ramp)
-
-
-class PointFit(ModelFit):
 
     def __call__(self, model, exposure, return_paths=False, return_ramp=False):
         psf = self.model_psf(model, exposure)
@@ -217,6 +221,23 @@ class PointFit(ModelFit):
         if return_ramp:
             return ramp.data
         return np.diff(ramp.data, axis=0)
+
+
+class PointFit(ModelFit):
+    pass
+    # def __call__(self, model, exposure, return_paths=False, return_ramp=False):
+    #     psf = self.model_psf(model, exposure)
+    #     psf = self.model_detector(psf, model, exposure)
+    #     if return_paths:
+    #         ramp, latent_path = self.model_ramp(psf, model, exposure, return_paths=return_paths)
+    #         ramp = self.model_read(ramp, model, exposure)
+    #         return np.diff(ramp.data, axis=0), latent_path
+
+    #     ramp = self.model_ramp(psf, model, exposure)
+    #     ramp = self.model_read(ramp, model, exposure)
+    #     if return_ramp:
+    #         return ramp.data
+    #     return np.diff(ramp.data, axis=0)
 
 
 class SplineVisFit(PointFit):
@@ -234,15 +255,26 @@ class SplineVisFit(PointFit):
 
         return super().get_key(exposure, param)
 
+    # def model_vis(self, wfs, model, exposure):
+
+    #     # Get the visibilities
+    #     amps = model.amplitudes[self.get_key(exposure, "amplitudes")]
+    #     phases = model.phases[self.get_key(exposure, "phases")]
+    #     wavels = model.optics.filters[exposure.filter][0]
+    #     psfs = model.vis_model.model_vis(wfs.psf, wavels, amps, phases, exposure.filter)
+
+    #     return dl.PSF(psfs.sum(0), wfs.pixel_scale.mean(0))
     def model_vis(self, wfs, model, exposure):
+        # NOTE: Returns a psf
 
         # Get the visibilities
         amps = model.amplitudes[self.get_key(exposure, "amplitudes")]
         phases = model.phases[self.get_key(exposure, "phases")]
-        wavels = model.optics.filters[exposure.filter][0]
-        psfs = model.vis_model.model_vis(wfs.psf, wavels, amps, phases, exposure.filter)
+        return model.vis_model.model_vis(wfs, amps, phases)
+        # wavels = model.optics.filters[exposure.filter][0]
+        # psfs = model.vis_model.model_vis(wfs, amps, phases)
 
-        return dl.PSF(psfs.sum(0), wfs.pixel_scale.mean(0))
+        # return dl.PSF(psfs.sum(0), wfs.pixel_scale.mean(0))
 
     def model_psf(self, model, exposure):
         wfs = self.model_wfs(model, exposure)
@@ -305,10 +337,10 @@ class BinaryFit(ModelFit):
         # Get the binary positions
         position = dlu.arcsec2rad(model.positions[self.get_key(exposure, "positions")])
         pos_angle = dlu.deg2rad(model.position_angles[self.get_key(exposure, "position_angles")])
-        r = model.separations[self.get_key(exposure, "separations")] / 2
+        r = dlu.arcsec2rad(model.separations[self.get_key(exposure, "separations")] / 2)
         sep_vec = np.array([r * np.sin(pos_angle), r * np.cos(pos_angle)])
         positions = np.array([position + sep_vec, position - sep_vec])
-        positions = vmap(dlu.arcsec2rad)(positions)
+        # positions = vmap(dlu.arcsec2rad)(positions)
 
         # Model the optics - unit weights to apply each flux
         optics = self.update_optics(model, exposure)
@@ -318,9 +350,28 @@ class BinaryFit(ModelFit):
         # Return the correctly weighted wfs - needs sqrt because its amplitude not psf
         return wfs * np.sqrt(weights)[..., None, None]
 
-    def __call__(self, model, exposure):
+    def model_psf(self, model, exposure):
         wfs = self.model_wfs(model, exposure)
-        psf = dl.PSF(wfs.psf.sum((0, 1)), wfs.pixel_scale.mean((0, 1)))
-        psf = self.model_detector(psf, model, exposure)
-        ramp = self.model_ramp(psf, model, exposure)
-        return self.model_read(ramp, model, exposure)
+        return dl.PSF(wfs.psf.sum((0, 1)), wfs.pixel_scale.mean((0, 1)))
+
+    # def __call__(self, model, exposure):
+    #     # wfs = self.model_wfs(model, exposure)
+    #     # psf = dl.PSF(wfs.psf.sum((0, 1)), wfs.pixel_scale.mean((0, 1)))
+    #     psf = self.model_psf(model, exposure)
+    #     psf = self.model_detector(psf, model, exposure)
+    #     ramp = self.model_ramp(psf, model, exposure)
+    #     return self.model_read(ramp, model, exposure)
+
+    # def __call__(self, model, exposure, return_paths=False, return_ramp=False):
+    #     psf = self.model_psf(model, exposure)
+    #     psf = self.model_detector(psf, model, exposure)
+    #     if return_paths:
+    #         ramp, latent_path = self.model_ramp(psf, model, exposure, return_paths=return_paths)
+    #         ramp = self.model_read(ramp, model, exposure)
+    #         return np.diff(ramp.data, axis=0), latent_path
+
+    #     ramp = self.model_ramp(psf, model, exposure)
+    #     ramp = self.model_read(ramp, model, exposure)
+    #     if return_ramp:
+    #         return ramp.data
+    #     return np.diff(ramp.data, axis=0)

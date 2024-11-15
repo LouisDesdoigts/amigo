@@ -4,6 +4,7 @@ from jax import Array, vmap
 import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
+from .misc import calc_throughput
 
 
 def gen_powers(degree):
@@ -33,36 +34,35 @@ def distort_coords(coords, coeffs, pows):
 
 
 ### Fresnel propagators ###
-def transfer(coords, npixels, wavelength, pscale, distance):
+def transfer_fn(coords, npixels, wavelength, pscale, distance):
     scaling = npixels * pscale**2
     rho_sq = ((coords / scaling) ** 2).sum(0)
-    return np.exp(-1.0j * np.pi * wavelength * distance * rho_sq)
+    return _fftshift(np.exp(-1.0j * np.pi * wavelength * distance * rho_sq))
 
 
-def _fft(phasor):
-    return 1 / phasor.shape[0] * np.fft.fft2(phasor)
-    # padded = dlu.resize(phasor, phasor.shape[0] * 2)
-    # # transformed = 1 / phasor.shape[0] * np.fft.fft2(padded)
-    # transformed = 1 / padded.shape[0] * np.fft.fft2(padded)
-    # return transformed, phasor.shape[0]
+def transfer(wf, distance, pad=2):
+    coords = dlu.pixel_coords(pad * wf.npixels, pad * wf.diameter)
+    return transfer_fn(coords, wf.npixels, wf.wavelength, pad * wf.pixel_scale, distance)
 
 
-def _ifft(phasor):
-    return phasor.shape[0] * np.fft.ifft2(phasor)
-    # # padded = dlu.resize(phasor, phasor.shape[0] * 2)
-    # # transformed = phasor.shape[0] * np.fft.ifft2(padded)
-    # transformed = phasor.shape[0] * np.fft.ifft2(phasor)
-    # return dlu.resize(transformed, phasor.shape[0])
-    # # return phasor.shape[0] * np.fft.ifft2(phasor)
+def _fft(phasor, pad=2):
+    padded = dlu.resize(phasor, phasor.shape[0] * pad)
+    return 1 / padded.shape[0] * np.fft.fft2(padded)
+
+
+def _ifft(phasor, pad=1):
+    padded = dlu.resize(phasor, phasor.shape[0] * pad)
+    return phasor.shape[0] * np.fft.ifft2(padded)
 
 
 def _fftshift(phasor):
     return np.fft.fftshift(phasor)
 
 
-def plane_to_plane(wf, distance):
-    tf = transfer(wf.coordinates, wf.npixels, wf.wavelength, wf.pixel_scale, distance)
-    phasor = _ifft(_fft(wf.phasor) * _fftshift(tf))
+def plane_to_plane(wf, distance, pad=2):
+    fft_wf = _fft(wf.phasor, pad=pad)
+    tf = transfer(wf, distance, pad=pad)
+    phasor = dlu.resize(_ifft(fft_wf * tf), wf.npixels)
     return wf.set(["amplitude", "phase"], [np.abs(phasor), np.angle(phasor)])
 
 
@@ -294,11 +294,13 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
 
 class AMIOptics(dl.optical_systems.AngularOpticalSystem):
     filters: dict
+    defocus_type: str
     defocus: np.ndarray
 
     def __init__(
         self,
-        filters=None,
+        nwavels=9,
+        filters=["F380M", "F430M", "F480M"],
         radial_orders=6,
         distortion_orders=5,
         oversample=4,
@@ -312,11 +314,14 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         wf_npixels=1024,
         f2f=0.80,
         oversize=1.1,
-        defocus=0.0,
+        defocus=0.01,
+        defocus_type="fft",
         polike=False,
         unique_holes=False,
         static_opd=False,
     ):
+        if defocus_type not in ["phase", "fft", None]:
+            raise ValueError("defocus_type must be one of 'phase', 'fft', or None")
         self.filters = filters
         self.wf_npixels = wf_npixels
         self.diameter = diameter
@@ -324,6 +329,8 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         self.oversample = oversample
         self.psf_pixel_scale = pixel_scale
         self.defocus = np.array(defocus, float)
+        self.defocus_type = defocus_type
+        self.filters = dict([(filt, calc_throughput(filt, nwavels=nwavels)) for filt in filters])
 
         layers = []
 
@@ -378,11 +385,32 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         true_pixel_scale = self.psf_pixel_scale / self.oversample
         pixel_scale = dlu.arcsec2rad(true_pixel_scale)
         psf_npixels = self.psf_npixels * self.oversample
-        wf = wf.propagate(psf_npixels, pixel_scale)
 
-        # Apply defocus
-        if self.defocus is not None:
-            wf = plane_to_plane(wf, self.defocus)
+        if self.defocus_type == "phase":
+            first, second = dlu.propagation.fresnel_phase_factors(
+                wavelength=wf.wavelength * 1e6,
+                npixels_in=wf.npixels,
+                pixel_scale_in=wf.pixel_scale * 1e6,
+                focal_shift=self.defocus * 1e6,
+                # In theory these do not matter since the second factor only modifies
+                # the phase and so the PSF is unaffected. The 18 (microns) is the
+                # pixel scale but should cancel out.
+                npixels_out=psf_npixels,
+                pixel_scale_out=18 / self.oversample,
+                focal_length=18 / dlu.arcsec2rad(pixel_scale),
+            )
+
+            wf *= first
+            wf = wf.propagate(psf_npixels, pixel_scale)
+            wf *= second
+
+        if self.defocus_type == "fft":
+            # Default to um defocus
+            wf = wf.propagate(psf_npixels, pixel_scale)
+            wf = plane_to_plane(wf, 1e-6 * self.defocus, pad=2)
+
+        if self.defocus_type is None:
+            wf = wf.propagate(psf_npixels, pixel_scale)
 
         # Return PSF or Wavefront
         if return_wf:

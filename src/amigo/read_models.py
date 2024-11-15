@@ -87,10 +87,10 @@ class ReadModel(LayeredDetector):
         layers.append(("read", DarkCurrent(dark_current)))
         if ipc:
             file_path = pkg.resource_filename(__name__, "data/SUB80_ipc.npy")
-            ipc = np.load(file_path)
+            ipc = IPC(np.load(file_path))
         else:
-            ipc = np.array([[1.0]])
-        layers.append(("IPC", IPC(ipc)))
+            ipc = None
+        layers.append(("IPC", ipc))
         layers.append(("amplifier", Amplifier(one_on_fs)))
         layers.append(("ADC", ADC(ADC_coeffs)))
         self.layers = dlu.list2dictionary(layers, ordered=True)

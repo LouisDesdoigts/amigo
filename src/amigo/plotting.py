@@ -28,8 +28,8 @@ def plot_losses(losses, start, stop=-1):
 
 
 def summarise_fit(
-    exposure,
     model,
+    exposure,
     residuals=False,
     histograms=False,
     flat_field=False,

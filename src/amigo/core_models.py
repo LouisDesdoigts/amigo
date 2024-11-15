@@ -1,18 +1,21 @@
 import jax
-import jax.numpy as np
-import jax.tree_util as jtu
 import equinox as eqx
 import zodiax as zdx
+import jax.numpy as np
+import jax.tree_util as jtu
 from jax.lax import dynamic_slice as lax_slice
-from .optical_models import AMIOptics
-from .vis_models import SplineVis
-from .detector_models import LinearDetectorModel
-from .ramp_models import SimpleRamp
-from .read_models import ReadModel
-from .files import initialise_params
-from .search_Teffs import get_Teffs
-from .misc import calc_throughput
-from .model_fits import SplineVisFit, BinaryFit
+from .misc import find_position
+from .model_fits import BinaryFit, SplineVisFit
+
+# from .optical_models import AMIOptics
+# from .vis_models import SplineVis
+# from .detector_models import LinearDetectorModel
+# from .ramp_models import SimpleRamp
+# from .read_models import ReadModel
+# from .files import initialise_params
+# from .search_Teffs import get_Teffs
+# from .misc import calc_throughput
+# from .model_fits import SplineVisFit, BinaryFit
 
 
 class Exposure(zdx.Base):
@@ -22,7 +25,6 @@ class Exposure(zdx.Base):
 
     """
 
-    # Arrays
     slopes: jax.Array
     variance: jax.Array
     ramp: jax.Array
@@ -41,9 +43,7 @@ class Exposure(zdx.Base):
     calibrator: bool = eqx.field(static=True)
     fit: object = eqx.field(static=True)
 
-    # def __init__(self, file, slopes, variance, support, fit):
     def __init__(self, file, fit):
-
         self.slopes = np.array(file["SLOPE"].data, float)
         self.variance = np.array(file["SLOPE_ERR"].data, float) ** 2
         self.badpix = np.array(file["BADPIX"].data, bool)
@@ -70,6 +70,67 @@ class Exposure(zdx.Base):
             f"nints {self.nints}\n"
             f"ngroups {len(self.slopes)+1}\n"
         )
+
+    def initialise_params(self, optics, vis_model=None, amp_order=1):
+        params = {}
+
+        im = np.where(self.badpix, np.nan, self.slopes[0])
+        psf = np.where(np.isnan(im), 0.0, im)
+
+        # # Get pixel scale in arcseconds
+        # if hasattr(optics, "focal_length"):
+        #     pixel_scale = dlu.rad2arcsec(1e-6 * optics.psf_pixel_scale / optics.focal_length)
+        # else:
+        #     pixel_scale = optics.psf_pixel_scale
+        params["positions"] = (self.get_key("positions"), find_position(psf, optics.pixel_scale))
+
+        # Log flux
+        slope_flux = self.ngroups + (1 / self.ngroups)
+        params["fluxes"] = (
+            self.get_key("fluxes"),
+            np.log10(slope_flux * np.nansum(self.slopes[0])),
+        )
+
+        # Aberrations
+        params["aberrations"] = (
+            self.get_key("aberrations"),
+            np.zeros_like(optics.pupil_mask.abb_coeffs),
+        )
+
+        # Reflectivity
+        if self.fit.fit_reflectivity:
+            params["reflectivities"] = (
+                self.get_key("reflectivities"),
+                np.zeros_like(optics.pupil_mask.amp_coeffs),
+            )
+
+        # One on fs
+        if self.fit.fit_one_on_fs:
+            params["one_on_fs"] = (
+                self.get_key("one_on_fs"),
+                np.zeros((self.ngroups, 80, amp_order + 1)),
+            )
+
+        # Biases
+        if self.fit.fit_bias:
+            params["biases"] = (self.get_key("biases"), np.zeros((80, 80)))
+
+        # Visibilities
+        if isinstance(self.fit, SplineVisFit):
+            if vis_model is None:
+                raise ValueError("vis_model must be provided for SplineVisFit")
+            n = vis_model.knot_inds.size
+            params["amplitudes"] = (self.get_key("amplitudes"), np.ones(n))
+            params["phases"] = (self.get_key("phases"), np.zeros(n))
+
+        # Binary parameters
+        if isinstance(self.fit, BinaryFit):
+            raise NotImplementedError("BinaryFit initialisation not yet implemented")
+            params["seperation"] = (self.get_key("seperation"), 0.15)
+            params["contrast"] = (self.get_key("contrast"), 2.0)
+            params["position_angle"] = (self.get_key("position_angle"), 0.0)
+
+        return params
 
     # Simple method to give nice syntax for getting keys
     def get_key(self, param):
@@ -127,42 +188,42 @@ class BaseModeller(zdx.Base):
         return values
 
 
-def initialise_model(
-    files,
-    fit=SplineVisFit(),
-    optics=AMIOptics(),
-    detector=LinearDetectorModel(),
-    ramp=SimpleRamp(),
-    read=ReadModel(),
-    vis_model=None,
-    nwavels=9,
-    Teff_cache="files/Teff_cache",
-):
-    exposures = [Exposure(file, fit) for file in files]
+# def initialise_model(
+#     files,
+#     fit=SplineVisFit(),
+#     optics=AMIOptics(),
+#     detector=LinearDetectorModel(),
+#     ramp=SimpleRamp(),
+#     read=ReadModel(),
+#     vis_model=None,
+#     nwavels=9,
+#     Teff_cache="files/Teff_cache",
+# ):
+#     exposures = [Exposure(file, fit) for file in files]
 
-    filters = {}
-    for filt in list(set([exp.filter for exp in exposures])):
-        filters[filt] = calc_throughput(filt, nwavels=nwavels)
-    optics = optics.set("filters", filters)
+#     # filters = {}
+#     # for filt in list(set([exp.filter for exp in exposures])):
+#     #     filters[filt] = calc_throughput(filt, nwavels=nwavels)
+#     # optics = optics.set("filters", filters)
 
-    if isinstance(fit, SplineVisFit):
-        if vis_model is None:
-            vis_model = SplineVis(optics)
-        else:
-            vis_model = vis_model
-    else:
-        vis_model = None
+#     if isinstance(fit, SplineVisFit):
+#         if vis_model is None:
+#             vis_model = SplineVis(optics)
+#         else:
+#             vis_model = vis_model
+#     else:
+#         vis_model = None
 
-    if isinstance(fit, BinaryFit):
-        params = initialise_params(exposures, optics, binary_fit=True)
-    else:
-        params = initialise_params(exposures, optics, vis_model=vis_model)
+#     if isinstance(fit, BinaryFit):
+#         params = initialise_params(exposures, optics, binary_fit=True)
+#     else:
+#         params = initialise_params(exposures, optics, vis_model=vis_model)
 
-    # Add Teffs to params so we can fit it
-    params["Teffs"] = get_Teffs(files, Teff_cache=Teff_cache)
-    model = AmigoModel(params, optics, ramp, detector, read, vis_model)
+#     # Add Teffs to params so we can fit it
+#     params["Teffs"] = get_Teffs(files, Teff_cache=Teff_cache)
+#     model = AmigoModel(params, optics, ramp, detector, read, vis_model)
 
-    return model, exposures
+#     return model, exposures
 
 
 class AmigoModel(BaseModeller):
