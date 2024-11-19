@@ -4,8 +4,9 @@ import zodiax as zdx
 import jax.numpy as np
 import jax.tree_util as jtu
 from jax.lax import dynamic_slice as lax_slice
-from .misc import find_position
-from .model_fits import BinaryFit, SplineVisFit
+
+# from .misc import find_position
+# from .model_fits import BinaryFit, SplineVisFit
 
 # from .optical_models import AMIOptics
 # from .vis_models import SplineVis
@@ -18,148 +19,148 @@ from .model_fits import BinaryFit, SplineVisFit
 # from .model_fits import SplineVisFit, BinaryFit
 
 
-class Exposure(zdx.Base):
-    """
-    A class to hold all the data relevant to a single exposure, allowing it to be
-    modelled.
+# class Exposure(zdx.Base):
+#     """
+#     A class to hold all the data relevant to a single exposure, allowing it to be
+#     modelled.
 
-    """
+#     """
 
-    slopes: jax.Array
-    variance: jax.Array
-    ramp: jax.Array
-    ramp_variance: jax.Array
-    support: jax.Array
-    badpix: jax.Array
-    nints: int = eqx.field(static=True)
-    filter: str = eqx.field(static=True)
-    star: str = eqx.field(static=True)
-    filename: str = eqx.field(static=True)
-    program: str = eqx.field(static=True)
-    observation: str = eqx.field(static=True)
-    act_id: str = eqx.field(static=True)
-    visit: str = eqx.field(static=True)
-    dither: str = eqx.field(static=True)
-    calibrator: bool = eqx.field(static=True)
-    fit: object = eqx.field(static=True)
+#     slopes: jax.Array
+#     variance: jax.Array
+#     ramp: jax.Array
+#     ramp_variance: jax.Array
+#     support: jax.Array
+#     badpix: jax.Array
+#     nints: int = eqx.field(static=True)
+#     filter: str = eqx.field(static=True)
+#     star: str = eqx.field(static=True)
+#     filename: str = eqx.field(static=True)
+#     program: str = eqx.field(static=True)
+#     observation: str = eqx.field(static=True)
+#     act_id: str = eqx.field(static=True)
+#     visit: str = eqx.field(static=True)
+#     dither: str = eqx.field(static=True)
+#     calibrator: bool = eqx.field(static=True)
+#     fit: object = eqx.field(static=True)
 
-    def __init__(self, file, fit):
-        self.slopes = np.array(file["SLOPE"].data, float)
-        self.variance = np.array(file["SLOPE_ERR"].data, float) ** 2
-        self.badpix = np.array(file["BADPIX"].data, bool)
-        self.support = np.where(~np.array(file["BADPIX"].data, bool))
-        self.ramp = np.asarray(file["RAMP"].data, float)
-        self.ramp_variance = np.asarray(file["RAMP_ERR"].data, float) ** 2
-        self.nints = file[0].header["NINTS"]
-        self.filter = file[0].header["FILTER"]
-        self.star = file[0].header["TARGPROP"]
-        self.observation = file[0].header["OBSERVTN"]
-        self.program = file[0].header["PROGRAM"]
-        self.act_id = file[0].header["ACT_ID"]
-        self.visit = file[0].header["VISITGRP"]
-        self.dither = file[0].header["EXPOSURE"]
-        self.calibrator = bool(file[0].header["IS_PSF"])
-        self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
-        self.fit = fit
+#     def __init__(self, file, fit):
+#         self.slopes = np.array(file["SLOPE"].data, float)
+#         self.variance = np.array(file["SLOPE_ERR"].data, float) ** 2
+#         self.badpix = np.array(file["BADPIX"].data, bool)
+#         self.support = np.where(~np.array(file["BADPIX"].data, bool))
+#         self.ramp = np.asarray(file["RAMP"].data, float)
+#         self.ramp_variance = np.asarray(file["RAMP_ERR"].data, float) ** 2
+#         self.nints = file[0].header["NINTS"]
+#         self.filter = file[0].header["FILTER"]
+#         self.star = file[0].header["TARGPROP"]
+#         self.observation = file[0].header["OBSERVTN"]
+#         self.program = file[0].header["PROGRAM"]
+#         self.act_id = file[0].header["ACT_ID"]
+#         self.visit = file[0].header["VISITGRP"]
+#         self.dither = file[0].header["EXPOSURE"]
+#         self.calibrator = bool(file[0].header["IS_PSF"])
+#         self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
+#         self.fit = fit
 
-    def print_summary(self):
-        print(
-            f"File {self.key}\n"
-            f"Star {self.star}\n"
-            f"Filter {self.filter}\n"
-            f"nints {self.nints}\n"
-            f"ngroups {len(self.slopes)+1}\n"
-        )
+#     def print_summary(self):
+#         print(
+#             f"File {self.key}\n"
+#             f"Star {self.star}\n"
+#             f"Filter {self.filter}\n"
+#             f"nints {self.nints}\n"
+#             f"ngroups {len(self.slopes)+1}\n"
+#         )
 
-    def initialise_params(self, optics, vis_model=None, amp_order=1):
-        params = {}
+#     def initialise_params(self, optics, vis_model=None, amp_order=1):
+#         params = {}
 
-        im = np.where(self.badpix, np.nan, self.slopes[0])
-        psf = np.where(np.isnan(im), 0.0, im)
+#         im = np.where(self.badpix, np.nan, self.slopes[0])
+#         psf = np.where(np.isnan(im), 0.0, im)
 
-        # # Get pixel scale in arcseconds
-        # if hasattr(optics, "focal_length"):
-        #     pixel_scale = dlu.rad2arcsec(1e-6 * optics.psf_pixel_scale / optics.focal_length)
-        # else:
-        #     pixel_scale = optics.psf_pixel_scale
-        params["positions"] = (self.get_key("positions"), find_position(psf, optics.pixel_scale))
+#         # # Get pixel scale in arcseconds
+#         # if hasattr(optics, "focal_length"):
+#         #     pixel_scale = dlu.rad2arcsec(1e-6 * optics.psf_pixel_scale / optics.focal_length)
+#         # else:
+#         #     pixel_scale = optics.psf_pixel_scale
+#         params["positions"] = (self.get_key("positions"), find_position(psf, optics.pixel_scale))
 
-        # Log flux
-        slope_flux = self.ngroups + (1 / self.ngroups)
-        params["fluxes"] = (
-            self.get_key("fluxes"),
-            np.log10(slope_flux * np.nansum(self.slopes[0])),
-        )
+#         # Log flux
+#         slope_flux = self.ngroups + (1 / self.ngroups)
+#         params["fluxes"] = (
+#             self.get_key("fluxes"),
+#             np.log10(slope_flux * np.nansum(self.slopes[0])),
+#         )
 
-        # Aberrations
-        params["aberrations"] = (
-            self.get_key("aberrations"),
-            np.zeros_like(optics.pupil_mask.abb_coeffs),
-        )
+#         # Aberrations
+#         params["aberrations"] = (
+#             self.get_key("aberrations"),
+#             np.zeros_like(optics.pupil_mask.abb_coeffs),
+#         )
 
-        # Reflectivity
-        if self.fit.fit_reflectivity:
-            params["reflectivities"] = (
-                self.get_key("reflectivities"),
-                np.zeros_like(optics.pupil_mask.amp_coeffs),
-            )
+#         # Reflectivity
+#         if self.fit.fit_reflectivity:
+#             params["reflectivities"] = (
+#                 self.get_key("reflectivities"),
+#                 np.zeros_like(optics.pupil_mask.amp_coeffs),
+#             )
 
-        # One on fs
-        if self.fit.fit_one_on_fs:
-            params["one_on_fs"] = (
-                self.get_key("one_on_fs"),
-                np.zeros((self.ngroups, 80, amp_order + 1)),
-            )
+#         # One on fs
+#         if self.fit.fit_one_on_fs:
+#             params["one_on_fs"] = (
+#                 self.get_key("one_on_fs"),
+#                 np.zeros((self.ngroups, 80, amp_order + 1)),
+#             )
 
-        # Biases
-        if self.fit.fit_bias:
-            params["biases"] = (self.get_key("biases"), np.zeros((80, 80)))
+#         # Biases
+#         if self.fit.fit_bias:
+#             params["biases"] = (self.get_key("biases"), np.zeros((80, 80)))
 
-        # Visibilities
-        if isinstance(self.fit, SplineVisFit):
-            if vis_model is None:
-                raise ValueError("vis_model must be provided for SplineVisFit")
-            n = vis_model.knot_inds.size
-            params["amplitudes"] = (self.get_key("amplitudes"), np.ones(n))
-            params["phases"] = (self.get_key("phases"), np.zeros(n))
+#         # Visibilities
+#         if isinstance(self.fit, SplineVisFit):
+#             if vis_model is None:
+#                 raise ValueError("vis_model must be provided for SplineVisFit")
+#             n = vis_model.knot_inds.size
+#             params["amplitudes"] = (self.get_key("amplitudes"), np.ones(n))
+#             params["phases"] = (self.get_key("phases"), np.zeros(n))
 
-        # Binary parameters
-        if isinstance(self.fit, BinaryFit):
-            raise NotImplementedError("BinaryFit initialisation not yet implemented")
-            params["seperation"] = (self.get_key("seperation"), 0.15)
-            params["contrast"] = (self.get_key("contrast"), 2.0)
-            params["position_angle"] = (self.get_key("position_angle"), 0.0)
+#         # Binary parameters
+#         if isinstance(self.fit, BinaryFit):
+#             raise NotImplementedError("BinaryFit initialisation not yet implemented")
+#             params["seperation"] = (self.get_key("seperation"), 0.15)
+#             params["contrast"] = (self.get_key("contrast"), 2.0)
+#             params["position_angle"] = (self.get_key("position_angle"), 0.0)
 
-        return params
+#         return params
 
-    # Simple method to give nice syntax for getting keys
-    def get_key(self, param):
-        return self.fit.get_key(self, param)
+#     # Simple method to give nice syntax for getting keys
+#     def get_key(self, param):
+#         return self.fit.get_key(self, param)
 
-    def map_param(self, param):
-        return self.fit.map_param(self, param)
+#     def map_param(self, param):
+#         return self.fit.map_param(self, param)
 
-    @property
-    def ngroups(self):
-        return len(self.slopes) + 1
+#     @property
+#     def ngroups(self):
+#         return len(self.slopes) + 1
 
-    @property
-    def nslopes(self):
-        return len(self.slopes)
+#     @property
+#     def nslopes(self):
+#         return len(self.slopes)
 
-    @property
-    def std(self):
-        return np.sqrt(self.variance)
+#     @property
+#     def std(self):
+#         return np.sqrt(self.variance)
 
-    @property
-    def key(self):
-        return "_".join([self.program, self.observation, self.act_id, self.visit, self.dither])
+#     @property
+#     def key(self):
+#         return "_".join([self.program, self.observation, self.act_id, self.visit, self.dither])
 
-    def to_vec(self, image):
-        return image[..., *self.support].T
+#     def to_vec(self, image):
+#         return image[..., *self.support].T
 
-    def from_vec(self, vec, fill=np.nan):
-        return (fill * np.ones((80, 80))).at[*self.support].set(vec)
+#     def from_vec(self, vec, fill=np.nan):
+#         return (fill * np.ones((80, 80))).at[*self.support].set(vec)
 
 
 class BaseModeller(zdx.Base):
@@ -241,8 +242,8 @@ class AmigoModel(BaseModeller):
         self.read = read
         self.vis_model = vis_model
 
-    def model(self, exposure, **kwargs):
-        return exposure.fit(self, exposure, **kwargs)
+    # def model(self, exposure, **kwargs):
+    #     return exposure.fit(self, exposure, **kwargs)
 
     def __getattr__(self, key):
         if key in self.params:

@@ -44,7 +44,7 @@ def summarise_fit(
     seismic = colormaps["seismic"]
 
     # slopes = model_fn(model, exposure)
-    slopes = model.model(exposure)  # , slopes=True)
+    slopes = exposure(model)
     data = exposure.slopes
 
     residual = data - slopes

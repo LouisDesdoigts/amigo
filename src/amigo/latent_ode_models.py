@@ -434,8 +434,9 @@ class LatentODERamp(zdx.Base):
         ramp = self.predict_ramp(illuminance, ngroups)
         return np.diff(ramp, axis=0)
 
-    def apply(self, psf, flux, exposure, oversample, return_paths=False):
-        out = self.predict_ramp(psf.data * flux, exposure.ngroups, return_paths=return_paths)
+    def apply(self, psf, exposure, return_paths=False):
+        # out = self.predict_ramp(psf.data * flux, exposure.ngroups, return_paths=return_paths)
+        out = self.predict_ramp(psf.data, exposure.ngroups, return_paths=return_paths)
         if return_paths:
             ramp, latent_paths = out
             return Ramp(ramp, psf.pixel_scale), latent_paths

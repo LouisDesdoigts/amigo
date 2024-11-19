@@ -61,13 +61,13 @@ def log_likelihood(slope, exposure, read_noise=0, return_im=False):
     return loglike_vec
 
 
-def prior(*args):
+def prior(*args, **kwargs):
     return 0.0
 
 
 def posterior(model, exposure, per_pix=True, return_im=False):
     # Get the model
-    slopes = model.model(exposure)  # , slopes=True)
+    slopes = exposure(model)
     posterior_vec = prior(model, slopes, exposure) + log_likelihood(slopes, exposure)
 
     # return image
@@ -113,7 +113,7 @@ def variance_model(model, exposure, true_read_noise=False, read_noise=10):
     nan_mask = np.isnan(exposure.slopes)
 
     # Estimate the photon covariance
-    slopes = model.model(exposure)
+    slopes = exposure(model)  # .model(exposure)
 
     slopes = slopes.at[np.where(nan_mask)].set(np.nan)
     variance = slopes / exposure.nints

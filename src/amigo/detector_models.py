@@ -5,6 +5,7 @@ import dLux.utils as dlu
 import jax
 from jax.scipy.stats import multivariate_normal
 from .misc import interp
+import equinox as eqx
 
 # import interpax as ipx
 
@@ -17,21 +18,57 @@ from .misc import interp
 #     )
 
 
+def quadratic_SRF(a, oversample, norm=True):
+    """
+    norm will normalise the SRF to have a mean of 1
+    """
+    coords = dlu.pixel_coords(oversample, 2)
+    quad = 1 - np.sum((a * coords) ** 2, axis=0)
+    if norm:
+        quad -= quad.mean() - 1
+    return quad
+
+
 class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
 
     FF: jax.Array
     SRF: jax.Array
+    method: str = eqx.field(static=True)
+    oversample: int = eqx.field(static=True)
 
-    def __init__(self, FF, SRF):
-        self.FF = FF
-        self.SRF = SRF
+    def __init__(self, FF, SRF=0.0, method="quad", oversample=4):
+        if method not in ["quad", "pixel"]:
+            raise ValueError(f"Method {method} not recognised")
+        if method == "pixel":
+            if SRF.ndim != 2:
+                raise ValueError("Pixel method requires a 2D SRF array")
+
+            i, j = SRF.shape
+            if i != j:
+                raise ValueError("Pixel method requires a square SRF array")
+
+            if i != oversample:
+                raise ValueError(
+                    "Pixel method requires a square SRF array with the same size as"
+                    " the oversample"
+                )
+
+        self.FF = np.array(FF, float)
+        self.SRF = np.array(SRF, float)
+        self.method = str(method)
+        self.oversample = int(oversample)
 
     @property
     def sensitivity_map(self):
-        oversample = self.SRF.shape[0]
         npix = self.FF.shape[1]
-        bc_sens_map = self.SRF[None, :, None, :] * self.FF[:, None, :, None]
-        return bc_sens_map.reshape((npix * oversample, npix * oversample))
+
+        if self.method == "quad":
+            SRF = quadratic_SRF(self.SRF, self.oversample)
+        else:
+            SRF = self.SRF
+
+        bc_sens_map = SRF[None, :, None, :] * self.FF[:, None, :, None]
+        return bc_sens_map.reshape((npix * self.oversample, npix * self.oversample))
 
     def apply(self, PSF):
         return PSF * self.sensitivity_map
@@ -63,11 +100,13 @@ class PixelAnisotropy(dl.layers.detector_layers.DetectorLayer):
 
 
 class GaussianJitter(dl.layers.detector_layers.DetectorLayer):
+    """r has units of arcseconds"""
+
     r: float
     kernel_size: int
     kernel_oversample: int
 
-    def __init__(self, r, kernel_size=11, kernel_oversample=1):
+    def __init__(self, r, kernel_size=9, kernel_oversample=3):
         if kernel_size % 2 == 0:
             raise ValueError("kernel_size must be an odd integer")
 
@@ -80,6 +119,8 @@ class GaussianJitter(dl.layers.detector_layers.DetectorLayer):
         return psf.convolve(kernel)
 
     def generate_kernel(self, pixel_scale):
+        # r_mas = self.r
+
         # Generate distribution
         extent = pixel_scale * self.kernel_size
         x = np.linspace(0, extent, self.kernel_oversample * self.kernel_size) - 0.5 * extent
@@ -88,7 +129,7 @@ class GaussianJitter(dl.layers.detector_layers.DetectorLayer):
         #
         pos = np.dstack((xs, ys))
         mean = np.array([0.0, 0.0])
-        cov = self.r * np.eye(2)
+        cov = np.square(self.r) * np.eye(2)
 
         kernel = dlu.downsample(
             multivariate_normal.pdf(pos, mean=mean, cov=cov),
@@ -121,18 +162,17 @@ class LinearDetectorModel(LayeredDetector):
     def __init__(
         self,
         oversample=4,
-        # oversample=3,
         npixels_in=80,
-        rot_angle=-0.56126717,
+        rot_angle=+0.56126717,
         anisotropy=1.0,
-        jitter_amplitude=4.5e-4,
-        SRF=None,
+        jitter_amplitude=1.12e-3,  # as
+        SRF=1e-3,
         FF=None,
     ):
         layers = [
             ("rotate", Rotate(rot_angle)),
             ("pixel_anisotropy", PixelAnisotropy(anisotropy)),
-            ("jitter", GaussianJitter(jitter_amplitude, kernel_size=19, kernel_oversample=3)),
+            ("jitter", GaussianJitter(jitter_amplitude, kernel_size=11, kernel_oversample=3)),
         ]
 
         # Load the FF
@@ -143,9 +183,9 @@ class LinearDetectorModel(LayeredDetector):
                 pad = (npixels_in - 80) // 2
                 FF = np.pad(FF, pad, constant_values=1)
 
-        if SRF is None:
-            SRF = np.ones((oversample, oversample))
+        # if SRF is None:
+        #     SRF = np.ones((oversample, oversample))
 
-        layers.append(("sensitivity", ApplySensitivities(FF, SRF)))
+        layers.append(("sensitivity", ApplySensitivities(FF, SRF, oversample=oversample)))
 
         self.layers = dlu.list2dictionary(layers, ordered=True)

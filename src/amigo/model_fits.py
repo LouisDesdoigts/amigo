@@ -1,3 +1,4 @@
+import jax
 import equinox as eqx
 import zodiax as zdx
 import dLux as dl
@@ -5,136 +6,262 @@ import dLux.utils as dlu
 import jax.numpy as np
 from jax import lax
 from .ramp_models import model_ramp
-from .misc import planck
+from .misc import find_position, planck
+
+# from .core_models import Exposure
 
 
-class ModelFit(zdx.Base):
+class Exposure(zdx.Base):
+    """
+    A class to hold all the data relevant to a single exposure, allowing it to be
+    modelled.
+
+    """
+
+    slopes: jax.Array
+    variance: jax.Array
+    ramp: jax.Array
+    ramp_variance: jax.Array
+    support: jax.Array
+    badpix: jax.Array
+    nints: int = eqx.field(static=True)
+    filter: str = eqx.field(static=True)
+    star: str = eqx.field(static=True)
+    filename: str = eqx.field(static=True)
+    program: str = eqx.field(static=True)
+    observation: str = eqx.field(static=True)
+    act_id: str = eqx.field(static=True)
+    visit: str = eqx.field(static=True)
+    dither: str = eqx.field(static=True)
+    calibrator: bool = eqx.field(static=True)
+    # fit: object = eqx.field(static=True)
+
+    def __init__(self, file):  # , fit):
+        self.slopes = np.array(file["SLOPE"].data, float)
+        self.variance = np.array(file["SLOPE_ERR"].data, float) ** 2
+        self.badpix = np.array(file["BADPIX"].data, bool)
+        self.support = np.where(~np.array(file["BADPIX"].data, bool))
+        self.ramp = np.asarray(file["RAMP"].data, float)
+        self.ramp_variance = np.asarray(file["RAMP_ERR"].data, float) ** 2
+        self.nints = file[0].header["NINTS"]
+        self.filter = file[0].header["FILTER"]
+        self.star = file[0].header["TARGPROP"]
+        self.observation = file[0].header["OBSERVTN"]
+        self.program = file[0].header["PROGRAM"]
+        self.act_id = file[0].header["ACT_ID"]
+        self.visit = file[0].header["VISITGRP"]
+        self.dither = file[0].header["EXPOSURE"]
+        self.calibrator = bool(file[0].header["IS_PSF"])
+        self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
+        # self.fit = fit
+
+    def print_summary(self):
+        print(
+            f"File {self.key}\n"
+            f"Star {self.star}\n"
+            f"Filter {self.filter}\n"
+            f"nints {self.nints}\n"
+            f"ngroups {len(self.slopes)+1}\n"
+        )
+
+    def initialise_params(self, optics, vis_model=None, one_on_fs_order=1):
+        params = {}
+
+        im = np.where(self.badpix, np.nan, self.slopes[0])
+        psf = np.where(np.isnan(im), 0.0, im)
+
+        # positions
+        params["positions"] = (
+            self.get_key("positions"),
+            find_position(psf, optics.psf_pixel_scale),
+        )
+
+        # Log flux
+        slope_flux = self.ngroups + (1 / self.ngroups)
+        params["fluxes"] = (
+            self.get_key("fluxes"),
+            np.log10(slope_flux * np.nansum(self.slopes[0])),
+        )
+
+        # Aberrations
+        params["aberrations"] = (
+            self.get_key("aberrations"),
+            np.zeros_like(optics.pupil_mask.abb_coeffs),
+        )
+
+        # Reflectivity
+        if self.fit_reflectivity:
+            params["reflectivities"] = (
+                self.get_key("reflectivities"),
+                np.zeros_like(optics.pupil_mask.amp_coeffs),
+            )
+
+        # One on fs
+        if self.fit_one_on_fs:
+            params["one_on_fs"] = (
+                self.get_key("one_on_fs"),
+                np.zeros((self.ngroups, 80, one_on_fs_order + 1)),
+            )
+
+        # Biases
+        if self.fit_bias:
+            params["biases"] = (self.get_key("biases"), np.zeros((80, 80)))
+
+        # Visibilities
+        if isinstance(self, SplineVisFit):
+            if vis_model is None:
+                raise ValueError("vis_model must be provided for SplineVisFit")
+            n = vis_model.knot_inds.size
+            params["amplitudes"] = (self.get_key("amplitudes"), np.ones(n))
+            params["phases"] = (self.get_key("phases"), np.zeros(n))
+
+        # Binary parameters
+        if isinstance(self, BinaryFit):
+            raise NotImplementedError("BinaryFit initialisation not yet implemented")
+            params["seperation"] = (self.get_key("seperation"), 0.15)
+            params["contrast"] = (self.get_key("contrast"), 2.0)
+            params["position_angle"] = (self.get_key("position_angle"), 0.0)
+
+        return params
+
+    # # Simple method to give nice syntax for getting keys
+    # def get_key(self, param):
+    #     return self.fit.get_key(self, param)
+
+    # def map_param(self, param):
+    #     return self.fit.map_param(self, param)
+
+    @property
+    def ngroups(self):
+        return len(self.slopes) + 1
+
+    @property
+    def nslopes(self):
+        return len(self.slopes)
+
+    @property
+    def std(self):
+        return np.sqrt(self.variance)
+
+    @property
+    def key(self):
+        return "_".join([self.program, self.observation, self.act_id, self.visit, self.dither])
+
+    def to_vec(self, image):
+        return image[..., *self.support].T
+
+    def from_vec(self, vec, fill=np.nan):
+        return (fill * np.ones((80, 80))).at[*self.support].set(vec)
+
+
+class ModelFit(Exposure):
     fit_one_on_fs: bool = eqx.field(static=True)
     fit_reflectivity: bool = eqx.field(static=True)
     fit_bias: bool = eqx.field(static=True)
 
-    def __init__(self, fit_reflectivity=False, fit_one_on_fs=False, fit_bias=False):
+    def __init__(
+        self,
+        *args,
+        fit_reflectivity=False,
+        fit_one_on_fs=False,
+        fit_bias=False,
+        **kwargs,
+    ):
         self.fit_one_on_fs = fit_one_on_fs
         self.fit_reflectivity = fit_reflectivity
         self.fit_bias = fit_bias
+        super().__init__(*args, **kwargs)
 
-    def get_key(self, exposure, param):
+    # def get_key(self, exposure, param):
+    def get_key(self, param):
 
-        # TODO: Update to switch statement
+        # Unique to each exposure
+        if param in [
+            "positions",
+            "one_on_fs",
+            "contrasts",
+            "separations",
+            "position_angles",
+        ]:
+            return self.key
+
         if param in ["amplitudes", "phases"]:
-            return "_".join([exposure.star, exposure.filter])
+            return "_".join([self.star, self.filter])
 
-        if param == "dispersion":
-            return exposure.filter
+        if param in ["aberrations", "reflectivity"]:
+            return "_".join([self.program, self.filter])
 
         if param == "fluxes":
-            return "_".join([exposure.star, exposure.filter])
-
-        if param == "aberrations":
-            return "_".join([exposure.program, exposure.filter])
-
-        if param == "reflectivity":
-            return "_".join([exposure.program, exposure.filter])
-
-        if param == "positions":
-            return exposure.key
-
-        if param == "one_on_fs":
-            return exposure.key
+            return "_".join([self.star, self.filter])
 
         if param == "biases":
-            return exposure.program
+            return self.program
 
         if param == "Teffs":
-            return exposure.star
-
-        if param == "contrasts":
-            return exposure.key
-
-        if param == "separations":
-            return exposure.key
-
-        if param == "position_angles":
-            return exposure.key
+            return self.star
 
         raise ValueError(f"Parameter {param} has no key")
 
-    def map_param(self, exposure, param):
+    # def map_param(self, exposure, param):
+    def map_param(self, param):
         """
         The `key` argument will return only the _key_ extension of the parameter path,
         which is required for object initialisation.
         """
 
-        # TODO: Update to switch statement
-        if param in ["amplitudes", "phases"]:
-            return f"{param}.{exposure.get_key(param)}"
-
-        if param in ["shifts", "contrasts"]:
-            return f"{param}.{exposure.get_key(param)}"
-
-        if param == "fluxes":
-            return f"{param}.{exposure.get_key(param)}"
-
-        if param == "aberrations":
-            return f"{param}.{exposure.get_key(param)}"
-
-        if param == "reflectivity":
-            return f"{param}.{exposure.get_key(param)}"
-
-        if param == "positions":
-            return f"{param}.{exposure.get_key(param)}"
-
-        if param == "one_on_fs":
-            return f"{param}.{exposure.get_key(param)}"
-
-        if param == "biases":
-            return f"{param}.{exposure.get_key(param)}"
-
-        if param == "Teffs":
-            return f"{param}.{exposure.get_key(param)}"
-
-        if param == "contrasts":
-            return f"{param}.{exposure.get_key(param)}"
-
-        if param == "separations":
-            return f"{param}.{exposure.get_key(param)}"
-
-        if param == "position_angles":
-            return f"{param}.{exposure.get_key(param)}"
+        # Map the appropriate parameter to the correct key
+        if param in [
+            "amplitudes",
+            "phases",
+            "fluxes",
+            "aberrations",
+            "reflectivity",
+            "positions",
+            "one_on_fs",
+            "biases",
+            "Teffs",
+            "contrasts",
+            "separations",
+            "position_angles",
+        ]:
+            return f"{param}.{self.get_key(param)}"
 
         # Else its global
         return param
 
-    def get_spectra(self, model, exposure):
-        wavels, filt_weights = model.filters[exposure.filter]
-        weights = filt_weights * planck(wavels, model.Teffs[exposure.star])
+    # def get_spectra(self, model, exposure):
+    def get_spectra(self, model):
+        wavels, filt_weights = model.filters[self.filter]
+        weights = filt_weights * planck(wavels, model.Teffs[self.star])
         return wavels, weights / weights.sum()
 
-    def update_optics(self, model, exposure):
+    # def update_optics(self, model, exposure):
+    def update_optics(self, model):
         optics = model.optics
         if "aberrations" in model.params.keys():
-            coefficients = model.aberrations[self.get_key(exposure, "aberrations")]
+            coefficients = model.aberrations[self.get_key("aberrations")]
 
             # Stop gradient for science targets
-            if not exposure.calibrator:
+            if not self.calibrator:
                 coefficients = lax.stop_gradient(coefficients)
             optics = optics.set("pupil_mask.abb_coeffs", coefficients)
 
         if self.fit_reflectivity:
-            coefficients = model.reflectivity[self.get_key(exposure, "reflectivity")]
+            coefficients = model.reflectivity[self.get_key("reflectivity")]
 
             # Stop gradient for science targets
-            if not exposure.calibrator:
+            if not self.calibrator:
                 coefficients = lax.stop_gradient(coefficients)
             optics = optics.set("pupil_mask.amp_coeffs", coefficients)
 
         return optics
 
-    def model_wfs(self, model, exposure):
-        wavels, weights = self.get_spectra(model, exposure)
-        optics = self.update_optics(model, exposure)
+    # def model_wfs(self, model, exposure):
+    def model_wfs(self, model):
+        wavels, weights = self.get_spectra(model)
+        optics = self.update_optics(model)
 
-        pos = dlu.arcsec2rad(model.positions[exposure.key])
+        pos = dlu.arcsec2rad(model.positions[self.key])
         wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
 
         # Convert Cartesian to Angular wf
@@ -143,84 +270,75 @@ class ModelFit(zdx.Base):
             wfs = wfs.set(["plane", "units"], ["Focal", "Angular"])
         return wfs
 
-    def model_psf(self, model, exposure):
-        wfs = self.model_wfs(model, exposure)
+    # def model_psf(self, model, exposure):
+    def model_psf(self, model):
+        wfs = self.model_wfs(model)
         return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale.mean(0))
 
-    def model_detector(self, psf, model, exposure):
+    # def model_detector(self, psf, model, exposure):
+    def model_detector(self, psf, model):
         return eqx.filter_jit(model.detector.apply)(psf)
 
-    def model_ramp(self, psf, model, exposure, to_BFE=False, return_paths=False):
+    # def model_ramp(self, psf, model, exposure, to_BFE=False, return_paths=False):
+    # def model_ramp(self, psf, model, to_BFE=False, return_paths=False):
+    def model_ramp(self, psf, model, return_paths=False):
 
-        # Get the hyper-parameters for the non-linear model
-        flux = 10 ** model.fluxes[self.get_key(exposure, "fluxes")]
-        oversample = model.optics.oversample
-
-        if self.fit_bias:
-            bias = model.biases[self.get_key(exposure, "biases")]
-        else:
-            bias = 0
-
-        # Return the BFE and required meta-data
-        if to_BFE:
-            return psf.data, flux, oversample
+        # Apply the flux scaling
+        psf = psf.multiply("data", 10 ** model.fluxes[self.get_key("fluxes")])
 
         # Non linear model always goes from unit psf, flux, oversample to an 80x80 ramp
-        # NOTE: Should be able to remove this if statement and just use SimpleRamp
         if model.ramp is not None:
-            if return_paths:
-                ramp, latent_paths = model.ramp.apply(
-                    psf, flux, exposure, oversample, return_paths
-                )
-            else:
-                ramp = model.ramp.apply(psf, flux, exposure, oversample)
+            ramp, latent_paths = model.ramp.apply(psf, self, return_paths=True)
         else:
-            psf_data = dlu.downsample(psf.data * flux, oversample, mean=False)
-            ramp = psf.set("data", model_ramp(psf_data, exposure.ngroups))
-
-        # Need to get the _true_ bias to feed to NN
-        zpoint = exposure.ramp[0]  # Includes first group of photons
-        dsamp_psf = dlu.downsample(psf.data * flux, oversample, mean=False)
-        est_bias = bias + zpoint - model_ramp(dsamp_psf, exposure.ngroups)[0]
-        # Note this bis estimate will be poor when the psf is in-accurate
+            psf_data = dlu.downsample(psf.data, model.optics.oversample, mean=False)
+            ramp = psf.set("data", model_ramp(psf_data, self.ngroups))
+            latent_paths = None
 
         # Re-add the bias to the ramp
+        est_bias = self.ramp[0] - ramp.data[0]
+        if self.fit_bias:
+            est_bias += model.biases[self.get_key("biases")]
         ramp = ramp.set("data", ramp.data + est_bias)
 
         if return_paths:
             return ramp, latent_paths
         return ramp
 
-    def model_read(self, ramp, model, exposure):  # , slopes=False):
+    # def model_read(self, ramp, model, exposure):  # , slopes=False):
+    def model_read(self, ramp, model):
         # Model the read effects
         if self.fit_one_on_fs:
             # if "one_on_fs" in model.params.keys():
-            model = model.set("read.one_on_fs", model.one_on_fs[exposure.key])
-
-        # Zero point is added in the ramp modelling
-        # # Add the zero point to the ramp
-        # zpoint = exposure.ramp[:1]
-        # zpoint = np.where(np.isnan(zpoint), 0, zpoint)
-        # slopes = np.diff(ramp.data, axis=0)
-        # true_ramp = np.concatenate([zpoint, zpoint + np.cumsum(slopes, axis=0)])
-        # ramp = ramp.set("data", true_ramp)
+            # model = model.set("one_on_fs", self.map_param(
+            # "one_one_fs", model.one_on_fs[exposure.key]
+            # ))
+            model = model.set("read.one_one_fs", model.one_on_fs[self.get_key("one_one_fs")])
 
         # Apply the read effects
         return model.read.apply(ramp)
 
-    def __call__(self, model, exposure, return_paths=False, return_ramp=False):
-        psf = self.model_psf(model, exposure)
-        psf = self.model_detector(psf, model, exposure)
+    def simulate(self, model, return_paths=False):
+        psf = self.model_psf(model)
+        psf = self.model_detector(psf, model)
         if return_paths:
-            ramp, latent_path = self.model_ramp(psf, model, exposure, return_paths=return_paths)
-            ramp = self.model_read(ramp, model, exposure)
-            return np.diff(ramp.data, axis=0), latent_path
+            ramp, latent_path = self.model_ramp(psf, model, return_paths=return_paths)
+            return self.model_read(ramp, model), latent_path
+        else:
+            ramp = self.model_ramp(psf, model)
+            return self.model_read(ramp, model)
 
-        ramp = self.model_ramp(psf, model, exposure)
-        ramp = self.model_read(ramp, model, exposure)
+    # def __call__(self, model, exposure, return_paths=False, return_ramp=False):
+    def __call__(self, model, return_paths=False, return_ramp=False):
+        ramp, latent_path = self.simulate(model, return_paths=True)
+
         if return_ramp:
+            if return_paths:
+                return ramp.data, latent_path
             return ramp.data
-        return np.diff(ramp.data, axis=0)
+
+        if return_paths:
+            return np.diff(ramp.data, axis=0), latent_path
+        return np.diff(self.simulate(model).data, axis=0)
 
 
 class PointFit(ModelFit):
