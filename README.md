@@ -46,4 +46,6 @@ It's that simple (in theory). In practice the jwst pipeline can be difficult to 
 
 And never forget, AMI go brrrrrrrr
 
-![AMIGO](amigo.jpg)
+![AMIGO](media/max.jpg)
+
+![AMIGO](media/louis.jpg)
