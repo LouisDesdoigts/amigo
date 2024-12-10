@@ -38,6 +38,7 @@ def summarise_fit(
     full_bias=False,
     aberrations=False,
     pow=0.5,
+    loglike_fn=None,
 ):
 
     inferno = colormaps["inferno"]
@@ -48,7 +49,13 @@ def summarise_fit(
     data = exposure.slopes
 
     residual = data - slopes
-    posterior_im = posterior(model, exposure, return_im=True)
+
+    #
+    if loglike_fn is not None:
+        posterior_im = posterior(model, exposure, return_im=True)
+    else:
+        posterior_im = posterior(model, exposure, return_im=True)
+        # posterior_im = exposure.from_vec(posterior_vec)
 
     # loglike_im = exposure.log_likelihood(slopes, return_im=True)
 

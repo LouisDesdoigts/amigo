@@ -99,44 +99,145 @@ class PixelAnisotropy(dl.layers.detector_layers.DetectorLayer):
         return PSF.set("data", interp(PSF.data, coords, new_coords, "cubic2"))
 
 
-class GaussianJitter(dl.layers.detector_layers.DetectorLayer):
-    """r has units of arcseconds"""
+def gaussian_kernel(kernel_size, cov, pixel_scale, oversample):
+    # Generate distribution
+    extent = pixel_scale * kernel_size
+    x = np.linspace(0, extent, oversample * kernel_size) - 0.5 * extent
+    xs, ys = np.meshgrid(x, x)
 
-    r: float
-    kernel_size: int
-    kernel_oversample: int
+    #
+    pos = np.dstack((xs, ys))
+    mean = np.array([0.0, 0.0])
+    # cov = np.square(sigma) * np.eye(2)
 
-    def __init__(self, r, kernel_size=9, kernel_oversample=3):
+    kernel = dlu.downsample(
+        multivariate_normal.pdf(pos, mean=mean, cov=cov),
+        oversample,
+    )
+
+    return kernel / np.sum(kernel)
+
+
+class BaseJitter(dl.layers.detector_layers.DetectorLayer):
+    """Base jitter class, ensures units are arcseconds"""
+
+    kernel_size: int = eqx.field(static=True)
+    kernel_oversample: int = eqx.field(static=True)
+
+    def __init__(self, kernel_size=9, kernel_oversample=3):
         if kernel_size % 2 == 0:
             raise ValueError("kernel_size must be an odd integer")
-
         self.kernel_size = int(kernel_size)
-        self.r = np.asarray(r, float)
         self.kernel_oversample = kernel_oversample
 
     def apply(self, psf):
+        """Convert the pixel scale to arcseconds and convolve"""
         kernel = self.generate_kernel(dlu.rad2arcsec(psf.pixel_scale))
         return psf.convolve(kernel)
 
+
+class GaussianJitter(BaseJitter):
+    """Has units of arcseconds"""
+
+    r: np.ndarray
+
+    def __init__(self, r=0.02, **kwargs):
+        super().__init__(**kwargs)
+        self.r = r
+
     def generate_kernel(self, pixel_scale):
-        # r_mas = self.r
-
-        # Generate distribution
-        extent = pixel_scale * self.kernel_size
-        x = np.linspace(0, extent, self.kernel_oversample * self.kernel_size) - 0.5 * extent
-        xs, ys = np.meshgrid(x, x)
-
-        #
-        pos = np.dstack((xs, ys))
-        mean = np.array([0.0, 0.0])
         cov = np.square(self.r) * np.eye(2)
+        return gaussian_kernel(self.kernel_size, cov, pixel_scale, self.oversample)
+        # # r_mas = self.r
 
-        kernel = dlu.downsample(
-            multivariate_normal.pdf(pos, mean=mean, cov=cov),
-            self.kernel_oversample,
+        # # Generate distribution
+        # extent = pixel_scale * self.kernel_size
+        # x = np.linspace(0, extent, self.kernel_oversample * self.kernel_size) - 0.5 * extent
+        # xs, ys = np.meshgrid(x, x)
+
+        # #
+        # pos = np.dstack((xs, ys))
+        # mean = np.array([0.0, 0.0])
+        # cov = np.square(self.r) * np.eye(2)
+
+        # kernel = dlu.downsample(
+        #     multivariate_normal.pdf(pos, mean=mean, cov=cov),
+        #     self.kernel_oversample,
+        # )
+
+        # return kernel / np.sum(kernel)
+
+
+class AsymmetricJitter(BaseJitter):
+    """Has units of arcseconds"""
+
+    # TODO: Change rx, ry to stdevs
+    rx: float
+    ry: float
+    corr: float
+
+    def __init__(self, rx=0.02, ry=0.02, corr=0.0, **kwargs):
+        super().__init__(**kwargs)
+        self.rx = np.asarray(rx, float)
+        self.ry = np.asarray(ry, float)
+        self.corr = np.asarray(corr, float)
+
+    def generate_kernel(self, pixel_scale):
+        cov = np.array(
+            [
+                [self.rx**2, self.corr],
+                [self.corr, self.ry**2],
+            ]
         )
+        return gaussian_kernel(self.kernel_size, cov, pixel_scale, self.oversample)
 
-        return kernel / np.sum(kernel)
+
+# class AsymmetricJitter(dl.layers.detector_layers.DetectorLayer):
+#     """r has units of arcseconds"""
+
+#     rx: float
+#     ry: float
+#     corr: float
+#     kernel_size: int
+#     kernel_oversample: int
+
+#     def __init__(self, rx=0.02, ry=0.02, corr=0.0, kernel_size=9, kernel_oversample=5):
+#         if kernel_size % 2 == 0:
+#             raise ValueError("kernel_size must be an odd integer")
+
+#         self.kernel_size = int(kernel_size)
+#         self.kernel_oversample = kernel_oversample
+#         self.rx = np.asarray(rx, float)
+#         self.ry = np.asarray(ry, float)
+#         self.corr = np.asarray(corr, float)
+
+#     def apply(self, psf):
+#         kernel = self.generate_kernel(dlu.rad2arcsec(psf.pixel_scale))
+#         return psf.convolve(kernel)
+
+#     def generate_kernel(self, pixel_scale):
+#         # Generate distribution
+#         extent = pixel_scale * self.kernel_size
+#         x = np.linspace(0, extent, self.kernel_oversample * self.kernel_size) - 0.5 * extent
+#         xs, ys = np.meshgrid(x, x)
+
+#         #
+#         pos = np.dstack((xs, ys))
+#         mean = np.array([0.0, 0.0])
+#         cov = np.array(
+#             [
+#                 [self.rx**2, self.corr],
+#                 [self.corr, self.ry**2],
+#             ]
+#         )
+#         # cov = np.square(stds)[:, None] * np.eye(2)
+
+#         kernel = dlu.downsample(
+#             multivariate_normal.pdf(pos, mean=mean, cov=cov),
+#             self.kernel_oversample,
+#         )
+
+#         return kernel / np.sum(kernel)
 
 
 class LayeredDetector(dl.detectors.LayeredDetector):
@@ -165,14 +266,21 @@ class LinearDetectorModel(LayeredDetector):
         npixels_in=80,
         rot_angle=+0.56126717,
         anisotropy=1.0,
-        jitter_amplitude=1.12e-3,  # as
+        # jitter_amplitude=0.02,  # as
+        asymmetric_jitter=True,
         SRF=1e-3,
         FF=None,
     ):
+
+        if asymmetric_jitter:
+            jitter = AsymmetricJitter(kernel_size=11, kernel_oversample=5)
+        else:
+            jitter = GaussianJitter(0.02, kernel_size=11, kernel_oversample=3)
+
         layers = [
+            ("jitter", jitter),
             ("rotate", Rotate(rot_angle)),
             ("pixel_anisotropy", PixelAnisotropy(anisotropy)),
-            ("jitter", GaussianJitter(jitter_amplitude, kernel_size=11, kernel_oversample=3)),
         ]
 
         # Load the FF

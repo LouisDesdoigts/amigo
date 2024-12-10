@@ -189,7 +189,8 @@ class ModelFit(Exposure):
             return "_".join([self.star, self.filter])
 
         if param in ["aberrations", "reflectivity"]:
-            return "_".join([self.program, self.filter])
+            # return "_".join([self.program, self.filter])
+            return self.program
 
         if param == "fluxes":
             return "_".join([self.star, self.filter])
@@ -283,7 +284,7 @@ class ModelFit(Exposure):
     # def model_ramp(self, psf, model, to_BFE=False, return_paths=False):
     def model_ramp(self, psf, model, return_paths=False):
 
-        # Apply the flux scaling
+        # Apply the flux scaling to get the illuminance function
         psf = psf.multiply("data", 10 ** model.fluxes[self.get_key("fluxes")])
 
         # Non linear model always goes from unit psf, flux, oversample to an 80x80 ramp
