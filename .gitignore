@@ -8,3 +8,4 @@ src/amigo.egg-info/
 **.DS_Store
 dist/
 build/
+.conda/
