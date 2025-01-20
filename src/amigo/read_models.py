@@ -62,6 +62,8 @@ class DarkCurrent(dl.detector_layers.DetectorLayer):
 
 
 class ADC(dl.detector_layers.DetectorLayer):
+    # TODO: Add the fourier basis into this class, rather than re-generate it. Maybe
+    # make it a new class though, so one can descend on the period
     ADC_coeffs: Array
     period: int = eqx.field(static=True)
 
@@ -80,9 +82,26 @@ class ADC(dl.detector_layers.DetectorLayer):
         return ramp.add("data", correction)
 
 
+class PixelBias(dl.detector_layers.DetectorLayer):
+    bias: Array
+
+    def __init__(self, bias=None):
+        if bias is not None:
+            self.bias = np.array(bias, float)
+        else:
+            self.bias = bias
+
+    def apply(self, ramp):
+        if self.bias is None:
+            return ramp
+        return ramp.add("data", self.bias)
+
+
 class ReadModel(LayeredDetector):
 
-    def __init__(self, dark_current=0.0, ipc=True, one_on_fs=None, ADC_coeffs=np.zeros((3, 2))):
+    def __init__(
+        self, dark_current=0.25, ipc=True, one_on_fs=None, ADC_coeffs=np.zeros((3, 2)), bias=None
+    ):
         layers = []
         layers.append(("read", DarkCurrent(dark_current)))
         if ipc:
@@ -90,6 +109,7 @@ class ReadModel(LayeredDetector):
             ipc = IPC(np.load(file_path))
         else:
             ipc = None
+        layers.append(("pixel_bias", PixelBias(bias=bias)))
         layers.append(("IPC", ipc))
         layers.append(("amplifier", Amplifier(one_on_fs)))
         layers.append(("ADC", ADC(ADC_coeffs)))

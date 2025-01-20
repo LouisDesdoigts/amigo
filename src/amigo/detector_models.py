@@ -6,16 +6,8 @@ import jax
 from jax.scipy.stats import multivariate_normal
 from .misc import interp
 import equinox as eqx
-
-# import interpax as ipx
-
-
-# def interp(image, knots, sample_coords, extrap=0.0):
-#     xs, ys = knots[0, 0, :], knots[1, :, 0]
-#     xpts, ypts = sample_coords.reshape(2, -1)
-#     return ipx.interp2d(ypts, xpts, ys, xs, image, method="cubic2", extrap=extrap).reshape(
-#         sample_coords[0].shape
-#     )
+from .ramp_models import model_ramp
+from .latent_ode_models import GainDiffusionRamp
 
 
 def quadratic_SRF(a, oversample, norm=True):
@@ -29,8 +21,14 @@ def quadratic_SRF(a, oversample, norm=True):
     return quad
 
 
-class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
+def broadcast_subpixel(pixels, subpixel):
+    npix = pixels.shape[1]
+    oversample = subpixel.shape[0]
+    bc_sens_map = subpixel[None, :, None, :] * pixels[:, None, :, None]
+    return bc_sens_map.reshape((npix * oversample, npix * oversample))
 
+
+class PixelSensitivities(dl.layers.detector_layers.DetectorLayer):
     FF: jax.Array
     SRF: jax.Array
     method: str = eqx.field(static=True)
@@ -60,43 +58,32 @@ class ApplySensitivities(dl.layers.detector_layers.DetectorLayer):
 
     @property
     def sensitivity_map(self):
-        npix = self.FF.shape[1]
-
         if self.method == "quad":
-            SRF = quadratic_SRF(self.SRF, self.oversample)
+            subpixel_fn = quadratic_SRF(self.SRF, self.oversample)
         else:
-            SRF = self.SRF
+            subpixel_fn = self.SRF
 
-        bc_sens_map = SRF[None, :, None, :] * self.FF[:, None, :, None]
-        return bc_sens_map.reshape((npix * self.oversample, npix * self.oversample))
+        return broadcast_subpixel(self.FF, subpixel_fn)
 
     def apply(self, PSF):
         return PSF * self.sensitivity_map
 
 
-class Rotate(dl.layers.detector_layers.DetectorLayer):
+class Resample(dl.layers.detector_layers.DetectorLayer):
     rotation: float
-
-    def __init__(self, rotation):
-        self.rotation = np.array(rotation, float)
-
-    def apply(self, PSF):
-        coords = dlu.pixel_coords(PSF.data.shape[0], 2)
-        rot_coords = dlu.rotate_coords(coords, dlu.deg2rad(self.rotation))
-        return PSF.set("data", interp(PSF.data, coords, rot_coords, "cubic2"))
-
-
-class PixelAnisotropy(dl.layers.detector_layers.DetectorLayer):
     anisotropy: np.ndarray
 
-    def __init__(self, anisotropy=1.0):
+    def __init__(self, rotation=0.0, anisotropy=1.0):
+        self.rotation = np.array(rotation, float)
         self.anisotropy = np.array(anisotropy, float)
 
     def apply(self, PSF):
-        npix = PSF.data.shape[0]
-        coords = dlu.pixel_coords(npix, npix * PSF.pixel_scale)
-        new_coords = coords * np.array([1.0, self.anisotropy])[:, None, None]
-        return PSF.set("data", interp(PSF.data, coords, new_coords, "cubic2"))
+        angle = dlu.deg2rad(self.rotation)
+        coords = dlu.pixel_coords(PSF.data.shape[0], 2)
+        rot_coords = dlu.rotate_coords(coords, angle)
+        sample_coords = rot_coords * np.array([1.0, self.anisotropy])[:, None, None]
+        # TODO: Test different interpolation methods
+        return PSF.set("data", interp(PSF.data, coords, sample_coords, "cubic2"))
 
 
 def gaussian_kernel(kernel_size, cov, pixel_scale, oversample):
@@ -108,7 +95,6 @@ def gaussian_kernel(kernel_size, cov, pixel_scale, oversample):
     #
     pos = np.dstack((xs, ys))
     mean = np.array([0.0, 0.0])
-    # cov = np.square(sigma) * np.eye(2)
 
     kernel = dlu.downsample(
         multivariate_normal.pdf(pos, mean=mean, cov=cov),
@@ -143,29 +129,11 @@ class GaussianJitter(BaseJitter):
 
     def __init__(self, r=0.02, **kwargs):
         super().__init__(**kwargs)
-        self.r = r
+        self.r = np.array(r, float)
 
     def generate_kernel(self, pixel_scale):
         cov = np.square(self.r) * np.eye(2)
-        return gaussian_kernel(self.kernel_size, cov, pixel_scale, self.oversample)
-        # # r_mas = self.r
-
-        # # Generate distribution
-        # extent = pixel_scale * self.kernel_size
-        # x = np.linspace(0, extent, self.kernel_oversample * self.kernel_size) - 0.5 * extent
-        # xs, ys = np.meshgrid(x, x)
-
-        # #
-        # pos = np.dstack((xs, ys))
-        # mean = np.array([0.0, 0.0])
-        # cov = np.square(self.r) * np.eye(2)
-
-        # kernel = dlu.downsample(
-        #     multivariate_normal.pdf(pos, mean=mean, cov=cov),
-        #     self.kernel_oversample,
-        # )
-
-        # return kernel / np.sum(kernel)
+        return gaussian_kernel(self.kernel_size, cov, pixel_scale, self.kernel_oversample)
 
 
 class AsymmetricJitter(BaseJitter):
@@ -189,55 +157,7 @@ class AsymmetricJitter(BaseJitter):
                 [self.corr, self.ry**2],
             ]
         )
-        return gaussian_kernel(self.kernel_size, cov, pixel_scale, self.oversample)
-
-
-# class AsymmetricJitter(dl.layers.detector_layers.DetectorLayer):
-#     """r has units of arcseconds"""
-
-#     rx: float
-#     ry: float
-#     corr: float
-#     kernel_size: int
-#     kernel_oversample: int
-
-#     def __init__(self, rx=0.02, ry=0.02, corr=0.0, kernel_size=9, kernel_oversample=5):
-#         if kernel_size % 2 == 0:
-#             raise ValueError("kernel_size must be an odd integer")
-
-#         self.kernel_size = int(kernel_size)
-#         self.kernel_oversample = kernel_oversample
-#         self.rx = np.asarray(rx, float)
-#         self.ry = np.asarray(ry, float)
-#         self.corr = np.asarray(corr, float)
-
-#     def apply(self, psf):
-#         kernel = self.generate_kernel(dlu.rad2arcsec(psf.pixel_scale))
-#         return psf.convolve(kernel)
-
-#     def generate_kernel(self, pixel_scale):
-#         # Generate distribution
-#         extent = pixel_scale * self.kernel_size
-#         x = np.linspace(0, extent, self.kernel_oversample * self.kernel_size) - 0.5 * extent
-#         xs, ys = np.meshgrid(x, x)
-
-#         #
-#         pos = np.dstack((xs, ys))
-#         mean = np.array([0.0, 0.0])
-#         cov = np.array(
-#             [
-#                 [self.rx**2, self.corr],
-#                 [self.corr, self.ry**2],
-#             ]
-#         )
-#         # cov = np.square(stds)[:, None] * np.eye(2)
-
-#         kernel = dlu.downsample(
-#             multivariate_normal.pdf(pos, mean=mean, cov=cov),
-#             self.kernel_oversample,
-#         )
-
-#         return kernel / np.sum(kernel)
+        return gaussian_kernel(self.kernel_size, cov, pixel_scale, self.kernel_oversample)
 
 
 class LayeredDetector(dl.detectors.LayeredDetector):
@@ -258,30 +178,24 @@ class LayeredDetector(dl.detectors.LayeredDetector):
         return psf
 
 
-class LinearDetectorModel(LayeredDetector):
+class SUB80Detector(LayeredDetector):
+    ramp: None
+    sensitivity: PixelSensitivities
+    oversample: int = eqx.field(static=True)
 
     def __init__(
         self,
+        ramp_model=None,
         oversample=4,
         npixels_in=80,
         rot_angle=+0.56126717,
         anisotropy=1.0,
-        # jitter_amplitude=0.02,  # as
-        asymmetric_jitter=True,
-        SRF=1e-3,
+        SRF=0.05,
         FF=None,
     ):
-
-        if asymmetric_jitter:
-            jitter = AsymmetricJitter(kernel_size=11, kernel_oversample=5)
-        else:
-            jitter = GaussianJitter(0.02, kernel_size=11, kernel_oversample=3)
-
-        layers = [
-            ("jitter", jitter),
-            ("rotate", Rotate(rot_angle)),
-            ("pixel_anisotropy", PixelAnisotropy(anisotropy)),
-        ]
+        # Ramp model
+        self.ramp = ramp_model
+        self.oversample = int(oversample)
 
         # Load the FF
         if FF is None:
@@ -291,9 +205,128 @@ class LinearDetectorModel(LayeredDetector):
                 pad = (npixels_in - 80) // 2
                 FF = np.pad(FF, pad, constant_values=1)
 
-        # if SRF is None:
-        #     SRF = np.ones((oversample, oversample))
+        self.sensitivity = PixelSensitivities(FF, SRF, oversample=oversample)
 
-        layers.append(("sensitivity", ApplySensitivities(FF, SRF, oversample=oversample)))
+        self.layers = dlu.list2dictionary(
+            [
+                # ("jitter", AsymmetricJitter(kernel_size=11, kernel_oversample=5)),
+                ("jitter", GaussianJitter(kernel_size=11, kernel_oversample=5)),
+                ("resampler", Resample(rotation=rot_angle, anisotropy=anisotropy)),
+            ],
+            ordered=True,
+        )
 
-        self.layers = dlu.list2dictionary(layers, ordered=True)
+    def __getattr__(self, key):
+        if hasattr(self.ramp, key):
+            return getattr(self.ramp, key)
+        if hasattr(self.sensitivity, key):
+            return getattr(self.sensitivity, key)
+        # super().__getattr__(self)
+        if key in self.layers.keys():
+            return self.layers[key]
+        for layer in list(self.layers.values()):
+            if hasattr(layer, key):
+                return getattr(layer, key)
+
+        raise AttributeError(f"SUB80Detector.ODE has no attribute {key}")
+
+    def evolve_ramp(self, illuminance, ngroups):
+        sensitivity = self.sensitivity_map
+
+        if self.ramp is None:
+            illuminance = dlu.downsample(sensitivity * illuminance, self.oversample, mean=False)
+            return model_ramp(illuminance, ngroups)
+
+        elif isinstance(self.ramp, GainDiffusionRamp):
+            ramp, latent_paths = self.ramp.evolve_ramp(illuminance, ngroups, sensitivity)
+            return ramp, latent_paths
+
+        else:
+            raise NotImplementedError("No implementation for this ramp type")
+
+
+# class SUB80Ramp(dl.detectors.BaseDetector):
+#     ramp: None
+#     sensitivity: PixelSensitivities
+#     # jitter: AsymmetricJitter
+#     # resampler: Resample
+
+#     def __init__(
+#         self,
+#         ramp_model=None,
+#         # oversample=4,
+#         # npixels_in=80,
+#         # rot_angle=+0.56126717,
+#         # anisotropy=1.0,
+#         # jitter_amplitude=0.02,  # as
+#         # asymmetric_jitter=True,
+#         SRF=1e-3,
+#         FF=None,
+#     ):
+
+#         self.ramp_model = ramp_model
+#         self.jitter.AsymmetricJitter(kernel_size=11, kernel_oversample=5)
+#         self.resampler.Resample(rotation=rot_angle, anisotropy=anisotropy)
+
+#         # Load the FF
+#         if FF is None:
+#             file_path = pkg.resource_filename(__name__, "data/SUB80_flatfield.npy")
+#             FF = np.load(file_path)
+#             if npixels_in != 80:
+#                 pad = (npixels_in - 80) // 2
+#                 FF = np.pad(FF, pad, constant_values=1)
+
+#         self.sensitivity.PixelSensitivities(FF, SRF, oversample=oversample)
+
+#     def __getattr__(self, a):
+#         pass
+
+
+#     def evolve_ramp(self, illuminance, ngroups):
+#         if isinstance(self.ramp, GainDiffusionRamp):
+#             sensitivity = self.sensitivity_map
+#             ramp, latent_paths = self.evolve_ramp(illuminance, ngroups, sensitivity)
+
+#         else:
+#             raise NotImplementedError("No implementation for this ramp type")
+
+
+# if asymmetric_jitter:
+# jitter = AsymmetricJitter(kernel_size=11, kernel_oversample=5)
+# else:
+#     jitter = GaussianJitter(0.02, kernel_size=11, kernel_oversample=3)
+
+# PixelSensitivities(FF, SRF, oversample=oversample)
+
+# layers = [
+# ("jitter", AsymmetricJitter(kernel_size=11, kernel_oversample=5)),
+# ("resampler", Resample(rotation=rot_angle, anisotropy=anisotropy)),
+# ("sensitivity", PixelSensitivities(FF, SRF, oversample=oversample)),
+# ("pixel_anisotropy", PixelAnisotropy(anisotropy)),
+# ]
+
+# if SRF is None:
+#     SRF = np.ones((oversample, oversample))
+
+# layers.append()
+
+# self.layers = dlu.list2dictionary(layers, ordered=True)
+
+# def apply_linear(self, psf):
+#     for layer in list(self.layers.values()):
+#         if layer is None:
+#             continue
+#         psf = layer.apply(psf)
+#     return psf
+
+# def apply_ramp(self, psf):
+
+#     if isinstance(self.ramp, None):
+#         illuminance = dlu.downsample(illuminance, model.optics.oversample, mean=False)
+#         ramp = psf.set("data", model_ramp(illuminance, self.ngroups))
+
+#     ramp, latent_paths = self.ramp.evolve_ramp(illuminance, ngroups, sensitivity_map)
+#         if layer is None:
+#             continue
+#         psf = layer.apply(psf)
+#     return psf

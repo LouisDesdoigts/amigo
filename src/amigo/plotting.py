@@ -468,6 +468,10 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.plot(epochs, arr, **kwargs)
             ax.set(ylabel="Dark Current")
 
+        case "defocus":
+            ax.plot(epochs, arr, **kwargs)
+            ax.set(ylabel="Defocus")
+
         case "jitter.r":
             ax.plot(epochs, 1e3 * arr, **kwargs)
             ax.set(ylabel="Jitter Magnitude (mas)")

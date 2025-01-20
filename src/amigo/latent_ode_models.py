@@ -5,31 +5,12 @@ import jax.numpy as np
 import jax.tree as jtu
 import jax.random as jr
 import diffrax as dfx
-import interpax as ipx
 import dLux.utils as dlu
 from jax.lax import dynamic_slice as lax_slice
 from amigo.ramp_models import calc_rfield
 from amigo.ode_models import ODEFunc
-from amigo.ramp_models import Ramp, model_ramp
+from amigo.ramp_models import model_ramp
 from jax import vmap
-
-
-@eqx.filter_jit
-def interp_ramp(ramp, ngroups, method="cubic2", extrap=True):
-    # Assumes that the ramp time samples are from 0 to 1.
-    ts = np.linspace(0, 1, len(ramp))
-    groups = (np.arange(ngroups) + 1) / ngroups
-
-    # Build the vectorised interpolator
-    interpolator = eqx.filter_vmap(
-        lambda f: ipx.interp1d(groups, ts, f, method=method, extrap=extrap),
-        in_axes=1,
-        out_axes=1,
-    )
-
-    # Get the group sample points and interpolate the ramp
-    ramp_vec = ramp.reshape(len(ramp), -1)
-    return interpolator(ramp_vec).reshape(ngroups, *ramp.shape[1:])
 
 
 def build_wrapper(eqx_model, filter_fn=eqx.is_array):
@@ -146,6 +127,65 @@ def build_encoding_layers(
     return layers
 
 
+class LatentEncoder(WrapperHolder):
+
+    def __init__(self, width=8, depth=2, n_latent=8, pools=[0, 1], key=jr.PRNGKey(0)):
+        CNN = BaseNeuralNetwork(
+            build_encoding_layers(
+                in_channels=1,
+                width=width,
+                depth=depth,
+                n_latent=n_latent,
+                pools=pools,
+                key=key,
+                use_bias=False,
+            )
+        )
+        values, structure = build_wrapper(CNN)
+        self.values = values
+        self.structure = structure
+
+    @property
+    def FoR(self):
+        return calc_rfield(self.build.layers)
+
+    def encode(self, image):
+        return self.build(image[None, ...])
+
+    def print_shapes(self):
+        x = np.ones((1, 320, 320))
+        print("->", x.shape)
+
+        for layer in self.build.layers:
+            print(str(type(layer))[8:-2])
+            x = layer(x)
+            print("->", x.shape)
+
+
+class LatentDecoderMLP(WrapperHolder):
+
+    def __init__(self, n_latent=16, width=3, depth=1, key=jr.PRNGKey(0)):
+        decoder = eqx.nn.MLP(
+            in_size=n_latent,
+            out_size=1,
+            width_size=width * (n_latent),
+            depth=depth,
+            activation=jax.nn.relu,
+            key=key,
+            use_bias=False,
+            use_final_bias=False,
+        )
+        values, structure = build_wrapper(decoder)
+        self.values = values
+        self.structure = structure
+
+    def decode(self, z):
+        return self.build(z)
+
+    def decode_path(self, zs):
+        return vmap(self.decode)(zs)
+
+
 def build_decoding_layers(
     n_latent=1,
     # width=1,
@@ -196,124 +236,16 @@ def build_decoding_layers(
     return layers
 
 
-class ChargeODE(WrapperHolder, ODEFunc):
-
-    def __init__(self, n_latent=16, width=4, depth=1, key=jr.PRNGKey(0)):
-        in_size = n_latent + 2  # +2 for q, t
-        mlp = eqx.nn.MLP(
-            in_size=in_size,
-            out_size=1,
-            width_size=width * in_size,
-            depth=depth,
-            activation=jax.nn.relu,
-            key=key,
-            # use_bias=False,
-            use_final_bias=False,
-        )
-        values, structure = build_wrapper(mlp)
-        self.values = values
-        self.structure = structure
-
-    def derivative(self, t, q, args):
-        illuminance, z = args
-        x = np.concatenate([z, np.array([q, t])])
-        return illuminance + np.squeeze(self.build(x))
-
-    def solve_fn(self, illuminance, z, ts, dt=0.1):
-        return dfx.diffeqsolve(
-            y0=0.0,
-            t0=0.0,
-            t1=1.0,
-            dt0=dt,
-            args=(illuminance, z),
-            solver=dfx.Tsit5(),
-            saveat=dfx.SaveAt(ts=ts),
-            adjoint=dfx.DirectAdjoint(),
-            terms=dfx.ODETerm(self.derivative),
-            stepsize_controller=dfx.PIDController(rtol=1e-3, atol=1e-3),
-            max_steps=2048,
-            throw=True,
-        ).ys
-
-
-class LatentDecoderMLP(WrapperHolder):
-
-    def __init__(self, n_latent=16, width=3, depth=1, key=jr.PRNGKey(0)):
-        # decoder = eqx.nn.Linear(
-        #     in_features=n_latent,
-        #     out_features=1,
-        #     use_bias=False,
-        #     key=key,
-        # )
-        # decoder = eqx.nn.MLP(
-        #     in_size=n_latent,
-        #     out_size=1,
-        #     width_size=width * (n_latent),
-        #     depth=depth,
-        #     activation=jax.nn.relu,
-        #     key=key,
-        #     use_bias=False,
-        #     use_final_bias=False,
-        # )
-        decoder = eqx.nn.MLP(
-            in_size=n_latent,
-            out_size=1,
-            width_size=width * (n_latent),
-            depth=depth,
-            activation=jax.nn.relu,
-            key=key,
-            use_bias=False,
-            use_final_bias=False,
-        )
-        values, structure = build_wrapper(decoder)
-        self.values = values
-        self.structure = structure
-
-    def decode(self, z):
-        return self.build(z)
-
-    def decode_path(self, zs):
-        return vmap(self.decode)(zs)
-
-
-class LatentEncoder(WrapperHolder):
-
-    def __init__(self, width=8, depth=2, n_latent=8, pools=[0, 1], key=jr.PRNGKey(0)):
-        CNN = BaseNeuralNetwork(
-            build_encoding_layers(
-                in_channels=1,
-                width=width,
-                depth=depth,
-                n_latent=n_latent,
-                pools=pools,
-                key=key,
-                use_bias=False,
-            )
-        )
-        values, structure = build_wrapper(CNN)
-        self.values = values
-        self.structure = structure
-
-    @property
-    def FoR(self):
-        return calc_rfield(self.build.layers)
-
-    def encode(self, image):
-        return self.build(image[None, ...])
-
-    def print_shapes(self):
-        x = np.ones((1, 320, 320))
-        print("->", x.shape)
-
-        for layer in self.build.layers:
-            print(str(type(layer))[8:-2])
-            x = layer(x)
-            print("->", x.shape)
-
-
 class LatentDecoder(WrapperHolder):
 
-    def __init__(self, n_latent=16, depth=2, up_samples=[1, 2], out_channels=1, key=jr.PRNGKey(0)):
+    def __init__(
+        self,
+        n_latent=16,
+        depth=2,
+        up_samples=[1, 2],
+        out_channels=1,
+        key=jr.PRNGKey(0),
+    ):
         CNN = BaseNeuralNetwork(
             build_decoding_layers(
                 n_latent=n_latent,
@@ -394,132 +326,261 @@ class LatentODERamp(zdx.Base):
             return getattr(self.encoder, name)
         if hasattr(self.latent_ode, name):
             return getattr(self.latent_ode, name)
+        if hasattr(self.decoder, name):
+            return getattr(self.decoder, name)
         raise AttributeError(f"LatentODERamp.ODE has no attribute {name}")
 
-    def predict_ramp(self, illuminance, ngroups, return_paths=False):
+    def _evolve(self, illuminance, n_samples=10, return_paths=False):
         # Normalise the illuminance
-        illuminance /= self.norm
+        # illuminance /= self.norm
+
+        # plt.imshow(illuminance)
+        # plt.colorbar()
+        # plt.show()
 
         # Encode the image
         z = self.encoder.encode(illuminance)
+        # plt.hist(z.flatten())
+        # plt.show()
         z_vec = z.reshape(len(z), -1).T
 
         # Solve the ODE
-        ts = np.linspace(0, 1, 10)
+        ts = np.linspace(0, 1, n_samples)
         latent_path_vec = vmap(lambda z0: self.latent_ode.solve_fn(z0, ts))(z_vec)
         latent_paths = latent_path_vec.T.reshape(-1, len(ts), 80, 80)
+        # plt.hist(latent_path_vec.flatten())
+        # plt.show()
 
-        # Decode the latent paths
-        # We vmap the second axis, the _time_ axis
-        # gain = np.squeeze(vmap(self.decoder.decode, 1)(latent_paths))
-        gain, diffusion = vmap(self.decoder.decode, 1, 1)(latent_paths)
-
-        # Apply gain term
-        base_ramp = model_ramp(illuminance, ngroups)
-        gain_ramp = interp_ramp(gain + 1, ngroups)
-        diffusion_ramp = interp_ramp(diffusion, ngroups)
-        full_ramp = (gain_ramp * base_ramp) + diffusion_ramp
-        # full_ramp = gain_ramp * (base_ramp + diffusion_ramp)
-
-        # Downsample
-        ramp = vmap(lambda x: dlu.downsample(x, 4, mean=False))(full_ramp)
+        # Decode the latent paths at each time sample simultaneously with vmap
+        # outputs = self.norm * vmap(self.decoder.decode, 1, 1)(latent_paths)
+        outputs = vmap(self.decoder.decode, 1, 1)(latent_paths)
+        # plt.hist(outputs.flatten(), bins=50)
+        # plt.show()
 
         # Return the ramp
         if return_paths:
-            return self.norm * ramp, latent_paths
-        return self.norm * ramp
-
-    def predict_slopes(self, illuminance, ngroups):
-        ramp = self.predict_ramp(illuminance, ngroups)
-        return np.diff(ramp, axis=0)
-
-    def apply(self, psf, exposure, return_paths=False):
-        # out = self.predict_ramp(psf.data * flux, exposure.ngroups, return_paths=return_paths)
-        out = self.predict_ramp(psf.data, exposure.ngroups, return_paths=return_paths)
-        if return_paths:
-            ramp, latent_paths = out
-            return Ramp(ramp, psf.pixel_scale), latent_paths
-        return Ramp(out, psf.pixel_scale)
+            return outputs, latent_paths
+        return outputs
 
 
-class SensitivityLatentODERamp(LatentODERamp):
-    FF: jax.Array
-    SRF: jax.Array
-    oversample: int = eqx.field(static=True)
+from .misc import interp_ramp
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
 
-        self.FF = np.zeros((80, 80))
-        self.SRF = np.array(0.0, float)
-        self.oversample = int(4)
+class GainDiffusionRamp(LatentODERamp):
 
-    @property
-    def sensitivity_map(self):
-        from .detector_models import quadratic_SRF
+    def evolve_ramp(self, illuminance, ngroups, sensitivity_map):
 
-        npix = self.FF.shape[1]
-        SRF = quadratic_SRF(self.SRF, self.oversample)
-
-        bc_sens_map = SRF[None, :, None, :] * self.FF[:, None, :, None]
-        return bc_sens_map.reshape((npix * self.oversample, npix * self.oversample))
-
-    def __getattr__(self, name):
-        if hasattr(self.encoder, name):
-            return getattr(self.encoder, name)
-        if hasattr(self.latent_ode, name):
-            return getattr(self.latent_ode, name)
-        raise AttributeError(f"LatentODERamp.ODE has no attribute {name}")
-
-    def predict_ramp(self, illuminance, ngroups, return_paths=False):
-        # Normalise the illuminance
         illuminance /= self.norm
 
-        # Skip the ode if any components are None
-        if self.encoder is None or self.latent_ode is None or self.decoder is None:
-            # Apply diffusion and gain
-            pixel_gain = self.sensitivity_map[None, ...]
-            base_ramp = model_ramp(illuminance, ngroups)
-            full_ramp = pixel_gain * base_ramp
-            latent_paths = np.zeros(1)
+        # Get the evolved gain and diffusion terms
+        (gain, diffusion), latent_paths = self._evolve(
+            illuminance, n_samples=10, return_paths=True
+        )
 
-        else:
-            # Encode the image
-            z = self.encoder.encode(illuminance)
-            z_vec = z.reshape(len(z), -1).T
+        # Interpolate the sample into ramps
+        # small_gain = 2e-2 * gain
+        # gain_ramp = interp_ramp(small_gain + 1, ngroups)
+        gain_ramp = interp_ramp(gain + 1, ngroups)
+        diffusion_ramp = interp_ramp(diffusion, ngroups)
 
-            # Solve the ODE
-            ts = np.linspace(0, 1, 10)
-            latent_path_vec = vmap(lambda z0: self.latent_ode.solve_fn(z0, ts))(z_vec)
-            latent_paths = latent_path_vec.T.reshape(-1, len(ts), 80, 80)
-
-            # Decode the latent paths
-            # We vmap the second axis, the _time_ axis
-            gain, diffusion = vmap(self.decoder.decode, 1, 1)(latent_paths)
-            gain_ramp = interp_ramp(gain + 1, ngroups)
-            diffusion_ramp = interp_ramp(diffusion, ngroups)
-
-            # Apply diffusion and gain
-            pixel_gain = gain_ramp * self.sensitivity_map[None, ...]
-            base_ramp = model_ramp(illuminance, ngroups)
-            full_ramp = pixel_gain * (base_ramp + diffusion_ramp)
+        # Apply diffusion and gain
+        pixel_gain = gain_ramp * sensitivity_map[None, ...]
+        base_ramp = model_ramp(illuminance, ngroups)
+        full_ramp = pixel_gain * (base_ramp + diffusion_ramp)
 
         # Downsample
         ramp = vmap(lambda x: dlu.downsample(x, 4, mean=False))(full_ramp)
 
+        ramp *= self.norm
+
         # Return the ramp
-        if return_paths:
-            return self.norm * ramp, latent_paths
-        return self.norm * ramp
+        return ramp, latent_paths
 
-    def predict_slopes(self, illuminance, ngroups):
-        ramp = self.predict_ramp(illuminance, ngroups)
-        return np.diff(ramp, axis=0)
+    # def predict_slopes(self, illuminance, ngroups):
+    #     ramp = self.predict_ramp(illuminance, ngroups)
+    #     return np.diff(ramp, axis=0)
 
-    def apply(self, psf, exposure, return_paths=False):
-        # out = self.predict_ramp(psf.data * flux, exposure.ngroups, return_paths=return_paths)
-        out = self.predict_ramp(psf.data, exposure.ngroups, return_paths=return_paths)
-        if return_paths:
-            ramp, latent_paths = out
-            return Ramp(ramp, psf.pixel_scale), latent_paths
-        return Ramp(out, psf.pixel_scale)
+    # def apply(self, psf, exposure, return_paths=False):
+    #     # out = self.predict_ramp(psf.data * flux, exposure.ngroups, return_paths=return_paths)
+    #     out = self.predict_ramp(psf.data, exposure.ngroups, return_paths=return_paths)
+    #     if return_paths:
+    #         ramp, latent_paths = out
+    #         return Ramp(ramp, psf.pixel_scale), latent_paths
+    #     return Ramp(out, psf.pixel_scale)
+
+    #     gain_ramp = interp_ramp(gain + 1, ngroups)
+    #     diffusion_ramp = interp_ramp(diffusion, ngroups)
+
+    #     # Apply gain term
+    #     base_ramp = model_ramp(illuminance, ngroups)
+
+    #     full_ramp = (gain_ramp * base_ramp) + diffusion_ramp
+    #     # full_ramp = gain_ramp * (base_ramp + diffusion_ramp)
+
+    #     # Downsample
+    #     ramp = vmap(lambda x: dlu.downsample(x, 4, mean=False))(full_ramp)
+
+    #     # Return the ramp
+    #     if return_paths:
+    #         return self.norm * ramp, latent_paths
+    #     return self.norm * ramp
+
+    # def predict_slopes(self, illuminance, ngroups):
+    #     ramp = self.predict_ramp(illuminance, ngroups)
+    #     return np.diff(ramp, axis=0)
+
+    # def apply(self, psf, exposure, return_paths=False):
+    #     # out = self.predict_ramp(psf.data * flux, exposure.ngroups, return_paths=return_paths)
+    #     out = self.predict_ramp(psf.data, exposure.ngroups, return_paths=return_paths)
+    #     if return_paths:
+    #         ramp, latent_paths = out
+    #         return Ramp(ramp, psf.pixel_scale), latent_paths
+    #     return Ramp(out, psf.pixel_scale)
+
+
+# class LatentODERamp(zdx.Base):
+#     encoder: LatentEncoder
+#     decoder: LatentDecoder
+#     latent_ode: ODEFunc
+#     norm: int = eqx.field(static=True)
+
+#     def __init__(self, encoder, latent_ode, decoder=None, norm=2**15):
+#         self.encoder = encoder
+#         self.decoder = decoder
+#         self.latent_ode = latent_ode
+#         self.norm = int(norm)
+
+#     def __getattr__(self, name):
+#         if hasattr(self.encoder, name):
+#             return getattr(self.encoder, name)
+#         if hasattr(self.latent_ode, name):
+#             return getattr(self.latent_ode, name)
+#         raise AttributeError(f"LatentODERamp.ODE has no attribute {name}")
+
+#     def predict_ramp(self, illuminance, ngroups, return_paths=False):
+#         # Normalise the illuminance
+#         illuminance /= self.norm
+
+#         # Encode the image
+#         z = self.encoder.encode(illuminance)
+#         z_vec = z.reshape(len(z), -1).T
+
+#         # Solve the ODE
+#         ts = np.linspace(0, 1, 10)
+#         latent_path_vec = vmap(lambda z0: self.latent_ode.solve_fn(z0, ts))(z_vec)
+#         latent_paths = latent_path_vec.T.reshape(-1, len(ts), 80, 80)
+
+#         # Decode the latent paths
+#         # We vmap the second axis, the _time_ axis
+#         # gain = np.squeeze(vmap(self.decoder.decode, 1)(latent_paths))
+#         gain, diffusion = vmap(self.decoder.decode, 1, 1)(latent_paths)
+
+#         # Apply gain term
+#         base_ramp = model_ramp(illuminance, ngroups)
+#         gain_ramp = interp_ramp(gain + 1, ngroups)
+#         diffusion_ramp = interp_ramp(diffusion, ngroups)
+#         full_ramp = (gain_ramp * base_ramp) + diffusion_ramp
+#         # full_ramp = gain_ramp * (base_ramp + diffusion_ramp)
+
+#         # Downsample
+#         ramp = vmap(lambda x: dlu.downsample(x, 4, mean=False))(full_ramp)
+
+#         # Return the ramp
+#         if return_paths:
+#             return self.norm * ramp, latent_paths
+#         return self.norm * ramp
+
+#     def predict_slopes(self, illuminance, ngroups):
+#         ramp = self.predict_ramp(illuminance, ngroups)
+#         return np.diff(ramp, axis=0)
+
+#     def apply(self, psf, exposure, return_paths=False):
+#         # out = self.predict_ramp(psf.data * flux, exposure.ngroups, return_paths=return_paths)
+#         out = self.predict_ramp(psf.data, exposure.ngroups, return_paths=return_paths)
+#         if return_paths:
+#             ramp, latent_paths = out
+#             return Ramp(ramp, psf.pixel_scale), latent_paths
+#         return Ramp(out, psf.pixel_scale)
+
+
+# class SensitivityLatentODERamp(LatentODERamp):
+#     FF: jax.Array
+#     SRF: jax.Array
+#     oversample: int = eqx.field(static=True)
+
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+
+#         self.FF = np.zeros((80, 80))
+#         self.SRF = np.array(0.0, float)
+#         self.oversample = int(4)
+
+#     @property
+#     def sensitivity_map(self):
+#         from .detector_models import quadratic_SRF
+
+#         npix = self.FF.shape[1]
+#         SRF = quadratic_SRF(self.SRF, self.oversample)
+
+#         bc_sens_map = SRF[None, :, None, :] * self.FF[:, None, :, None]
+#         return bc_sens_map.reshape((npix * self.oversample, npix * self.oversample))
+
+#     def __getattr__(self, name):
+#         if hasattr(self.encoder, name):
+#             return getattr(self.encoder, name)
+#         if hasattr(self.latent_ode, name):
+#             return getattr(self.latent_ode, name)
+#         raise AttributeError(f"LatentODERamp.ODE has no attribute {name}")
+
+#     def predict_ramp(self, illuminance, ngroups, return_paths=False):
+#         # Normalise the illuminance
+#         illuminance /= self.norm
+
+#         # Skip the ode if any components are None
+#         if self.encoder is None or self.latent_ode is None or self.decoder is None:
+#             # Apply diffusion and gain
+#             pixel_gain = self.sensitivity_map[None, ...]
+#             base_ramp = model_ramp(illuminance, ngroups)
+#             full_ramp = pixel_gain * base_ramp
+#             latent_paths = np.zeros(1)
+
+#         else:
+#             # Encode the image
+#             z = self.encoder.encode(illuminance)
+#             z_vec = z.reshape(len(z), -1).T
+
+#             # Solve the ODE
+#             ts = np.linspace(0, 1, 10)
+#             latent_path_vec = vmap(lambda z0: self.latent_ode.solve_fn(z0, ts))(z_vec)
+#             latent_paths = latent_path_vec.T.reshape(-1, len(ts), 80, 80)
+
+#             # Decode the latent paths
+#             # We vmap the second axis, the _time_ axis
+#             gain, diffusion = vmap(self.decoder.decode, 1, 1)(latent_paths)
+#             gain_ramp = interp_ramp(gain + 1, ngroups)
+#             diffusion_ramp = interp_ramp(diffusion, ngroups)
+
+#             # Apply diffusion and gain
+#             pixel_gain = gain_ramp * self.sensitivity_map[None, ...]
+#             base_ramp = model_ramp(illuminance, ngroups)
+#             full_ramp = pixel_gain * (base_ramp + diffusion_ramp)
+
+#         # Downsample
+#         ramp = vmap(lambda x: dlu.downsample(x, 4, mean=False))(full_ramp)
+
+#         # Return the ramp
+#         if return_paths:
+#             return self.norm * ramp, latent_paths
+#         return self.norm * ramp
+
+#     def predict_slopes(self, illuminance, ngroups):
+#         ramp = self.predict_ramp(illuminance, ngroups)
+#         return np.diff(ramp, axis=0)
+
+#     def apply(self, psf, exposure, return_paths=False):
+#         # out = self.predict_ramp(psf.data * flux, exposure.ngroups, return_paths=return_paths)
+#         out = self.predict_ramp(psf.data, exposure.ngroups, return_paths=return_paths)
+#         if return_paths:
+#             ramp, latent_paths = out
+#             return Ramp(ramp, psf.pixel_scale), latent_paths
+#         return Ramp(out, psf.pixel_scale)

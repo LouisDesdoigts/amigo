@@ -231,14 +231,14 @@ class AmigoModel(BaseModeller):
     optics: None
     vis_model: None
     detector: None
-    ramp: None
+    # ramp: None
     read: None
 
-    def __init__(self, params, optics, ramp, detector, read, vis_model=None):
+    def __init__(self, params, optics, detector, read, vis_model=None):
         self.params = params
         self.optics = optics
         self.detector = detector
-        self.ramp = ramp
+        # self.ramp = ramp
         self.read = read
         self.vis_model = vis_model
 
@@ -255,8 +255,8 @@ class AmigoModel(BaseModeller):
             return getattr(self.optics, key)
         if hasattr(self.detector, key):
             return getattr(self.detector, key)
-        if hasattr(self.ramp, key):
-            return getattr(self.ramp, key)
+        # if hasattr(self.ramp, key):
+        #     return getattr(self.ramp, key)
         if hasattr(self.read, key):
             return getattr(self.read, key)
         if hasattr(self.vis_model, key):

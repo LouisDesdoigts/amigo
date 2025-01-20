@@ -191,6 +191,24 @@ def interp(image, knot_coords, sample_coords, method="linear"):
     )
 
 
+@eqx.filter_jit
+def interp_ramp(ramp, ngroups, method="cubic2", extrap=True):
+    # Assumes that the ramp time samples are from 0 to 1.
+    ts = np.linspace(0, 1, len(ramp))
+    groups = (np.arange(ngroups) + 1) / ngroups
+
+    # Build the vectorised interpolator
+    interpolator = eqx.filter_vmap(
+        lambda f: ipx.interp1d(groups, ts, f, method=method, extrap=extrap),
+        in_axes=1,
+        out_axes=1,
+    )
+
+    # Get the group sample points and interpolate the ramp
+    ramp_vec = ramp.reshape(len(ramp), -1)
+    return interpolator(ramp_vec).reshape(ngroups, *ramp.shape[1:])
+
+
 def populate_from_state(model, state):
     if not isinstance(state, dict):
         state = state.params

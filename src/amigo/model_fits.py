@@ -5,8 +5,9 @@ import dLux as dl
 import dLux.utils as dlu
 import jax.numpy as np
 from jax import lax
-from .ramp_models import model_ramp
 from .misc import find_position, planck
+from .ramp_models import Ramp
+from .latent_ode_models import GainDiffusionRamp
 
 # from .core_models import Exposure
 
@@ -89,6 +90,9 @@ class Exposure(zdx.Base):
             np.zeros_like(optics.pupil_mask.abb_coeffs),
         )
 
+        # # Defocus
+        # params["defocus"] = self.get_key("defocus"), np.array(0.01)
+
         # Reflectivity
         if self.fit_reflectivity:
             params["reflectivities"] = (
@@ -118,18 +122,11 @@ class Exposure(zdx.Base):
         # Binary parameters
         if isinstance(self, BinaryFit):
             raise NotImplementedError("BinaryFit initialisation not yet implemented")
-            params["seperation"] = (self.get_key("seperation"), 0.15)
+            params["separation"] = (self.get_key("separation"), 0.15)
             params["contrast"] = (self.get_key("contrast"), 2.0)
             params["position_angle"] = (self.get_key("position_angle"), 0.0)
 
         return params
-
-    # # Simple method to give nice syntax for getting keys
-    # def get_key(self, param):
-    #     return self.fit.get_key(self, param)
-
-    # def map_param(self, param):
-    #     return self.fit.map_param(self, param)
 
     @property
     def ngroups(self):
@@ -158,6 +155,7 @@ class ModelFit(Exposure):
     fit_one_on_fs: bool = eqx.field(static=True)
     fit_reflectivity: bool = eqx.field(static=True)
     fit_bias: bool = eqx.field(static=True)
+    validator: bool = eqx.field(static=True)
 
     def __init__(
         self,
@@ -165,11 +163,13 @@ class ModelFit(Exposure):
         fit_reflectivity=False,
         fit_one_on_fs=False,
         fit_bias=False,
+        validator=False,
         **kwargs,
     ):
         self.fit_one_on_fs = fit_one_on_fs
         self.fit_reflectivity = fit_reflectivity
         self.fit_bias = fit_bias
+        self.validator = bool(validator)
         super().__init__(*args, **kwargs)
 
     # def get_key(self, exposure, param):
@@ -189,8 +189,8 @@ class ModelFit(Exposure):
             return "_".join([self.star, self.filter])
 
         if param in ["aberrations", "reflectivity"]:
-            # return "_".join([self.program, self.filter])
-            return self.program
+            return "_".join([self.program, self.filter])
+            # return self.program
 
         if param == "fluxes":
             return "_".join([self.star, self.filter])
@@ -200,6 +200,9 @@ class ModelFit(Exposure):
 
         if param == "Teffs":
             return self.star
+
+        # if param == "defocus":
+        #     return self.filter
 
         raise ValueError(f"Parameter {param} has no key")
 
@@ -224,6 +227,7 @@ class ModelFit(Exposure):
             "contrasts",
             "separations",
             "position_angles",
+            # "defocus",
         ]:
             return f"{param}.{self.get_key(param)}"
 
@@ -255,6 +259,8 @@ class ModelFit(Exposure):
                 coefficients = lax.stop_gradient(coefficients)
             optics = optics.set("pupil_mask.amp_coeffs", coefficients)
 
+        # optics = optics.set("defocus", model.defocus[self.get_key("defocus")])
+
         return optics
 
     # def model_wfs(self, model, exposure):
@@ -277,58 +283,58 @@ class ModelFit(Exposure):
         return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale.mean(0))
 
     # def model_detector(self, psf, model, exposure):
-    def model_detector(self, psf, model):
-        return eqx.filter_jit(model.detector.apply)(psf)
+    def model_illuminance(self, psf, model):
+        flux = 10 ** model.fluxes[self.get_key("fluxes")]
+        psf = eqx.filter_jit(model.detector.apply)(psf)
+        return psf.multiply("data", flux)
 
-    # def model_ramp(self, psf, model, exposure, to_BFE=False, return_paths=False):
-    # def model_ramp(self, psf, model, to_BFE=False, return_paths=False):
-    def model_ramp(self, psf, model, return_paths=False):
+    def model_ramp(self, illuminance, model, return_paths=False):
+        # Ensure latent_paths exists if we need it
+        if return_paths:
+            latent_paths = 0.0
 
-        # Apply the flux scaling to get the illuminance function
-        psf = psf.multiply("data", 10 ** model.fluxes[self.get_key("fluxes")])
-
-        # Non linear model always goes from unit psf, flux, oversample to an 80x80 ramp
-        if model.ramp is not None:
-            ramp, latent_paths = model.ramp.apply(psf, self, return_paths=True)
+        # Special case of latent ODE models returning paths
+        if isinstance(model.detector.ramp, GainDiffusionRamp):
+            ramp, latent_paths = model.detector.evolve_ramp(illuminance.data, self.ngroups)
+            # ramp, latent_paths = eqx.filter_jit(model.detector.evolve_ramp)(
+            #     illuminance.data, self.ngroups
+            # )
         else:
-            psf_data = dlu.downsample(psf.data, model.optics.oversample, mean=False)
-            ramp = psf.set("data", model_ramp(psf_data, self.ngroups))
-            latent_paths = None
+            # ramp = model.detector.evolve_ramp(illuminance.data, self.ngroups)
+            ramp = eqx.filter_jit(model.detector.evolve_ramp)(illuminance.data, self.ngroups)
 
-        # Re-add the bias to the ramp
-        est_bias = self.ramp[0] - ramp.data[0]
-        if self.fit_bias:
-            est_bias += model.biases[self.get_key("biases")]
-        ramp = ramp.set("data", ramp.data + est_bias)
-
+        # Return the ramp
+        ramp = Ramp(ramp, illuminance.pixel_scale)
         if return_paths:
             return ramp, latent_paths
         return ramp
 
-    # def model_read(self, ramp, model, exposure):  # , slopes=False):
     def model_read(self, ramp, model):
-        # Model the read effects
+        # Re-add the bias to the ramp
+        est_bias = self.ramp[0] - ramp.data[0]
+
+        # Update one on fs if we are fitting for it
         if self.fit_one_on_fs:
-            # if "one_on_fs" in model.params.keys():
-            # model = model.set("one_on_fs", self.map_param(
-            # "one_one_fs", model.one_on_fs[exposure.key]
-            # ))
             model = model.set("read.one_one_fs", model.one_on_fs[self.get_key("one_one_fs")])
 
+        # Update bias value
+        if self.fit_bias:
+            est_bias += model.biases[self.get_key("biases")]
+        model = model.set("pixel_bias.bias", est_bias)
+
         # Apply the read effects
-        return model.read.apply(ramp)
+        return eqx.filter_jit(model.read.apply)(ramp)
 
     def simulate(self, model, return_paths=False):
         psf = self.model_psf(model)
-        psf = self.model_detector(psf, model)
+        illuminance = self.model_illuminance(psf, model)
         if return_paths:
-            ramp, latent_path = self.model_ramp(psf, model, return_paths=return_paths)
+            ramp, latent_path = self.model_ramp(illuminance, model, return_paths=return_paths)
             return self.model_read(ramp, model), latent_path
         else:
-            ramp = self.model_ramp(psf, model)
+            ramp = self.model_ramp(illuminance, model)
             return self.model_read(ramp, model)
 
-    # def __call__(self, model, exposure, return_paths=False, return_ramp=False):
     def __call__(self, model, return_paths=False, return_ramp=False):
         ramp, latent_path = self.simulate(model, return_paths=True)
 
@@ -344,99 +350,36 @@ class ModelFit(Exposure):
 
 class PointFit(ModelFit):
     pass
-    # def __call__(self, model, exposure, return_paths=False, return_ramp=False):
-    #     psf = self.model_psf(model, exposure)
-    #     psf = self.model_detector(psf, model, exposure)
-    #     if return_paths:
-    #         ramp, latent_path = self.model_ramp(psf, model, exposure, return_paths=return_paths)
-    #         ramp = self.model_read(ramp, model, exposure)
-    #         return np.diff(ramp.data, axis=0), latent_path
-
-    #     ramp = self.model_ramp(psf, model, exposure)
-    #     ramp = self.model_read(ramp, model, exposure)
-    #     if return_ramp:
-    #         return ramp.data
-    #     return np.diff(ramp.data, axis=0)
 
 
 class SplineVisFit(PointFit):
     joint_fit: bool = eqx.field(static=True)
 
-    def __init__(self, joint_fit=True):
+    def __init__(self, *args, joint_fit=True, **kwargs):
         self.joint_fit = bool(joint_fit)
+        super().__init__(*args, **kwargs)
 
-    def get_key(self, exposure, param):
+    def get_key(self, param):
 
         # Return the per exposure key if not joint fitting
         if not self.joint_fit:
             if param in ["amplitudes", "phases"]:
-                return exposure.key
+                return self.key
 
-        return super().get_key(exposure, param)
+        return super().get_key(param)
 
-    # def model_vis(self, wfs, model, exposure):
-
-    #     # Get the visibilities
-    #     amps = model.amplitudes[self.get_key(exposure, "amplitudes")]
-    #     phases = model.phases[self.get_key(exposure, "phases")]
-    #     wavels = model.optics.filters[exposure.filter][0]
-    #     psfs = model.vis_model.model_vis(wfs.psf, wavels, amps, phases, exposure.filter)
-
-    #     return dl.PSF(psfs.sum(0), wfs.pixel_scale.mean(0))
-    def model_vis(self, wfs, model, exposure):
+    def model_vis(self, wfs, model):
         # NOTE: Returns a psf
 
         # Get the visibilities
-        amps = model.amplitudes[self.get_key(exposure, "amplitudes")]
-        phases = model.phases[self.get_key(exposure, "phases")]
+        amps = model.amplitudes[self.get_key("amplitudes")]
+        phases = model.phases[self.get_key("phases")]
         return model.vis_model.model_vis(wfs, amps, phases)
-        # wavels = model.optics.filters[exposure.filter][0]
-        # psfs = model.vis_model.model_vis(wfs, amps, phases)
 
-        # return dl.PSF(psfs.sum(0), wfs.pixel_scale.mean(0))
-
-    def model_psf(self, model, exposure):
-        wfs = self.model_wfs(model, exposure)
-        psf = self.model_vis(wfs, model, exposure)
+    def model_psf(self, model):
+        wfs = self.model_wfs(model)
+        psf = self.model_vis(wfs, model)
         return psf
-
-
-# class SplineVisFit(PointFit):
-#     # uv_pad: int = eqx.field(static=True)
-#     # crop_size: int = eqx.field(static=True)
-#     joint_fit: bool = eqx.field(static=True)
-#     # per_wavelength: bool = eqx.field(static=True)
-
-#     # def __init__(self, uv_pad=2, crop_size=160, joint_fit=True, per_wavelength=True):
-#     def __init__(self, joint_fit=True):
-#         # self.uv_pad = int(uv_pad)
-#         # self.crop_size = int(crop_size)
-#         self.joint_fit = bool(joint_fit)
-#         # self.per_wavelength = bool(per_wavelength)
-
-#     def get_key(self, exposure, param):
-
-#         # Return the per exposure key if not joint fitting
-#         if not self.joint_fit:
-#             if param in ["amplitudes", "phases"]:
-#                 return exposure.key
-
-#         return super().get_key(exposure, param)
-
-#     def model_vis(self, wfs, model, exposure):
-#         vis_pts = build_vis_pts(
-#             model.amplitudes[self.get_key(exposure, "amplitudes")],
-#             model.phases[self.get_key(exposure, "phases")],
-#             model.vis_model.knots[0].shape,
-#         )
-#         # vis_pts = self.get_vis_pts(model, exposure)
-#         psf = model.vis_model.apply_vis(wfs.psf, vis_pts, exposure.filter)
-#         return dl.PSF(psf, wfs.pixel_scale.mean(0))
-
-#     def model_psf(self, model, exposure):
-#         wfs = self.model_wfs(model, exposure)
-#         psf = self.model_vis(wfs, model, exposure)
-#         return psf
 
 
 class BinaryFit(ModelFit):
@@ -472,25 +415,3 @@ class BinaryFit(ModelFit):
     def model_psf(self, model, exposure):
         wfs = self.model_wfs(model, exposure)
         return dl.PSF(wfs.psf.sum((0, 1)), wfs.pixel_scale.mean((0, 1)))
-
-    # def __call__(self, model, exposure):
-    #     # wfs = self.model_wfs(model, exposure)
-    #     # psf = dl.PSF(wfs.psf.sum((0, 1)), wfs.pixel_scale.mean((0, 1)))
-    #     psf = self.model_psf(model, exposure)
-    #     psf = self.model_detector(psf, model, exposure)
-    #     ramp = self.model_ramp(psf, model, exposure)
-    #     return self.model_read(ramp, model, exposure)
-
-    # def __call__(self, model, exposure, return_paths=False, return_ramp=False):
-    #     psf = self.model_psf(model, exposure)
-    #     psf = self.model_detector(psf, model, exposure)
-    #     if return_paths:
-    #         ramp, latent_path = self.model_ramp(psf, model, exposure, return_paths=return_paths)
-    #         ramp = self.model_read(ramp, model, exposure)
-    #         return np.diff(ramp.data, axis=0), latent_path
-
-    #     ramp = self.model_ramp(psf, model, exposure)
-    #     ramp = self.model_read(ramp, model, exposure)
-    #     if return_ramp:
-    #         return ramp.data
-    #     return np.diff(ramp.data, axis=0)

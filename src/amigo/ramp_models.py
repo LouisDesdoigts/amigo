@@ -242,68 +242,6 @@ class PolyBias(eqx.Module):
         return ramp + bleed_ramp
 
 
-# class PolyBias(eqx.Module):
-#     psf_conv: None
-#     bias_conv: None
-#     mixing_conv: None
-
-#     def __init__(self, conv_layers, bias_layers, mixing_layers, init_scale=1):
-#         # from .core_models import NNWrapper
-#         from amigo.core_models import NNWrapper
-
-#         self.psf_conv = NNWrapper(conv_layers).multiply("values", init_scale)
-#         self.bias_conv = NNWrapper(bias_layers).multiply("values", init_scale)
-#         self.mixing_conv = NNWrapper(mixing_layers).multiply("values", init_scale)
-
-#     def apply(self, psf, flux, bias, exposure, oversample):
-#         return Ramp(self.eval_ramp(psf.data, flux, bias, exposure.ngroups), psf.pixel_scale)
-
-#     def eval_ramp(self, psf, flux, bias, ngroups):
-#         # Get the input coordinates for the polynomial - arbitrary norm
-#         sample_ratio = flux / 2e6
-
-#         # psf conv net
-#         norm_psf = psf / np.max(np.abs(psf))
-#         psf_conv_out = self.psf_conv(norm_psf[None, ...])
-
-#         # Bias conv net
-#         norm_bias = bias / 15e3
-#         norm_bias -= np.mean(norm_bias)
-#         bias_conv_out = 0.1 * self.bias_conv(norm_bias[None, ...])
-
-#         # Mixing conv net
-#         def apply_linear(x, layers):
-#             for layer in layers[:-1]:
-#                 x = jax.nn.relu(layer(x))
-#             return layers[-1](x)
-
-#         vmap_fn = lambda fn: lambda x: vmap(vmap(fn, 1, 1), 2, 2)(x)
-#         layers = [vmap_fn(layer) for layer in self.mixing_conv._layers]
-
-#         mixing_in = np.concatenate([psf_conv_out, bias_conv_out], axis=0)
-#         coeffs = apply_linear(mixing_in, layers)
-
-#         coeffs = self.mixing_conv(mixing_in)
-
-#         # Re-normalise coefficients
-#         coeffs = 2e6 * coeffs
-
-#         # We dont want a constant term, so start from 1
-#         pows = np.arange(0, len(coeffs)) + 1
-#         sample_points = sample_ratio * (np.arange(ngroups) + 1) / ngroups
-
-#         # Regular polynomial
-#         eval_points = sample_points[:, None] ** pows[None, :]
-#         bleed_ramp = np.sum(coeffs[None, ...] * eval_points[..., None, None], axis=1)
-
-#         # Get the group flux coordinates and regular ramp
-#         groups = flux * (np.arange(ngroups) + 1) / ngroups
-#         ramp = groups[:, None, None] * dlu.downsample(psf, 4, mean=False)[None, ...]
-
-#         # Calculate the polynomial
-#         return ramp + bleed_ramp
-
-
 def build_pooled_layers(width, depth, poly_order=4, seed=0, pooling="avg"):
     key = jr.PRNGKey(seed)
     if pooling == "avg":
@@ -312,14 +250,6 @@ def build_pooled_layers(width, depth, poly_order=4, seed=0, pooling="avg"):
         pooling_layer = eqx.nn.MaxPool2d(kernel_size=2, stride=(2, 2))
     else:
         raise ValueError("Pooling must be 'avg' or 'max'")
-    # conv_fn = lambda in_ch, out_ch, key: eqx.nn.Conv2d(
-    #     in_channels=in_ch,
-    #     out_channels=out_ch,
-    #     kernel_size=3,
-    #     padding=(1, 1),
-    #     use_bias=False,
-    #     key=key,
-    # )
 
     keys = jr.split(key, (depth + 1,))
     widths = np.linspace(width, poly_order, depth).astype(int)
@@ -342,54 +272,6 @@ def build_pooled_layers(width, depth, poly_order=4, seed=0, pooling="avg"):
 
 
 class PredictivePoly(eqx.Module):
-
-    # def eval_poly(self, coeffs, psf, flux, ngroups):
-    #     # Get the input coordinates for the polynomial - arbitrary norm
-    #     # sample_ratio = flux / 2e6
-    #     sample_ratio = flux / 2e6
-
-    #     # Re-normalise coefficients
-    #     coeffs = 2e6 * coeffs
-    #     # coeffs = 2e5 * coeffs
-
-    #     # We dont want a constant term, so start from 1
-    #     pows = np.arange(0, len(coeffs)) + 1
-    #     sample_points = sample_ratio * (np.arange(ngroups) + 1) / ngroups
-
-    #     # Regular polynomial
-    #     eval_points = sample_points[:, None] ** pows[None, :]
-    #     bleed_ramp = np.sum(coeffs[None, ...] * eval_points[..., None, None], axis=1)
-
-    #     # Get the group flux coordinates and regular ramp
-    #     groups = flux * (np.arange(ngroups) + 1) / ngroups
-    #     ramp = groups[:, None, None] * dlu.downsample(psf, 4, mean=False)[None, ...]
-
-    #     return ramp, bleed_ramp
-
-    # def eval_poly(self, coeffs, psf, flux, ngroups):
-
-    #     arb_norm, null_peak_flux = 2e6, 700
-    #     norm = arb_norm * null_peak_flux / psf.max()
-
-    #     # Get the input coordinates for the polynomial - arbitrary norm
-    #     sample_ratio = flux / norm
-
-    #     # Re-normalise coefficients
-    #     coeffs = norm * coeffs
-
-    #     # We dont want a constant term, so start from 1
-    #     pows = np.arange(0, len(coeffs)) + 1
-    #     sample_points = sample_ratio * (np.arange(ngroups) + 1) / ngroups
-
-    #     # Regular polynomial
-    #     eval_points = sample_points[:, None] ** pows[None, :]
-    #     bleed_ramp = np.sum(coeffs[None, ...] * eval_points[..., None, None], axis=1)
-
-    #     # Get the group flux coordinates and regular ramp
-    #     groups = flux * (np.arange(ngroups) + 1) / ngroups
-    #     ramp = groups[:, None, None] * dlu.downsample(psf, 4, mean=False)[None, ...]
-
-    #     return ramp, bleed_ramp
 
     def eval_poly(self, coeffs, psf, flux, ngroups, oversample):
         # The value at which the x-evaluation point is 1
@@ -511,3 +393,70 @@ class MinimalConv(PredictivePoly):
     #     coeffs = self.calc_conv(psf / np.max(psf))
     #     ramp, bleed_ramp = self.eval_poly_norm(coeffs, psf, flux, ngroups, oversample)
     #     return ramp + bleed_ramp
+
+
+# from .misc import interp_ramp
+
+
+# class SUB80Ramp(dl.detectors.BaseDetector):
+
+#     def apply(self, psf, flux, exposure, oversample):
+#         # lin_ramp = (np.arange(exposure.ngroups) + 1) / exposure.ngroups
+#         image = dlu.downsample(psf.data * flux, oversample, mean=False)
+#         # ramp = image[None, ...] * lin_ramp[..., None, None]
+#         ramp = model_ramp(image, exposure.ngroups)
+#         return Ramp(ramp, psf.pixel_scale)
+
+#     def model(self, psf):
+#         raise NotImplementedError
+
+
+# class SUB80Ramp(LayeredDetector):
+#     jitter_model:
+#     resample_model:
+#     sensitivity_model:
+#     ramp_model:
+#     read_layers:
+#     resample_layers:
+
+
+#     def apply(self, psf):
+#         for layer in list(self.layers.values()):
+#             if layer is None:
+#                 continue
+#             psf = layer.apply(psf)
+#         return psf
+
+#     def model_ramp(self, illuminance, ngroups):
+
+#         # Get the evolved gain and diffusion terms
+#         gain, diffusion, latent_paths = self.evolve(
+#             illuminance, n_samples=10, return_paths=True
+#         )
+
+#         # Interpolate the sample into ramps
+#         gain_ramp = interp_ramp(gain + 1, ngroups)
+#         diffusion_ramp = interp_ramp(diffusion, ngroups)
+
+#         # Apply diffusion and gain
+#         pixel_gain = gain_ramp * self.sensitivity_map[None, ...]
+#         base_ramp = model_ramp(illuminance, ngroups)
+#         full_ramp = gain_ramp * (base_ramp + diffusion_ramp)
+
+#         # Downsample
+#         ramp = vmap(lambda x: dlu.downsample(x, 4, mean=False))(full_ramp)
+
+#         # Return the ramp
+#         return ramp, latent_paths
+
+#     def predict_slopes(self, illuminance, ngroups):
+#         ramp = self.predict_ramp(illuminance, ngroups)
+#         return np.diff(ramp, axis=0)
+
+#     def apply(self, psf, exposure, return_paths=False):
+#         # out = self.predict_ramp(psf.data * flux, exposure.ngroups, return_paths=return_paths)
+#         out = self.predict_ramp(psf.data, exposure.ngroups, return_paths=return_paths)
+#         if return_paths:
+#             ramp, latent_paths = out
+#             return Ramp(ramp, psf.pixel_scale), latent_paths
+#         return Ramp(out, psf.pixel_scale)

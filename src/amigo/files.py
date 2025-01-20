@@ -134,7 +134,10 @@ def initialise_params(
 
     params = {}
     for exp in exposures:
-        param_dict = exp.initialise_params(optics)
+        if vis_model is not None:
+            param_dict = exp.initialise_params(optics, vis_model=vis_model)
+        else:
+            param_dict = exp.initialise_params(optics)
         for param, (key, value) in param_dict.items():
             if param not in params.keys():
                 params[param] = {}

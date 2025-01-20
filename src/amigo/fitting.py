@@ -133,6 +133,7 @@ def optimise(
     print_grads=False,
     no_history=[],
     batch_params=[],
+    validator_params=[],
     save_every=None,
     save_path="",
     save_ext="",
@@ -154,6 +155,20 @@ def optimise(
     opt_params = list(optimisers.keys())
     model = set_array(model, opt_params)
 
+    # Check the validator params are valid
+    for param in validator_params:
+        if param not in opt_params:
+            raise ValueError("Validator param does not have an optimiser!")
+
+    # Split exposures into validator and non-validator
+    val_exposures = []
+    cal_exposures = []
+    for exp in exposures:
+        if exp.validator:
+            val_exposures.append(exp)
+        else:
+            cal_exposures.append(exp)
+
     # Get the LR normalisation from the fisher matrices
     lr_model = calc_lrs(model, exposures, fishers, params=opt_params)
 
@@ -172,31 +187,41 @@ def optimise(
     update_batch = lambda *args: model_update_fn(batch_optim, *args)
     update_reg = lambda *args: model_update_fn(reg_optim, *args)
 
+    def get_batched_loss_fn(val_grad_fn):
+        @eqx.filter_jit
+        def batched_loss_fn(model, batch, args, key):
+            print("Grad Batch fn compiling...")
+            loss, grads = val_grad_fn(model, batch, args)
+
+            # Apply the lr normalisation
+            grads = jtu.tree_map(lambda x, y: x * y, grads, lr_model)
+
+            # Apply user normalisation
+            grads, key = grad_fn(model, grads, args, key)
+
+            # Optionally print the final gradients
+            if print_grads:
+                for param in opt_params:
+                    print(param)
+                    jax.debug.print("{x}", x=jtu.tree_leaves(grads.get(param)))
+            return loss, grads
+
+        return batched_loss_fn
+
     # Apply gradient to loss function
     if loss_fn is None:
         loss_fn = reg_loss_fn
     batch_loss_fn = lambda model, batch, args: np.array(
         [loss_fn(model, exp, args) for exp in batch]
     ).sum()
+
+    # Cal loss fn
     val_grad_fn = zdx.filter_value_and_grad(opt_params)(batch_loss_fn)
+    cal_loss_fn = get_batched_loss_fn(val_grad_fn)
 
-    @eqx.filter_jit
-    def batched_loss_fn(model, batch, args, key):
-        print("Grad Batch fn compiling...")
-        loss, grads = val_grad_fn(model, batch, args)
-
-        # Apply the lr normalisation
-        grads = jtu.tree_map(lambda x, y: x * y, grads, lr_model)
-
-        # Apply user normalisation
-        grads, key = grad_fn(model, grads, args, key)
-
-        # Optionally print the final gradients
-        if print_grads:
-            for param in opt_params:
-                print(param)
-                jax.debug.print("{x}", x=jtu.tree_leaves(grads.get(param)))
-        return loss, grads
+    # Cal loss fn
+    val_grad_fn = zdx.filter_value_and_grad(validator_params)(batch_loss_fn)
+    val_loss_fn = get_batched_loss_fn(val_grad_fn)
 
     # Create model history
     reg_history = ModelHistory(model, [p for p in reg_params if p not in no_history])
@@ -204,8 +229,8 @@ def optimise(
 
     # Randomise exposures and get batches
     (key, exp_key) = jr.split(key, 2)
-    exposures = [exposures[i] for i in jr.permutation(exp_key, len(exposures))]
-    batches = [exposures[i : i + batch_size] for i in range(0, len(exposures), batch_size)]
+    cal_exposures = [cal_exposures[i] for i in jr.permutation(exp_key, len(cal_exposures))]
+    batches = [cal_exposures[i : i + batch_size] for i in range(0, len(cal_exposures), batch_size)]
 
     # Get a random batch order
     key, batch_key = jr.split(key, 2)
@@ -214,6 +239,7 @@ def optimise(
 
     # Epoch loop
     losses = []
+    val_losses = []
     looper = tqdm(range(0, epochs))
     t0 = time.time()
     for idx in looper:
@@ -224,7 +250,7 @@ def optimise(
         batch_inds = rand_batch_inds[idx]
         batch_losses = np.zeros(len(batches))
         for i in batch_inds:
-            _loss, grads = batched_loss_fn(model, batches[i], args, key)
+            _loss, grads = cal_loss_fn(model, batches[i], args, key)
 
             # Update losses and grads
             batch_losses = batch_losses.at[i].set(_loss)
@@ -242,7 +268,23 @@ def optimise(
                 print(f"Loss is NaN on {idx} th epoch, exiting loop")
                 final_state = reg_model.set("params", {**reg_model.params, **batch_model.params})
                 history = reg_history.set("params", {**reg_history.params, **batch_history.params})
-                return model, losses, final_state, history
+                return model, (losses, val_losses), final_state, history
+
+        # Get validator loss and grads
+        val_loss, val_grads = val_loss_fn(model, val_exposures, args, key)
+        val_loss /= len(val_exposures)
+
+        # Paste in zeros for grads that are now None
+        def grad_fill(cal_grad, val_grad):
+            if cal_grad is not None and val_grad is None:
+                return np.array(0.0)
+            elif cal_grad is not None and val_grad is not None:
+                return val_grad
+            else:
+                return None
+
+        val_grads = jtu.tree_map(grad_fill, grads, val_grads)
+        reg_grads += reg_grads.from_model(val_grads)
 
         # Update the reg params
         model, reg_model, reg_state, key = update_reg(
@@ -261,7 +303,9 @@ def optimise(
             )
         prev_loss = printed_loss
 
+        # Append the losses
         losses.append(batch_losses)
+        val_losses.append(val_loss)
 
         # Save progress along the way
         if save_every is not None and ((idx + 1) % save_every) == 0:
@@ -292,4 +336,4 @@ def optimise(
 
     final_state = reg_model.set("params", {**reg_model.params, **batch_model.params})
     history = reg_history.set("params", {**reg_history.params, **batch_history.params})
-    return model, losses, final_state, history
+    return model, (losses, val_losses), final_state, history
