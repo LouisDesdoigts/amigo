@@ -215,14 +215,11 @@ def populate_from_state(model, state):
 
     # Populate parameters
     for param_key, value in state.items():
-        if isinstance(value, dict):
-            for exp_key, sub_value in value.items():
-                try:
-                    model = model.set(f"{param_key}.{exp_key}", sub_value)
-
-                # Catch key not existing since we might not have a certain exposure here
-                except KeyError:
-                    pass
-        else:
+        try:
             model = model.set(param_key, value)
+
+        # Catch key not existing since we might not have a certain exposure here
+        except KeyError:
+            pass
+
     return model
