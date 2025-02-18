@@ -1,18 +1,25 @@
-import jax
-import optax
-import time
-import zodiax as zdx
-import jax.numpy as np
-import jax.random as jr
-import jax.tree_util as jtu
+from amigo.fisher import FIM
 import equinox as eqx
-import dLux.utils as dlu
-from jax import vmap, config
+import zodiax as zdx
+import time
 from datetime import timedelta
-from .core_models import ModelParams, ModelHistory
-from .stats import reg_loss_fn
-from zodiax.experimental import serialise
+import jax.tree as jtu
+from .core_models import ModelParams, ParamHistory
+
+# from .core_models import ParamHistory
+# from .fitting import set_array, calc_lrs, get_optimiser
+from .fisher import calc_fishers
 from .misc import tqdm
+from .stats import covariance_model
+import optax
+import jax
+import jax.numpy as np
+
+# from datetime import timedelta
+# from .misc import tqdm
+from jax import config
+import jax.random as jr
+import dLux.utils as dlu
 
 
 def scheduler(lr, start, *args):
@@ -47,293 +54,375 @@ def set_array(pytree, parameters):
     return eqx.combine(floats, other)
 
 
-def get_optimiser(pytree, optimisers, parameters=None):
+# def get_optimiser(pytree, optimisers, parameters=None):
 
-    # Get the parameters and opt_dict
-    if parameters is not None:
-        optimisers = dict([(p, optimisers[p]) for p in parameters])
-    else:
-        parameters = list(optimisers.keys())
+#     # Get the parameters and opt_dict
+#     if parameters is not None:
+#         optimisers = dict([(p, optimisers[p]) for p in parameters])
+#     else:
+#         parameters = list(optimisers.keys())
 
-    model_params = ModelParams(dict([(p, pytree.get(p)) for p in parameters]))
-    param_spec = ModelParams(dict([(param, param) for param in parameters]))
+#     model_params = ModelParams(dict([(p, pytree.get(p)) for p in parameters]))
+#     param_spec = ModelParams(dict([(param, param) for param in parameters]))
+#     optim = optax.multi_transform(optimisers, param_spec)
+
+#     # Build the optimised object - the 'model_params' object
+#     state = optim.init(model_params)
+#     return model_params, optim, state
+
+
+def get_optimiser(model_params, optimisers):
+    param_spec = ModelParams({param: param for param in list(model_params.keys())})
     optim = optax.multi_transform(optimisers, param_spec)
-
-    # Build the optimised object - the 'model_params' object
-    state = optim.init(model_params)
-    return model_params, optim, state
+    return optim, optim.init(model_params)
 
 
-def calc_lrs(model, exposures, fishers, params=None, fmax=1e64):
-    # Get the parameters from the fishers
-    if params is None:
-        params = []
-        for exp_key, fisher_dict in fishers.items():
-            for param in fisher_dict.keys():
-                params.append(param)
-        params = list(set(params))
+def get_random_batch_order(batches, epochs, args):
+    """Exposures is a dictionary of lists"""
+    # Generate a random order for the batches to be fed
+    key, subkey = jr.split(args["key"], 2)
+    args["key"] = subkey
 
-    # Build a filter, we need to handle parameters that are stored in dicts
-    # TODO: Add this to model?
-    bool_model = jtu.tree_map(lambda _: False, model)
-    for param in params:
-        leaf = model.get(param)
-        if isinstance(leaf, dict):
-            true_leaf = jtu.tree_map(lambda x: True, leaf)
-        else:
-            true_leaf = True
-        bool_model = bool_model.set(param, true_leaf)
+    # This is the number of batches we have
+    inds = np.tile(np.arange(len(batches)), (epochs, 1))
 
-    # Make an empty fisher model
-    # Flag and deal with large arrays
-    grad_model = eqx.filter(model, bool_model)
-    is_large = jtu.tree_map(lambda x: x.size > 1e4, grad_model)
-    bool_model = jtu.tree_map(lambda x, y: x and not y, bool_model, is_large)
-    grad_model = eqx.filter(model, bool_model)
-    fisher_model = jtu.tree_map(lambda x: np.zeros((x.size, x.size)), grad_model)
-    large_grad_model = eqx.filter(model, is_large)
-    large_lr_model = jtu.tree_map(lambda x: np.ones(x.shape), large_grad_model)
+    # Permutate the oder of each individual batch
+    batch_inds = jr.permutation(subkey, inds, axis=1, independent=True)
+    return batch_inds, args
+
+
+# Returns the batched and gradded loss function
+def get_val_grad_fn(loss_fn):
+
+    # Injects the model parameters, and takes the loss over the batch, and applied
+    # the gradient transformation
+    @eqx.filter_value_and_grad
+    def _val_grad_fn(model_params, model, exposures, args):
+        model = model_params.inject(model)
+        return np.array([loss_fn(model, exp, args) for exp in exposures]).sum()
+
+    return _val_grad_fn
+
+
+# Returns the jitted the loss function
+def get_norm_loss_fn(val_grad_fn, grad_fn=None):
+
+    @eqx.filter_jit
+    def _norm_loss_fn(model_params, lr_model, model, batch, args):
+        print("Compiling Loss function...")
+        loss, grads = val_grad_fn(model_params, model, batch, args)
+
+        # Apply the lr normalisation
+        grads = jtu.map(lambda x, y: x * y, grads, lr_model)
+
+        # Apply user normalisation if exists
+        if grad_fn is not None:
+            grads, args = grad_fn(model, grads, args)
+        return loss, grads, args
+
+    return _norm_loss_fn
+
+
+# Returns the jitted the update function
+def get_update_fn(optim, norm_fn=None):
+
+    # Inner function simply binds the optim object from self
+    @eqx.filter_jit
+    def update_fn(param_grads, model_params, opt_state, args):
+        print("Compiling update function...")
+        # NOTE: We apply the normalisation after calculating the state, so we should
+        # re-update the opt_state to reflect this. Im not sure how this would affect
+        # the opt_state object though
+        updates, opt_state = optim.update(param_grads, opt_state, model_params)
+        model_params = zdx.apply_updates(model_params, updates)
+
+        if norm_fn is not None:
+            model_params, args = norm_fn(model_params, args)
+        return model_params, opt_state, args
+
+    return update_fn
+
+
+def populate_lr_model(fishers, exposures, model_params):
+
+    # Build the lr model structure
+    params_dict = jtu.map(lambda x: np.zeros((x.size, x.size)), model_params).params
 
     # Loop over exposures
     for exp in exposures:
 
         # Loop over parameters
-        for param in params:
+        for param in model_params.keys():
 
-            # Check if the parameter is in the fisher
-            if param not in fishers[exp.key].keys():
+            # Check if the fishers have values for this exposure
+            key = f"{exp.key}.{param}"
+            if key not in fishers.keys():
                 continue
 
-            param_path = exp.map_param(param)
-            fisher_model = fisher_model.add(param_path, fishers[exp.key][param])
+            # Add the Fisher matrices
+            if isinstance(params_dict[param], dict):
+                params_dict[param][exp.get_key(param)] += fishers[key]
+            else:
+                params_dict[param] += fishers[key]
 
-    # Clip the fisher matrix to the max value
-    fisher_model = jtu.tree_map(lambda x: np.clip(x, -fmax, fmax), fisher_model)
+    fisher_params = model_params.set("params", params_dict)
 
     # Convert fisher to lr model
-    inv_fn = lambda fmat, leaf: dlu.nandiv(-1, np.diag(fmat), 1).reshape(leaf.shape)
-    lr_model = jtu.tree_map(inv_fn, fisher_model, model)
-    lr_model = eqx.combine(lr_model, large_lr_model)
-    return lr_model
+    def inv_fn(fmat, leaf):
+        return dlu.nandiv(-1, np.diag(fmat), fill=1).reshape(leaf.shape)
+
+    return jtu.map(inv_fn, fisher_params, model_params)
 
 
-def optimise(
-    model,
-    exposures,
-    optimisers,
-    fishers=None,
-    key=jr.PRNGKey(0),
-    epochs=10,
-    batch_size=1,
-    args={},
-    grad_fn=lambda model, grads, args, key: (grads, key),
-    norm_fn=lambda model, model_params, args, key: (model_params, key),
-    args_fn=lambda model, args, key, epoch: (model, args, key),
-    loss_fn=None,  # Must have input signature (model, exposure, args)
-    print_grads=False,
-    no_history=[],
-    batch_params=[],
-    validator_params=[],
-    save_every=None,
-    save_path="",
-    save_ext="",
-):
+def batch_exposures(exposures, n_batch=None, batch_size=None, key=None):
+    # Both have a value
+    if n_batch is not None and batch_size is not None:
+        raise ValueError
 
-    # Define an update function to improve step speed
-    @eqx.filter_jit
-    def model_update_fn(optim, model, grads, model_params, state, args, key):
-        print("Compiling update function")
-        # NOTE: We apply the normalisation after calculating the state, so we should
-        # re-update the state to reflect this
-        updates, state = optim.update(grads, state, model_params)
-        model_params = zdx.apply_updates(model_params, updates)
-        model_params, key = norm_fn(model, model_params, args, key)
-        model = model_params.inject(model)
-        return model, model_params, state, key
+    if key is None:
+        key = "batch_"
+    else:
+        key += "_"
 
-    # Get params and assert array
-    opt_params = list(optimisers.keys())
-    model = set_array(model, opt_params)
+    # Both None
+    if n_batch is None and batch_size is None:
+        batch_size = len(exposures)
 
-    # Check the validator params are valid
-    for param in validator_params:
-        if param not in opt_params:
-            raise ValueError("Validator param does not have an optimiser!")
+    # We have batch size, need n_batch
+    if n_batch is None:
+        n_batch = np.ceil(len(exposures) / batch_size).astype(int)
 
-    # Split exposures into validator and non-validator
-    val_exposures = []
-    cal_exposures = []
-    for exp in exposures:
-        if exp.validator:
-            val_exposures.append(exp)
-        else:
-            cal_exposures.append(exp)
+    # We have n_batch, need batch size
+    if batch_size is None:
+        batch_size = np.ceil(len(exposures) / n_batch).astype(int)
+        n_batch = np.minimum(n_batch, np.ceil(len(exposures) / batch_size).astype(int))
 
-    # Get the LR normalisation from the fisher matrices
-    lr_model = calc_lrs(model, exposures, fishers, params=opt_params)
+    # Populate the batches
+    batches = {}
+    for i in range(n_batch):
+        start = i * batch_size
+        end = np.minimum(start + batch_size, len(exposures))
+        batches[f"{key}{i}"] = exposures[start:end]
+    return batches
 
-    # Get the parameter classes and the optimisers
-    reg_params = [p for p in opt_params if p not in batch_params]
-    batch_params = [p for p in batch_params if p in opt_params]
 
-    # Deal with batch param inputs that aren't in the optimisers
-    batch_params = [p for p in opt_params if p in batch_params]
+class Result(zdx.Base):
+    losses: dict
+    model: zdx.Base
+    state: ModelParams
+    lr_model: ModelParams
+    history: ParamHistory
+    meta_data: dict
 
-    # Get the model, optimiser and state
-    reg_model, reg_optim, reg_state = get_optimiser(model, optimisers, reg_params)
-    batch_model, batch_optim, batch_state = get_optimiser(model, optimisers, batch_params)
+    def __init__(self, losses, model, state, history, lr_model, meta_data=None):
+        self.losses = losses
+        self.model = model
+        self.state = state
+        self.history = history
+        self.lr_model = lr_model
+        self.meta_data = meta_data
 
-    # Binds optimisers to update functions
-    update_batch = lambda *args: model_update_fn(batch_optim, *args)
-    update_reg = lambda *args: model_update_fn(reg_optim, *args)
 
-    def get_batched_loss_fn(val_grad_fn):
-        @eqx.filter_jit
-        def batched_loss_fn(model, batch, args, key):
-            print("Grad Batch fn compiling...")
-            loss, grads = val_grad_fn(model, batch, args)
+class Trainer(zdx.Base):
+    fishers: dict
+    loss_fn: callable
+    args_fn: callable
+    grad_fn: callable
+    norm_fn: callable
+    looper_fn: callable
+    cache: str
 
-            # Apply the lr normalisation
-            grads = jtu.tree_map(lambda x, y: x * y, grads, lr_model)
+    def __init__(
+        self,
+        loss_fn,
+        args_fn=None,
+        grad_fn=None,
+        norm_fn=None,
+        looper_fn=None,
+        cache="cache",
+    ):
+        """
+        loss_fn(model, exposure, args): -> loss
+        args_fn(model, args, key, epoch): -> (mode, args, key)
+        grad_fn(model, grads, args, key): -> (grads, key)
+        norm_fn(model_params, args, key): -> model_params, key
+        looper_fn(looper, loss_dict): -> ()
+        """
+        self.loss_fn = loss_fn
+        self.args_fn = args_fn
+        self.grad_fn = grad_fn
+        self.norm_fn = norm_fn
+        self.looper_fn = looper_fn
+        self.fishers = None
+        self.cache = cache
 
-            # Apply user normalisation
-            grads, key = grad_fn(model, grads, args, key)
+    def default_looper(self, looper, loss_dict):
+        loss = np.array([v[-1] for v in loss_dict.values()]).mean(0)
+        looper.set_description(f"Loss: {loss:.2f}")
 
-            # Optionally print the final gradients
-            if print_grads:
-                for param in opt_params:
-                    print(param)
-                    jax.debug.print("{x}", x=jtu.tree_leaves(grads.get(param)))
-            return loss, grads
+    def update_fishers(
+        self,
+        model,
+        exposures,
+        parameters=[],
+        recalculate=False,
+        overwrite=False,
+        verbose=False,
+        save=True,
+    ):
+        # RANDOM TODO: Models params should be renamed ParamsDict everywhere and always
+        # Use the dark current data to get a measure of the read noise
 
-        return batched_loss_fn
+        def fisher_fn(model, exposure, param):
+            slopes, cov = covariance_model(model, exposure)
+            exposure = exposure.set(["slopes", "cov"], [slopes, cov])
+            return -FIM(model, param, self.loss_fn, exposure)
 
-    # Apply gradient to loss function
-    if loss_fn is None:
-        loss_fn = reg_loss_fn
-    batch_loss_fn = lambda model, batch, args: np.array(
-        [loss_fn(model, exp, args) for exp in batch]
-    ).sum()
-
-    # Cal loss fn
-    val_grad_fn = zdx.filter_value_and_grad(opt_params)(batch_loss_fn)
-    cal_loss_fn = get_batched_loss_fn(val_grad_fn)
-
-    # Cal loss fn
-    val_grad_fn = zdx.filter_value_and_grad(validator_params)(batch_loss_fn)
-    val_loss_fn = get_batched_loss_fn(val_grad_fn)
-
-    # Create model history
-    reg_history = ModelHistory(model, [p for p in reg_params if p not in no_history])
-    batch_history = ModelHistory(model, [p for p in batch_params if p not in no_history])
-
-    # Randomise exposures and get batches
-    (key, exp_key) = jr.split(key, 2)
-    cal_exposures = [cal_exposures[i] for i in jr.permutation(exp_key, len(cal_exposures))]
-    batches = [cal_exposures[i : i + batch_size] for i in range(0, len(cal_exposures), batch_size)]
-
-    # Get a random batch order
-    key, batch_key = jr.split(key, 2)
-    batch_keys = jr.split(batch_key, epochs)
-    rand_batch_inds = vmap(lambda key: jr.permutation(key, len(batches)))(batch_keys)
-
-    # Epoch loop
-    losses = []
-    val_losses = []
-    looper = tqdm(range(0, epochs))
-    t0 = time.time()
-    for idx in looper:
-        model, args, key = args_fn(model, args, key, idx)
-
-        # Loop over batches
-        reg_grads = jax.tree_map(lambda x: np.zeros_like(x), reg_model)
-        batch_inds = rand_batch_inds[idx]
-        batch_losses = np.zeros(len(batches))
-        for i in batch_inds:
-            _loss, grads = cal_loss_fn(model, batches[i], args, key)
-
-            # Update losses and grads
-            batch_losses = batch_losses.at[i].set(_loss)
-            batch_grads = batch_model.from_model(grads)
-            reg_grads += reg_grads.from_model(grads)
-
-            # Update the batch params and accumulate grads
-            model, batch_model, batch_state, key = update_batch(
-                model, batch_grads, batch_model, batch_state, args, key
-            )
-            batch_history = batch_history.append(batch_model)
-
-            # Check for NaNs
-            if np.isnan(_loss):
-                print(f"Loss is NaN on {idx} th epoch, exiting loop")
-                final_state = reg_model.set("params", {**reg_model.params, **batch_model.params})
-                history = reg_history.set("params", {**reg_history.params, **batch_history.params})
-                return model, (losses, val_losses), final_state, history
-
-        # Get validator loss and grads
-        val_loss, val_grads = val_loss_fn(model, val_exposures, args, key)
-        val_loss /= len(val_exposures)
-
-        # Paste in zeros for grads that are now None
-        def grad_fill(cal_grad, val_grad):
-            if cal_grad is not None and val_grad is None:
-                return np.array(0.0)
-            elif cal_grad is not None and val_grad is not None:
-                return val_grad
-            else:
-                return None
-
-        val_grads = jtu.tree_map(grad_fill, grads, val_grads)
-        reg_grads += reg_grads.from_model(val_grads)
-
-        # Update the reg params
-        model, reg_model, reg_state, key = update_reg(
-            model, reg_grads, reg_model, reg_state, args, key
+        # Calculate the fishers
+        fishers = calc_fishers(
+            model,
+            exposures,
+            parameters,
+            fisher_fn=fisher_fn,
+            overwrite=overwrite,
+            recalculate=recalculate,
+            verbose=verbose,
+            save=save,
+            cache=f"{self.cache}/fishers",
         )
-        reg_history = reg_history.append(reg_model)
 
-        # Update the looper
-        printed_loss = np.array(batch_losses).mean() / batch_size
-        if idx == 0:
-            looper.set_description(f"Loss: {printed_loss:,.2f}")
-            prev_loss = printed_loss  # This line is here to make the linter happy
+        # The second dictionary (new fishers) will overwrite the existing fishers
+        if self.fishers is not None:
+            return self.set("fishers", {**self.fishers, **fishers})
+        return self.set("fishers", fishers)
+
+    def finalise(self, t0, model, loss_dict, model_params, history, lr_model, epochs, success):
+        """Prints stats and returns the result object"""
+        # Final execution time
+        elapsed_time = time.time() - t0
+        formatted_time = str(timedelta(seconds=int(elapsed_time)))
+        print(f"Full Time: {formatted_time}")
+
+        # Get the final loss
+        final_loss = np.array([losses[-1] for losses in loss_dict.values()]).mean()
+        print(f"Final Loss: {final_loss:,.2f}")
+
+        # Return
+        return Result(
+            losses=loss_dict,
+            model=model_params.inject(model),
+            state=model_params,
+            history=history,
+            lr_model=lr_model,
+            meta_data={
+                "elapsed_time": formatted_time,
+                "epochs": epochs,
+                "successful": success,
+            },
+        )
+
+    def unwrap_batches(self, batches):
+        # Format the batches and exposures
+        if isinstance(batches, list):
+            exposures = batches
+            batches = {0: exposures}
         else:
-            looper.set_description(
-                f"Loss: {printed_loss:,.2f}, \u0394: {printed_loss - prev_loss:,.2f}"
-            )
-        prev_loss = printed_loss
+            exposures = []
+            for batch_key, batch in batches.items():
+                exposures += batch
+        return batches, exposures
 
-        # Append the losses
-        losses.append(batch_losses)
-        val_losses.append(val_loss)
+    def initial_print(self, loss_dict):
+        # Get the initial loss
+        initial_loss = np.array([losses[-1] for losses in loss_dict.values()]).mean()
+        print(f"\nInitial_loss Loss: {initial_loss:,.2f}")
 
-        # Save progress along the way
-        if save_every is not None and ((idx + 1) % save_every) == 0:
-            if save_ext != "":
-                save_ext = f"_{save_ext}"
-            np.save(save_path + f"losses_{idx+1}{save_ext}.npy", losses)
-            serialise(save_path + f"reg_history_{idx+1}{save_ext}.zdx", reg_history)
-            serialise(save_path + f"batch_history_{idx+1}{save_ext}.zdx", batch_history)
+    def second_print(self, t1, epochs):
+        estimated_time = epochs * (time.time() - t1)
+        formatted_time = str(timedelta(seconds=int(estimated_time)))
+        print(f"Estimated run time: {formatted_time}")
 
-        # Print helpful things
-        if idx == 0:
-            compile_time = int(time.time() - t0)
-            print(f"Compile Time: {str(timedelta(seconds=compile_time))}")
-            print(f"Initial Loss: {printed_loss:,.2f}")
-            t1 = time.time()
-        if idx == 1:
-            epoch_time = time.time() - t1
-            est_runtime = compile_time + epoch_time * (epochs - 1)
-            print("Est time per epoch: ", str(timedelta(seconds=int(epoch_time))))
-            print("Est run time: ", str(timedelta(seconds=int(est_runtime))))
+    def check_args_key(self, args):
+        # Ensure args key exists and is the right type
+        if "key" in args.keys():
+            if not isinstance(args["key"], (type(jr.key(0)), type(jr.PRNGKey(0)))):
+                raise ValueError("the 'key' entry of 'args' must be a jax prng key.")
+        if "key" not in args.keys():
+            args["key"] = jr.key(0)
+        return args
 
-    # Final execution time
-    elapsed_time = time.time() - t0
-    formatted_time = str(timedelta(seconds=int(elapsed_time)))
+    def train(
+        self,
+        model,
+        optimisers,
+        epochs,
+        batches: dict,
+        args={},
+    ):
+        # Ensure args key exists and is the right type
+        args = self.check_args_key(args)
 
-    print(f"Full Time: {formatted_time}")
-    print(f"Final Loss: {printed_loss:,.2f}")
+        # Get the batches and raw exposures
+        batches, exposures = self.unwrap_batches(batches)
 
-    final_state = reg_model.set("params", {**reg_model.params, **batch_model.params})
-    history = reg_history.set("params", {**reg_history.params, **batch_history.params})
-    return model, (losses, val_losses), final_state, history
+        # Get the model parameters
+        model_params = ModelParams({p: model.get(p) for p in optimisers.keys()})
+        lrs = populate_lr_model(self.fishers, exposures, model_params)
+
+        # Get the optax optimiser and history bits
+        optim, state = get_optimiser(model_params, optimisers)
+        history = ParamHistory(model_params)
+
+        # Get the loss and update functions
+        val_grad_fn = get_val_grad_fn(self.loss_fn)
+        loss_fn = get_norm_loss_fn(val_grad_fn, self.grad_fn)
+        update_fn = get_update_fn(optim, self.norm_fn)
+
+        # Looping things
+        t0 = time.time()
+        looper = tqdm(range(0, epochs))
+        loss_dict = dict([(key, []) for key in batches.keys()])
+
+        # Loop
+        for epoch in looper:
+            if epoch == 1:
+                t1 = time.time()
+
+            if self.args_fn is not None:
+                model, args = self.args_fn(model, args, epoch)
+
+            # Create an empty gradient model to append gradients to
+            grads = model_params.map(lambda x: x * 0.0)
+
+            # Loop over randomised batch order
+            for batch_key, batch in batches.items():
+                # Calculate the loss and gradients
+                loss, new_grads, args = loss_fn(model_params, lrs, model, batch, args)
+                grads += new_grads
+
+                # Append the mean batch loss to the loss dictionary
+                loss_dict[batch_key].append(loss / len(batch))
+
+                # Check for NaNs and exit if so
+                if np.isnan(loss):
+                    print(f"Loss is NaN on epoch {epoch}, exiting fit")
+                    return self.finalise(
+                        t0, model, loss_dict, model_params, history, lrs, epochs, False
+                    )
+
+            # Update the regular parameters and append to history
+            model_params, state, args = update_fn(grads, model_params, state, args)
+            history = history.append(model_params)
+
+            # Update the looper
+            loop_fn = self.default_looper if self.looper_fn is None else self.looper_fn
+            loop_fn(looper, loss_dict)
+
+            # Print helpful things run time
+            if epoch == 0:
+                self.initial_print(loss_dict)
+            if epoch == 1:
+                self.second_print(t1, epochs)
+
+        # Print the runtime stats and return Result object
+        return self.finalise(t0, model, loss_dict, model_params, history, lrs, epochs, True)

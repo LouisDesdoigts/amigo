@@ -94,6 +94,7 @@ def summarise_fit(
         plt.subplot(1, 3, 1)
         plt.title(f"Pixel neg log posterior: {final_loss:,.1f}")
         plt.imshow(-posterior_im, cmap=inferno)
+        # plt.imshow(-np.where(exposure.badpix, -10000., posterior_im), cmap=inferno)
         plt.colorbar()
 
         v = np.nanmax(np.abs(norm_res_slope.mean(0)))
@@ -380,7 +381,7 @@ def _plot_ax(leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, e
             _plot_param(ax, val, param, start=start, end=end, **kwargs)
             ax.plot([], label=label, **kwargs)
 
-        plt.legend()
+        # plt.legend()
 
     else:
         arr = _format_leaf(leaf)
@@ -509,6 +510,6 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.set(ylabel="$\Delta$ Convolutional Output Amplitude")
 
         case _:
-            print(f"No formatting function for {param}")
+            # print(f"No formatting function for {param}")
             ax.plot(epochs, arr - arr[0], **kwargs)
             ax.set(ylabel="$\Delta$ values")

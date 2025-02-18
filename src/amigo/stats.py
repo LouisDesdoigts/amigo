@@ -16,13 +16,13 @@ def get_read_cov(read_noise, ngroups):
     return read_fn(pix_idx, pix_idx)
 
 
-def build_cov(var):
-    Is = np.arange(len(var))
-    IJs = np.array(np.meshgrid(Is, Is))
+# def build_cov(var):
+#     Is = np.arange(len(var))
+#     IJs = np.array(np.meshgrid(Is, Is))
 
-    vals = vmap(vmap(vmap(lambda ind: var[ind], 0), 1), 0)(IJs)
-    cov = np.min(vals, (0))
-    return cov
+#     vals = vmap(vmap(vmap(lambda ind: var[ind], 0), 1), 0)(IJs)
+#     cov = np.min(vals, (0))
+#     return cov
 
 
 def get_slope_cov_mask(n_slope):
@@ -32,7 +32,8 @@ def get_slope_cov_mask(n_slope):
     # return -(read_noise**2) * mask
 
 
-def log_likelihood(slope, exposure, read_noise=0, return_im=False):
+# def log_likelihood(slope, exposure, read_noise=0, return_im=False):
+def log_likelihood(slope, exposure, return_im=False):
     """
     Note we have the infrastructure for dealing with the slope read noise
     covariance, but it seems to give nan likelihoods when read_noise > ~6. As such
@@ -41,14 +42,14 @@ def log_likelihood(slope, exposure, read_noise=0, return_im=False):
     # Get the model, data, and variances
     slope_vec = exposure.to_vec(slope)
     data_vec = exposure.to_vec(exposure.slopes)
-    var_vec = exposure.to_vec(exposure.variance)
+    cov_vec = exposure.to_vec(exposure.cov)
 
-    # Get the covariance matrix from the data variance (diagonal)
-    cov_vec = np.eye(exposure.nslopes)[None, ...] * var_vec[..., None]
+    # # Get the covariance matrix from the data variance (diagonal)
+    # cov_vec = np.eye(exposure.nslopes)[None, ...] * var_vec[..., None]
 
-    # Get the read noise covariance and combine with the data covariance
-    read_cov_mask = get_slope_cov_mask(exposure.nslopes)
-    cov_vec += (read_noise * read_cov_mask / exposure.nints)[None, ...]
+    # # Get the read noise covariance and combine with the data covariance
+    # read_cov_mask = get_slope_cov_mask(exposure.nslopes)
+    # cov_vec += (read_noise * read_cov_mask / exposure.nints)[None, ...]
 
     # Calculate per-pixel likelihood
     loglike_fn = vmap(lambda x, mu, cov: mvn.logpdf(x, mu, cov))
@@ -115,6 +116,7 @@ def variance_model(model, exposure, true_read_noise=False, read_noise=10):
     # Estimate the photon covariance
     slopes = exposure(model)  # .model(exposure)
 
+    # TODO: Update with exposure.pixel_support
     slopes = slopes.at[np.where(nan_mask)].set(np.nan)
     variance = slopes / exposure.nints
 
@@ -127,3 +129,52 @@ def variance_model(model, exposure, true_read_noise=False, read_noise=10):
     variance += read_variance[None, ...]
 
     return slopes, variance
+
+
+def covariance_model(model, exposure):
+    """
+    True read noise will use the CRDS read noise array, else it will use a constant
+    value as determined by the input. true_read_noise therefore supersedes read_noise.
+    Using a flat value of 10 seems to be more accurate that the CRDS array.
+
+    That said I think the data has overly ambitious variances as a consequence of the
+    sigma clipping that is performed. We could determine the variance analytically from
+    the variance of the individual pixel values, but we will look at this later.
+    """
+    # Estimate the photon covariance
+    slopes = exposure(model)
+
+    # Pixel read noise
+    read_std = np.load(pkg.resource_filename(__name__, "data/SUB80_readnoise.npy"))
+    # read_std = np.load("../../amigo/src/amigo/data/SUB80_readnoise.npy")
+    read_var = read_std**2
+
+    # Add the 2x read noise to the variance
+    variance = 2 * read_var + slopes
+
+    # Build the covariance matrix
+    cov = build_cov(variance, read_std)
+
+    # Get the covariance matrix support - slightly more complex than it seems since the
+    # the off diagonal terms are constructed from two different reads, which can both
+    # have different support values. Here I simply take the mean support over both
+    # reads, constructed in such a way to match the entries of the covariance matrix.
+    support = exposure.slope_support
+    cov_support = (support[None, ...] + support[:, None, ...]) / 2
+    cov /= cov_support
+
+    return slopes, cov
+
+
+def build_cov(var, read_std):
+    # Get the slope covariance matrix (diagonal)
+    slope_cov = np.eye(len(var))[..., None, None] * var[None, ...]
+
+    # Get the read noise covariance mask
+    slope_cov_mask = get_slope_cov_mask(len(var))
+
+    # Create the read noise covariance matrix
+    read_cov = read_std[None, None, ...] * slope_cov_mask[..., None, None]
+
+    # Return the combined covariance matrix
+    return slope_cov + read_cov

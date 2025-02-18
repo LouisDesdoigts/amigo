@@ -73,7 +73,7 @@ class Resample(dl.layers.detector_layers.DetectorLayer):
     rotation: float
     anisotropy: np.ndarray
 
-    def __init__(self, rotation=0.0, anisotropy=1.0):
+    def __init__(self, rotation=0.0, anisotropy=1.00765):
         self.rotation = np.array(rotation, float)
         self.anisotropy = np.array(anisotropy, float)
 
@@ -180,7 +180,7 @@ class LayeredDetector(dl.detectors.LayeredDetector):
 
 class SUB80Detector(LayeredDetector):
     ramp: None
-    sensitivity: PixelSensitivities
+    # sensitivity: PixelSensitivities
     oversample: int = eqx.field(static=True)
 
     def __init__(
@@ -189,8 +189,8 @@ class SUB80Detector(LayeredDetector):
         oversample=4,
         npixels_in=80,
         rot_angle=+0.56126717,
-        anisotropy=1.0,
-        SRF=0.05,
+        anisotropy=1.00765,
+        # SRF=0.05,
         FF=None,
     ):
         # Ramp model
@@ -205,12 +205,12 @@ class SUB80Detector(LayeredDetector):
                 pad = (npixels_in - 80) // 2
                 FF = np.pad(FF, pad, constant_values=1)
 
-        self.sensitivity = PixelSensitivities(FF, SRF, oversample=oversample)
+        # self.sensitivity = PixelSensitivities(FF, SRF, oversample=oversample)
 
         self.layers = dlu.list2dictionary(
             [
                 # ("jitter", AsymmetricJitter(kernel_size=11, kernel_oversample=5)),
-                ("jitter", GaussianJitter(kernel_size=11, kernel_oversample=5)),
+                ("jitter", GaussianJitter(r=0.0214, kernel_size=11, kernel_oversample=5)),
                 ("resampler", Resample(rotation=rot_angle, anisotropy=anisotropy)),
             ],
             ordered=True,
@@ -219,8 +219,8 @@ class SUB80Detector(LayeredDetector):
     def __getattr__(self, key):
         if hasattr(self.ramp, key):
             return getattr(self.ramp, key)
-        if hasattr(self.sensitivity, key):
-            return getattr(self.sensitivity, key)
+        # if hasattr(self.sensitivity, key):
+        #     return getattr(self.sensitivity, key)
         # super().__getattr__(self)
         if key in self.layers.keys():
             return self.layers[key]
@@ -230,19 +230,26 @@ class SUB80Detector(LayeredDetector):
 
         raise AttributeError(f"SUB80Detector.ODE has no attribute {key}")
 
-    def evolve_ramp(self, illuminance, ngroups):
-        sensitivity = self.sensitivity_map
+    def evolve_ramp(self, illuminance, ngroups, z_point, badpix):
 
         if self.ramp is None:
-            illuminance = dlu.downsample(sensitivity * illuminance, self.oversample, mean=False)
+            # sensitivity = self.sensitivity_map
+            illuminance = dlu.downsample(illuminance, self.oversample, mean=False)
             return model_ramp(illuminance, ngroups)
 
         elif isinstance(self.ramp, GainDiffusionRamp):
+            sensitivity = self.sensitivity_map
             ramp, latent_paths = self.ramp.evolve_ramp(illuminance, ngroups, sensitivity)
             return ramp, latent_paths
 
+        # This should be manually coded for the PolyPredictive ramp model, with the FF
+        # and SRF included in the inputs.
         else:
-            raise NotImplementedError("No implementation for this ramp type")
+            ramp, bleeds = self.ramp.evolve_ramp(illuminance, ngroups, z_point, None, badpix)
+            return ramp, bleeds
+
+        # else:
+        #     raise NotImplementedError("No implementation for this ramp type")
 
 
 # class SUB80Ramp(dl.detectors.BaseDetector):

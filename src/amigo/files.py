@@ -143,7 +143,12 @@ def initialise_params(
                 params[param] = {}
             params[param][key] = value
 
-    params["Teffs"] = get_Teffs(files, Teff_cache="../data/Teffs")
+    # Remove the flat field files for the Teff search
+    star_files = []
+    for file in files:
+        if file["PRIMARY"].header["EXP_TYPE"] == "NIS_AMI":
+            star_files.append(file)
+    params["Teffs"] = get_Teffs(star_files, Teff_cache="../data/Teffs")
 
     return params
 

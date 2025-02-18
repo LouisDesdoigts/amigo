@@ -523,7 +523,8 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             wf = plane_to_plane(wf, 1e-6 * self.defocus, pad=2)
 
         if self.defocus_type is None:
-            wf = wf.propagate(psf_npixels, pixel_scale)
+            # wf = wf.propagate(psf_npixels, pixel_scale)
+            wf = propagate_sparse(wf, psf_npixels, pixel_scale, corners=self.corners, size=180)
 
         # Return PSF or Wavefront
         if return_wf:

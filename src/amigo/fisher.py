@@ -2,26 +2,8 @@ import os
 import zodiax as zdx
 import jax.numpy as np
 from jax import jit, grad, linearize, lax
-from .stats import posterior, variance_model
 from .misc import tqdm
 import jax
-
-
-def self_fisher_fn(model, exposure, params, read_noise=10, true_read_noise=False):
-    slopes, variance = variance_model(
-        model, exposure, true_read_noise=true_read_noise, read_noise=read_noise
-    )
-    exposure = exposure.set(["slopes", "variance"], [slopes, variance])
-    return FIM(model, params, posterior, exposure)
-
-
-def calc_and_save(model, exposure, param, file_path, save=True):
-    fisher = self_fisher_fn(model, exposure, [param])
-    if np.isnan(fisher).any():
-        raise ValueError(f"Found NaN in {param}")
-    if save:
-        np.save(file_path, fisher)
-    return fisher
 
 
 def calc_fisher(
@@ -29,42 +11,57 @@ def calc_fisher(
     exposure,
     param,
     file_path,
+    fisher_fn,
     recalculate=False,
-    save=True,
     overwrite=False,
 ):
+    param_path = exposure.map_param(param)
+
     # Check that the param exists - caught later
     try:
-        leaf = model.get(exposure.map_param(param))
+        leaf = model.get(param_path)
         if not isinstance(leaf, np.ndarray):
-            raise ValueError(f"Leaf at path '{param}' is not an array")
+            print(f"{exposure.key} - Leaf at path '{param_path}' is not an array.")
+            return None
         N = leaf.size
     except ValueError:
+        print(f"{exposure.key} - Invalid path {param_path}, no leaf found")
         return None
 
     # Check for cached fisher mats
-    exists = os.path.exists(file_path)
-
-    # Check if we need to recalculate
-    if exists and not recalculate:
+    if os.path.exists(file_path):
         fisher = np.load(file_path)
 
-        # Check if the saved value is nan
+        # Always recalculate nan values
         if np.isnan(fisher).any():
-            fisher = calc_and_save(model, exposure, param, file_path, save)
+            recalculate = True
 
-        # Check shape
+        # Check shape matches expectation
         if fisher.shape[0] != N:
 
-            # Overwrite shape miss-matches
+            # If overwrite, set recalculate to True
             if overwrite:
-                fisher = calc_and_save(model, exposure, param, file_path, save)
-            else:
-                raise ValueError(f"Shape mismatch for {param}")
+                recalculate = True
 
-    # Calculate and save
+            # Else raise an error
+            else:
+                raise ValueError(
+                    f"Saved fisher has a shape miss-match for {exposure.key}, {param_path}"
+                )
+
+    # File doesn't exists, need to recalculate
     else:
-        fisher = calc_and_save(model, exposure, param, file_path, save)
+        recalculate = True
+
+    # Finally calculate fisher matrix if needed
+    if recalculate:
+        # fisher = FIM(model, [param], loss_fn, exposure)
+        fisher = fisher_fn(model, exposure, [param])
+
+    # Check for nans
+    if np.isnan(fisher).any():
+        raise ValueError(f"Fisher matrix has nan value for exposure {exposure.key}, {param_path}")
+
     return fisher
 
 
@@ -72,6 +69,7 @@ def calc_fishers(
     model,
     exposures,
     parameters,
+    fisher_fn,
     recalculate=False,
     overwrite=False,
     save=True,
@@ -79,22 +77,24 @@ def calc_fishers(
     cache="files/fishers",
 ):
 
+    # Ensure the cache directory exists
     if not os.path.exists(cache):
         os.makedirs(cache)
 
-    # Iterate over exposures
-    fisher_exposures = {}
+    # Set up tqdm looper if verbose
     if verbose:
         looper = tqdm(exposures, desc="")
     else:
         looper = exposures
+
+    # Loop over exposures
+    fishers = {}
     for exp in looper:
 
         # Iterate over params
-        fisher_params = {}
-        for idx in range(0, len(parameters)):
-            param = parameters[idx]
+        for param in parameters:
 
+            # Update the looper if verbose
             if verbose:
                 looper.set_description(param)
 
@@ -103,24 +103,25 @@ def calc_fishers(
             if not os.path.exists(save_path):
                 os.makedirs(save_path)
 
-            # Path to the file
+            # Get the path to the file
             file_path = os.path.join(save_path, f"{param}.npy")
 
             # Get path correct for parameters
             param_path = exp.map_param(param)
 
             # Calculate fisher for each exposure
-            fisher = calc_fisher(model, exp, param_path, file_path, recalculate, save, overwrite)
+            fisher = calc_fisher(
+                model, exp, param_path, file_path, fisher_fn, recalculate, overwrite
+            )
 
-            # Store the fisher
-            if fisher is not None:
-                fisher_params[param] = fisher
-            else:
-                print(f"Could not calculate fisher for {param_path} - {exp.key}")
+            # Cache the fisher matrix
+            if save:
+                np.save(file_path, fisher)
 
-        fisher_exposures[exp.key] = fisher_params
+            # Put the fisher matrix into the dictionary
+            fishers[f"{exp.key}.{param}"] = fisher
 
-    return fisher_exposures
+    return fishers
 
 
 """
@@ -133,9 +134,6 @@ https://github.com/google/jax/discussions/8456
 I believe this efficient hessian diagonal methods only works _correctly_ if the output
 hessian is _naturally_ diagonal, else the results are spurious.
 """
-
-# import jax.numpy as np
-# from jax import jit, grad, linearize, lax
 
 
 def hessian(f, x):
@@ -173,7 +171,7 @@ def FIM(
         return loglike_fn(parametric_pytree, *loglike_args, **loglike_kwargs)
 
     # return hessian(loglike_fn_vec, X)
-    return jax.hessian(loglike_fn_vec)(X)
+    return jit(jax.hessian(loglike_fn_vec))(X)
 
 
 def _perturb(X, pytree, parameters, shapes, lengths):

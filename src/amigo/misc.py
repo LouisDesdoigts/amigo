@@ -226,3 +226,11 @@ def populate_from_state(model, state):
         else:
             model = model.set(param_key, value)
     return model
+
+
+def gen_surface(coords, coeffs, pows):
+    """The only difference here and the fn in amigo is this one return the sum of the
+    distortion, not the coords + distortion"""
+    pow_base = np.multiply(*(coords[:, None, ...] ** pows[..., None, None]))
+    surface = np.sum(coeffs[..., None, None] * pow_base[None, ...], axis=1)
+    return surface.sum(0)
