@@ -70,8 +70,8 @@ class ADC(dl.detector_layers.DetectorLayer):
     def __init__(self, ADC_coeffs=None, period=1024):
         if ADC_coeffs is None:
             ADC_coeffs = np.zeros((1, 2))
-        if ADC_coeffs[0, 0] == 0:
-            ADC_coeffs = ADC_coeffs.at[0, 0].set(1.5)
+        # if ADC_coeffs[0, 0] == 0:
+        #     ADC_coeffs = ADC_coeffs.at[0, 0].set(1.5)
         self.ADC_coeffs = np.array(ADC_coeffs, float)
         self.period = int(period)
 
