@@ -269,6 +269,7 @@ class Trainer(zdx.Base):
         overwrite=False,
         verbose=False,
         save=True,
+        args=None,
     ):
         # RANDOM TODO: Models params should be renamed ParamsDict everywhere and always
         # Use the dark current data to get a measure of the read noise
@@ -276,7 +277,7 @@ class Trainer(zdx.Base):
         def fisher_fn(model, exposure, param):
             slopes, cov = covariance_model(model, exposure)
             exposure = exposure.set(["slopes", "cov"], [slopes, cov])
-            return -FIM(model, param, self.loss_fn, exposure)
+            return -FIM(model, param, self.loss_fn, exposure, args)
 
         # Calculate the fishers
         fishers = calc_fishers(

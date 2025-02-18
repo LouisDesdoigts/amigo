@@ -352,7 +352,7 @@ class ModelFit(Exposure):
             return self.model_read(ramp, model)
 
     def __call__(self, model, return_bleed=False, return_ramp=False):
-        ramp, bleed = self.simulate(model, return_bleed=True)
+        ramp, bleed = self.simulate(model, return_bleed=return_bleed)
 
         if return_ramp:
             if return_bleed:
