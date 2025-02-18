@@ -128,6 +128,7 @@ def initialise_params(
     exposures,
     optics,
     vis_model=None,
+    Teff_cache="../data/Teffs",
 ):
     # NOTE: This method should be improved to take the _average_ over params that are
     # constrained by multiple exposures
@@ -148,7 +149,7 @@ def initialise_params(
     for file in files:
         if file["PRIMARY"].header["EXP_TYPE"] == "NIS_AMI":
             star_files.append(file)
-    params["Teffs"] = get_Teffs(star_files, Teff_cache="../data/Teffs")
+    params["Teffs"] = get_Teffs(star_files, Teff_cache=Teff_cache)
 
     return params
 
