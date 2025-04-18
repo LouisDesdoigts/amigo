@@ -281,19 +281,6 @@ def calibrate_phases(phase_1, phase_2, cov_1, cov_2):
     return dphi, cov_dphi
 
 
-# from drpangloss.grid_fit import optimized_contrast_grid as fit_contrast
-
-
-# def orient(im, parang):
-#     """Rotate the image to the correct orientation"""
-#     # return im
-#     # Rotate the image by the parallactic angle
-#     im = np.flipud(im)
-#     im = rotate(im, angle=-parang, reshape=False, cval=np.nan)
-#     # im = np.flipud(im)
-#     return im
-
-
 def fit_oi_data(
     grid,
     oi_data,
@@ -315,13 +302,11 @@ def fit_oi_data(
     # Log-likelihood
     loglike_im = likelihood_grid(oi_obj, BinaryModelCartesian, grid, n_batch=n_batch)
     loglike_im = loglike_im.max(axis=2)
-    # loglike_im = orient(loglike_im, oi_obj.parang)
 
     # NOTE: The Contrast image seems to come out (RA, Dec), so we transpose the output
     # Best contrast
     contrast_im = optimized_contrast_grid(oi_obj, BinaryModelCartesian, grid, n_batch=n_batch)
     contrast_im = np.where(contrast_im < 0, 0, contrast_im).T
-    # contrast_im = orient(contrast_im, oi_obj.parang)
 
     # # Get the FoVs
     r_bls = np.hypot(oi_data["u"], oi_data["v"])

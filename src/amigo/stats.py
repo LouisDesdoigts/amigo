@@ -16,15 +16,6 @@ def get_read_cov(read_noise, ngroups):
     return read_fn(pix_idx, pix_idx)
 
 
-# def build_cov(var):
-#     Is = np.arange(len(var))
-#     IJs = np.array(np.meshgrid(Is, Is))
-
-#     vals = vmap(vmap(vmap(lambda ind: var[ind], 0), 1), 0)(IJs)
-#     cov = np.min(vals, (0))
-#     return cov
-
-
 def get_slope_cov_mask(n_slope):
     tri = np.tri(n_slope, n_slope, 1)
     mask = (tri * tri.T) - np.eye(n_slope)
@@ -93,10 +84,6 @@ def posterior(model, exposure, per_pix=True, return_im=False):
     if per_pix:
         return np.nanmean(posterior_vec)
     return np.nansum(posterior_vec)
-
-
-# def reg_loss_fn(model, exposure, args):
-#     return -np.array(posterior(model, exposure, per_pix=True)).sum()
 
 
 def check_symmetric(mat):

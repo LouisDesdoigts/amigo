@@ -27,7 +27,7 @@ def process_calslope(
     output_dir="calslope/",
     sigma=3,
     chunk_size=0,
-    n_groups=None,  # how many groups of the ramp to use
+    n_groups=None,  # how many groups of the ramp to use NOTE Does nothing rn
     clean_dir=True,
     flat_field=False,
     correct_ADC=True,

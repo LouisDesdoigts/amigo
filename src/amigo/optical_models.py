@@ -35,39 +35,6 @@ def distort_coords(coords, coeffs, pows):
     return coords + distortion
 
 
-# ### Fresnel propagators ###
-# def transfer_fn(coords, npixels, wavelength, pscale, distance):
-#     scaling = npixels * pscale**2
-#     rho_sq = ((coords / scaling) ** 2).sum(0)
-#     return _fftshift(np.exp(-1.0j * np.pi * wavelength * distance * rho_sq))
-
-
-# def transfer(wf, distance, pad=2):
-#     coords = dlu.pixel_coords(pad * wf.npixels, pad * wf.diameter)
-#     return transfer_fn(coords, wf.npixels, wf.wavelength, pad * wf.pixel_scale, distance)
-
-
-# def _fft(phasor, pad=2):
-#     padded = dlu.resize(phasor, phasor.shape[0] * pad)
-#     return 1 / padded.shape[0] * np.fft.fft2(padded)
-
-
-# def _ifft(phasor, pad=1):
-#     padded = dlu.resize(phasor, phasor.shape[0] * pad)
-#     return phasor.shape[0] * np.fft.ifft2(padded)
-
-
-# def _fftshift(phasor):
-#     return np.fft.fftshift(phasor)
-
-
-# def plane_to_plane(wf, distance, pad=2):
-#     fft_wf = _fft(wf.phasor, pad=pad)
-#     tf = transfer(wf, distance, pad=pad)
-#     phasor = dlu.resize(_ifft(fft_wf * tf), wf.npixels)
-#     return wf.set(["amplitude", "phase"], [np.abs(phasor), np.angle(phasor)])
-
-
 ### Fresnel propagators ###
 def transfer_fn(coords, npixels, wavelength, pscale, distance):
     rho_sq = (coords**2).sum(0)
@@ -101,16 +68,6 @@ def plane_to_plane(wf, distance, pad=2):
     tf = transfer(wf, distance, pad=pad)
     phasor = dlu.resize(_ifft(fft_wf * tf), wf.npixels)
     return wf.set(["amplitude", "phase"], [np.abs(phasor), np.angle(phasor)])
-
-
-# class FreeSpace(dl.layers.optical_layers.OpticalLayer):
-#     d_dist: float
-
-#     def __init__(self, d_dist):
-#         self.d_dist = np.array(d_dist, float)
-
-#     def apply(self, wavefront):
-#         return plane_to_plane(wavefront, self.d_dist)
 
 
 class DistortedCoords(zdx.Base):
@@ -176,53 +133,6 @@ def get_initial_holes(diameter=6.603464, npixels=1024, x_shift=21, y_shift=-13):
     file_path = pkg.resource_filename(__name__, "data/AMI_holes.npy")
     shift = np.array([x_shift, y_shift]) * (diameter / npixels)
     return np.load(file_path) + shift[None, :]
-
-
-# class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
-#     abb_basis: Array
-#     abb_coeffs: Array
-#     amp_basis: Array
-#     amp_coeffs: Array
-
-#     def __init__(
-#         self,
-#         hole_coords,
-#         f2f,
-#         # npix=1024,
-#         # diameter=6.603464,
-#         aberration_orders=None,
-#         amplitude_orders=None,
-#         # oversize=1.1,
-#         polike=False,
-#     ):
-#         # coords = dlu.pixel_coords(npix, diameter)
-#         # hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, holes)
-
-#         # Calculate the aberration basis functions
-#         if aberration_orders is not None:
-#             self.abb_basis = 1e-9 * calc_basis(hole_coords, f2f, aberration_orders, polike)
-#             self.abb_coeffs = np.zeros(self.abb_basis.shape[:-2])
-#         else:
-#             self.abb_basis = None
-#             self.abb_coeffs = None
-
-#         # Calculate the amplitude basis functions
-#         if amplitude_orders is not None:
-#             self.amp_basis = calc_basis(hole_coords, f2f, amplitude_orders, polike)
-#             self.amp_coeffs = np.zeros(self.amp_basis.shape[:-2])
-#         else:
-#             self.amp_basis = None
-#             self.amp_coeffs = None
-
-#     def calc_transmission(self, npixels=1024):
-#         if self.amp_basis is not None:
-#             return 1 + dlu.eval_basis(self.amp_basis, self.amp_coeffs)
-#         return np.ones((npixels, npixels))
-
-#     def calc_aberrations(self, npixels=1024):
-#         if self.abb_basis is not None:
-#             return dlu.eval_basis(self.abb_basis, self.abb_coeffs)
-#         return np.zeros((npixels, npixels))
 
 
 def reduce_basis(basis, coords, holes, size=180):
@@ -381,70 +291,6 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
         if self.normalise:
             return wavefront.normalise()
         return wavefront
-
-
-# class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLayer):
-#     holes: Array
-#     f2f: Array
-#     normalise: bool
-#     transformation: None
-#     softness: float
-
-#     def __init__(
-#         self,
-#         holes=None,
-#         f2f=0.80,
-#         diameter=6.603464,
-#         npixels=1024,
-#         distortion_orders=None,
-#         normalise=True,
-#         aberration_orders=None,
-#         amplitude_orders=None,
-#         oversize=1.1,
-#         polike=False,
-#         softness=1.0,
-#     ):
-#         if holes is None:
-#             holes = get_initial_holes(diameter, npixels)
-#         self.holes = holes
-#         self.f2f = np.asarray(f2f, float)
-#         self.transformation = DistortedCoords(distortion_orders)
-#         self.normalise = bool(normalise)
-#         self.softness = np.array(softness, float)
-
-#         # Get undistorted coordinates for aberrations
-#         coords = dlu.pixel_coords(npixels, diameter)
-#         hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, holes)
-
-#         super().__init__(
-#             coords=coords,
-#             holes=holes,
-#             hole_coords=hole_coords,
-#             f2f=f2f * oversize,  # Oversize the aberrations to avoid edge effects
-#             aberration_orders=aberration_orders,
-#             amplitude_orders=amplitude_orders,
-#             polike=polike,
-#         )
-
-#     def calc_mask(self, npixels, diameter, oversample=3):
-#         # npix = npixels * oversample
-#         coords = self.transformation.apply(dlu.pixel_coords(npixels, diameter))
-#         hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, self.holes)
-#         # mask = calc_mask(hole_coords, self.f2f, self.softness * diameter / npixels)
-#         return calc_mask(hole_coords, self.f2f, self.softness * diameter / npixels)
-
-#     def apply(self, wavefront):
-#         wavefront *= self.calc_transmission(npixels=wavefront.npixels)
-#         wavefront *= self.calc_mask(wavefront.npixels, wavefront.diameter)
-#         wavefront += self.calc_aberrations(npixels=wavefront.npixels)
-#         if self.normalise:
-#             return wavefront.normalise()
-#         return wavefront
-
-#     def __getattr__(self, key):
-#         if hasattr(self.transformation, key):
-#             return getattr(self.transformation, key)
-#         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
 
 
 class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLayer):
