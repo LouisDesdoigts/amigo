@@ -6,6 +6,7 @@ import jax
 from jax.scipy.stats import multivariate_normal
 from .misc import interp
 import equinox as eqx
+import zodiax as zdx
 
 
 def quadratic_SRF(a, oversample, norm=True):
@@ -26,45 +27,18 @@ def broadcast_subpixel(pixels, subpixel):
     return bc_sens_map.reshape((npix * oversample, npix * oversample))
 
 
-class PixelSensitivities(dl.layers.detector_layers.DetectorLayer):
+class PixelSensitivity(zdx.Base):
     FF: jax.Array
     SRF: jax.Array
-    method: str = eqx.field(static=True)
-    oversample: int = eqx.field(static=True)
 
-    def __init__(self, FF, SRF=0.0, method="quad", oversample=4):
-        if method not in ["quad", "pixel"]:
-            raise ValueError(f"Method {method} not recognised")
-        if method == "pixel":
-            if SRF.ndim != 2:
-                raise ValueError("Pixel method requires a 2D SRF array")
-
-            i, j = SRF.shape
-            if i != j:
-                raise ValueError("Pixel method requires a square SRF array")
-
-            if i != oversample:
-                raise ValueError(
-                    "Pixel method requires a square SRF array with the same size as"
-                    " the oversample"
-                )
-
+    def __init__(self, FF=np.ones((80, 80)), SRF=0.1):
         self.FF = np.array(FF, float)
         self.SRF = np.array(SRF, float)
-        self.method = str(method)
-        self.oversample = int(oversample)
 
     @property
-    def sensitivity_map(self):
-        if self.method == "quad":
-            subpixel_fn = quadratic_SRF(self.SRF, self.oversample)
-        else:
-            subpixel_fn = self.SRF
-
-        return broadcast_subpixel(self.FF, subpixel_fn)
-
-    def apply(self, PSF):
-        return PSF * self.sensitivity_map
+    def sensitivity(self):
+        """Return the oversampled (240, 240) pixel sensitivities"""
+        return broadcast_subpixel(self.FF, quadratic_SRF(self.SRF, 3))
 
 
 class Resample(dl.layers.detector_layers.DetectorLayer):
@@ -227,111 +201,3 @@ class SUB80Detector(LayeredDetector):
                 return getattr(layer, key)
 
         raise AttributeError(f"SUB80Detector.ODE has no attribute {key}")
-
-    # def evolve_ramp(self, illuminance, ngroups, z_point, badpix):
-
-    #     if self.ramp is None:
-    #         # sensitivity = self.sensitivity_map
-    #         illuminance = dlu.downsample(illuminance, self.oversample, mean=False)
-    #         return model_ramp(illuminance, ngroups)
-
-    #     elif isinstance(self.ramp, GainDiffusionRamp):
-    #         sensitivity = self.sensitivity_map
-    #         ramp, latent_paths = self.ramp.evolve_ramp(illuminance, ngroups, sensitivity)
-    #         return ramp, latent_paths
-
-    #     # This should be manually coded for the PolyPredictive ramp model, with the FF
-    #     # and SRF included in the inputs.
-    #     else:
-    #         ramp, bleeds = self.ramp.evolve_ramp(illuminance, ngroups, z_point, None, badpix)
-    #         return ramp, bleeds
-
-    # else:
-    #     raise NotImplementedError("No implementation for this ramp type")
-
-
-# class SUB80Ramp(dl.detectors.BaseDetector):
-#     ramp: None
-#     sensitivity: PixelSensitivities
-#     # jitter: AsymmetricJitter
-#     # resampler: Resample
-
-#     def __init__(
-#         self,
-#         ramp_model=None,
-#         # oversample=4,
-#         # npixels_in=80,
-#         # rot_angle=+0.56126717,
-#         # anisotropy=1.0,
-#         # jitter_amplitude=0.02,  # as
-#         # asymmetric_jitter=True,
-#         SRF=1e-3,
-#         FF=None,
-#     ):
-
-#         self.ramp_model = ramp_model
-#         self.jitter.AsymmetricJitter(kernel_size=11, kernel_oversample=5)
-#         self.resampler.Resample(rotation=rot_angle, anisotropy=anisotropy)
-
-#         # Load the FF
-#         if FF is None:
-#             file_path = pkg.resource_filename(__name__, "data/SUB80_flatfield.npy")
-#             FF = np.load(file_path)
-#             if npixels_in != 80:
-#                 pad = (npixels_in - 80) // 2
-#                 FF = np.pad(FF, pad, constant_values=1)
-
-#         self.sensitivity.PixelSensitivities(FF, SRF, oversample=oversample)
-
-#     def __getattr__(self, a):
-#         pass
-
-
-#     def evolve_ramp(self, illuminance, ngroups):
-#         if isinstance(self.ramp, GainDiffusionRamp):
-#             sensitivity = self.sensitivity_map
-#             ramp, latent_paths = self.evolve_ramp(illuminance, ngroups, sensitivity)
-
-#         else:
-#             raise NotImplementedError("No implementation for this ramp type")
-
-
-# if asymmetric_jitter:
-# jitter = AsymmetricJitter(kernel_size=11, kernel_oversample=5)
-# else:
-#     jitter = GaussianJitter(0.02, kernel_size=11, kernel_oversample=3)
-
-# PixelSensitivities(FF, SRF, oversample=oversample)
-
-# layers = [
-# ("jitter", AsymmetricJitter(kernel_size=11, kernel_oversample=5)),
-# ("resampler", Resample(rotation=rot_angle, anisotropy=anisotropy)),
-# ("sensitivity", PixelSensitivities(FF, SRF, oversample=oversample)),
-# ("pixel_anisotropy", PixelAnisotropy(anisotropy)),
-# ]
-
-# if SRF is None:
-#     SRF = np.ones((oversample, oversample))
-
-# layers.append()
-
-# self.layers = dlu.list2dictionary(layers, ordered=True)
-
-# def apply_linear(self, psf):
-#     for layer in list(self.layers.values()):
-#         if layer is None:
-#             continue
-#         psf = layer.apply(psf)
-#     return psf
-
-# def apply_ramp(self, psf):
-
-#     if isinstance(self.ramp, None):
-#         illuminance = dlu.downsample(illuminance, model.optics.oversample, mean=False)
-#         ramp = psf.set("data", model_ramp(illuminance, self.ngroups))
-
-#     ramp, latent_paths = self.ramp.evolve_ramp(illuminance, ngroups, sensitivity_map)
-#         if layer is None:
-#             continue
-#         psf = layer.apply(psf)
-#     return psf

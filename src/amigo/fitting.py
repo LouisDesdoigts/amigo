@@ -5,18 +5,12 @@ import time
 from datetime import timedelta
 import jax.tree as jtu
 from .core_models import ModelParams, ParamHistory
-
-# from .core_models import ParamHistory
-# from .fitting import set_array, calc_lrs, get_optimiser
 from .fisher import calc_fishers
 from .misc import tqdm
 from .stats import covariance_model
 import optax
 import jax
 import jax.numpy as np
-
-# from datetime import timedelta
-# from .misc import tqdm
 from jax import config
 import jax.random as jr
 import dLux.utils as dlu
@@ -54,23 +48,6 @@ def set_array(pytree, parameters):
     return eqx.combine(floats, other)
 
 
-# def get_optimiser(pytree, optimisers, parameters=None):
-
-#     # Get the parameters and opt_dict
-#     if parameters is not None:
-#         optimisers = dict([(p, optimisers[p]) for p in parameters])
-#     else:
-#         parameters = list(optimisers.keys())
-
-#     model_params = ModelParams(dict([(p, pytree.get(p)) for p in parameters]))
-#     param_spec = ModelParams(dict([(param, param) for param in parameters]))
-#     optim = optax.multi_transform(optimisers, param_spec)
-
-#     # Build the optimised object - the 'model_params' object
-#     state = optim.init(model_params)
-#     return model_params, optim, state
-
-
 def get_optimiser(model_params, optimisers):
     param_spec = ModelParams({param: param for param in list(model_params.keys())})
     optim = optax.multi_transform(optimisers, param_spec)
@@ -96,13 +73,11 @@ def get_val_grad_fn(loss_fn):
 
     # Injects the model parameters, and takes the loss over the batch, and applied
     # the gradient transformation
-    # @eqx.filter_value_and_grad
     def _val_grad_fn(model_params, model, exposures, args):
         model = model_params.inject(model)
         keys = [exp.key for exp in exposures]
         losses, aux = zip(*[loss_fn(model, exp, args) for exp in exposures])
         return np.array(losses).sum(), dict(zip(keys, aux))
-        # return np.array([loss_fn(model, exp, args) for exp in exposures]).sum()
 
     return eqx.filter_value_and_grad(_val_grad_fn, has_aux=True)
 

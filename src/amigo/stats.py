@@ -178,3 +178,58 @@ def covariance_model(model, exposure):
     cov /= cov_support
 
     return slopes, cov
+
+
+from jax.flatten_util import ravel_pytree
+import equinox as eqx
+
+
+def batched_jacobian(X, fn, n_batch=1):
+    Xs = np.array_split(X, n_batch)
+    rebuild = lambda X_batch, index: X.at[index : index + len(X_batch)].set(X_batch)
+    lens = np.cumsum(np.array([len(x) for x in Xs]))[:-1]
+    starts = np.concatenate([np.array([0]), lens])
+
+    @eqx.filter_jacfwd
+    def batched_jac_fn(x, index):
+        return eqx.filter_jit(fn)(rebuild(x, index))
+
+    return np.concatenate([batched_jac_fn(x, index) for x, index in zip(Xs, starts)], axis=-1).T
+
+
+def model_batched_jacobian(fn, model, exp, params, n_batch=1):
+    key_fn = lambda param: exp.map_param(param)
+    params = {key_fn(key): model.get(key_fn(key)) for key in params}
+    X, unravel_fn = ravel_pytree(params)
+    Xs = np.array_split(X, n_batch)
+
+    rebuild = lambda X_batch, index: X.at[index : index + len(X_batch)].set(X_batch)
+    lens = np.cumsum(np.array([len(x) for x in Xs]))[:-1]
+    starts = np.concatenate([np.array([0]), lens])
+
+    @eqx.filter_jacfwd
+    def batched_jac_fn(x, index, model, exp):
+        params = unravel_fn(rebuild(x, index))
+        for param, value in params.items():
+            model = model.set(param, value)
+        return eqx.filter_jit(fn)(model, exp)
+
+    return np.concatenate(
+        [batched_jac_fn(x, index, model, exp) for x, index in zip(Xs, starts)], axis=-1
+    )
+
+
+def decompose(J, values):
+    # Get the covariance matrix
+    cov = np.eye(values.size) * values[..., None]
+
+    # Get the hessian
+    hess = J @ (cov @ J.T)
+
+    # Get the eigenvalues and eigenvectors
+    eigvals, eigvecs = np.linalg.eig(hess)
+    eigvecs, eigvals = np.real(eigvecs).T, np.real(eigvals)
+
+    #
+    eigvals /= eigvals[0]
+    return hess, eigvals, eigvecs

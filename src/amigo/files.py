@@ -1,9 +1,3 @@
-# import jax.numpy as np
-# import dLux.utils as dlu
-# from .misc import find_position
-from .search_Teffs import get_Teffs
-
-
 def summarise_files(files, extra_keys=[]):
     main_keys = []
 
@@ -53,11 +47,9 @@ def get_files(paths, ext, **kwargs):
 
 
 def initialise_params(
-    files,
     exposures,
     optics,
     vis_model=None,
-    Teff_cache="../data/Teffs",
 ):
     # NOTE: This method should be improved to take the _average_ over params that are
     # constrained by multiple exposures
@@ -72,15 +64,6 @@ def initialise_params(
             if param not in params.keys():
                 params[param] = {}
             params[param][key] = value
-
-    # Remove the flat field files for the Teff search
-    star_files = []
-    for file in files:
-        if file["PRIMARY"].header["EXP_TYPE"] == "NIS_AMI":
-            star_files.append(file)
-    # params["Teffs"] = get_Teffs(star_files, Teff_cache=Teff_cache)
-    params["Teffs"] = get_Teffs(star_files, Teff_cache=Teff_cache)
-
     return params
 
 

@@ -354,7 +354,7 @@ def _get_styles(n):
     linestyles = ["-", "--", "-.", ":"]
 
     color_list = [colors[i % len(colors)] for i in range(n)]
-    linestyle_list = [linestyles[i // len(colors)] for i in range(n)]
+    linestyle_list = [linestyles[(i // len(colors)) % len(linestyles)] for i in range(n)]
 
     return color_list, linestyle_list
 

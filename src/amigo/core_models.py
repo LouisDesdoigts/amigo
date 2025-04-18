@@ -1,5 +1,8 @@
 import zodiax as zdx
 import jax.tree as jtu
+from jax.lax import dynamic_slice as lax_slice
+import equinox as eqx
+import jax.numpy as np
 
 
 class BaseModeller(zdx.Base):
@@ -154,102 +157,45 @@ class ParamHistory(ModelParams):
         )
 
 
-# class ModelHistory(ModelParams):
-#     """
-#     Tracks the history of a set of parameters in a model via tuples.
-
-#     Adds a series of convenience functions to interface with it.
-
-#     This could have issues with leaves not being jax.Arrays, so at some point it should be
-#     explicitly enforced that only array_likes are tracked.
-#     """
-
-#     def __init__(self, model, tracked):
-
-#         history = {}
-#         for param in tracked:
-#             leaf = model.get(param)
-#             if not eqx.is_array_like(leaf):
-#                 history[param] = jtu.map(lambda sub_leaf: [sub_leaf], leaf)
-#             else:
-#                 history[param] = [leaf]
-
-#         self.params = history
-
-#     def append(self, model):
-#         history = self.params
-#         for param, leaf_history in history.items():
-#             if hasattr(model, param):
-#                 new_leaf = getattr(model, param)
-#             else:
-#                 new_leaf = model.get(param)
-
-#             # Tree-like case
-#             if not eqx.is_array_like(new_leaf):
-#                 append_fn = lambda history, value: history + [value]
-#                 leaf_fn = lambda leaf: isinstance(leaf, list)
-#                 new_leaf_history = jtu.map(append_fn, leaf_history, new_leaf, is_leaf=leaf_fn)
-#                 history[param] = new_leaf_history
-
-#             # Non-tree case
-#             else:
-#                 history[param] = leaf_history + [new_leaf]
-#         return self.set("params", history)
+def build_wrapper(eqx_model, filter_fn=eqx.is_array):
+    arr_mask = jtu.map(lambda leaf: filter_fn(leaf), eqx_model)
+    dyn, static = eqx.partition(eqx_model, arr_mask)
+    leaves, tree_def = jtu.flatten(dyn)
+    values = np.concatenate([val.flatten() for val in leaves])
+    return values, EquinoxWrapper(static, leaves, tree_def)
 
 
-# class ParamHistory(ModelParams):
+class EquinoxWrapper(zdx.Base):
+    static: eqx.Module
+    shapes: list
+    sizes: list
+    starts: list
+    tree_def: None
 
-#     def __init__(self, model_params):
-#         self.params = jtu.map(lambda x: [], model_params)
+    def __init__(self, static, leaves, tree_def):
+        self.static = static
+        self.tree_def = tree_def
+        self.shapes = [v.shape for v in leaves]
+        self.sizes = [int(v.size) for v in leaves]
+        self.starts = [int(i) for i in np.cumsum(np.array([0] + self.sizes))]
 
-#     def append(self, model_params):
-
-#         history = self.params
-#         for param, leaf_history in history.items():
-#             if hasattr(model, param):
-#                 new_leaf = getattr(model, param)
-#             else:
-#                 new_leaf = model.get(param)
-
-#             # Tree-like case
-#             if not eqx.is_array_like(new_leaf):
-#                 append_fn = lambda history, value: history + [value]
-#                 leaf_fn = lambda leaf: isinstance(leaf, list)
-#                 new_leaf_history = jtu.map(append_fn, leaf_history, new_leaf, is_leaf=leaf_fn)
-#                 history[param] = new_leaf_history
-
-#             # Non-tree case
-#             else:
-#                 history[param] = leaf_history + [new_leaf]
-#         return self.set("params", history)
+    def inject(self, values):
+        leaves = [
+            lax_slice(values, (start,), (size,)).reshape(shape)
+            for start, size, shape in zip(self.starts, self.sizes, self.shapes)
+        ]
+        return eqx.combine(jtu.unflatten(self.tree_def, leaves), self.static)
 
 
-# class NNWrapper(zdx.Base):
-#     values: list
-#     tree_def: None
-#     shapes: list
-#     sizes: list
-#     starts: list
+class WrapperHolder(zdx.Base):
+    values: np.ndarray
+    structure: EquinoxWrapper
 
-#     def __init__(self, network):
-#         values, tree_def = jtu.flatten(network)
+    @property
+    def build(self):
+        return self.structure.inject(self.values)
 
-#         self.values = np.concatenate([val.flatten() for val in values])
-#         self.shapes = [v.shape for v in values]
-#         self.sizes = [int(v.size) for v in values]
-#         self.starts = [int(i) for i in np.cumsum(np.array([0] + self.sizes))]
-#         self.tree_def = tree_def
-
-#     @property
-#     def _layers(self):
-#         leaves = [
-#             lax_slice(self.values, (start,), (size,)).reshape(shape)
-#             for start, size, shape in zip(self.starts, self.sizes, self.shapes)
-#         ]
-#         return jtu.unflatten(self.tree_def, leaves)
-
-#     def __call__(self, x):
-#         layers = self._layers
-#         for layer in layers[:-1]:
-#             x = jax.nn.relu(layer(x))
-#         return layers[-1](x)
+    def __getattr__(self, name):
+        if hasattr(self.structure, name):
+            return getattr(self.structure, name)
+        raise AttributeError(f"Attribute {name} not found in {self.__class__.__name__}")

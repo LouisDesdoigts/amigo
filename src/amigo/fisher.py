@@ -161,14 +161,7 @@ def hessian(f, x, has_aux=False, batch_size=1):
     # Break it into batches
     n_batch = np.maximum(1, len(basis) // batch_size)
     basis = np.array_split(basis, n_batch)
-
-    # fmats = []
-    # for batch in basis:
-    #     fmats.append(hvp(batch))
-
     return np.concatenate([hvp(batch) for batch in basis])
-
-    # return np.concatenate(fmats)
 
 
 def FIM(
@@ -207,7 +200,6 @@ def FIM(
         else:
             fim = jit(jax.hessian(loglike_fn_vec, has_aux=has_aux))(X)
     return fim
-    # return jit(jax.hessian(loglike_fn_vec, has_aux=has_aux))(X)
 
 
 def _perturb(X, pytree, parameters, shapes, lengths):
