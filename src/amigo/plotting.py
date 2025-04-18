@@ -52,7 +52,7 @@ def summarise_fit(
 
     #
     if loglike_fn is not None:
-        posterior_im = posterior(model, exposure, return_im=True)
+        posterior_im = loglike_fn(model, exposure, return_im=True)
     else:
         posterior_im = posterior(model, exposure, return_im=True)
         # posterior_im = exposure.from_vec(posterior_vec)

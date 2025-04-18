@@ -1,4 +1,3 @@
-import jax
 import zodiax as zdx
 import jax.tree as jtu
 
@@ -97,14 +96,14 @@ class ModelParams(BaseModeller):
 
     def __add__(self, values):
         matched = self.replace(values)
-        return jax.tree_map(lambda x, y: x + y, self, matched)
+        return jtu.map(lambda x, y: x + y, self, matched)
 
     def __iadd__(self, values):
         return self.__add__(values)
 
     def __mul__(self, values):
         matched = self.replace(values)
-        return jax.tree_map(lambda x, y: x * y, self, matched)
+        return jtu.map(lambda x, y: x * y, self, matched)
 
     def __imul__(self, values):
         return self.__mul__(values)
@@ -130,14 +129,19 @@ class ModelParams(BaseModeller):
         return ModelParams({**self.params, **params2.params})
 
 
+import numpy as onp
+
+
 class ParamHistory(ModelParams):
 
     def __init__(self, model_params):
-        self.params = jtu.map(lambda x: [x], model_params.params)
+        self.params = jtu.map(lambda x: [onp.array(x)], model_params.params)
+        # self.params = jtu.map(lambda x: [x], model_params.params)
 
     def append(self, model_params):
         # Wrap the leaves in a list to ensure the same tree structure as self.params
-        updates_list = jtu.map(lambda x: [x], model_params.params)
+        updates_list = jtu.map(lambda x: [onp.array(x)], model_params.params)
+        # updates_list = jtu.map(lambda x: [x], model_params.params)
 
         # We want to append the two dictionaries so we make the tree
         # map make it recognise lists as leaves

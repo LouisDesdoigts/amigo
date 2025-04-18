@@ -52,77 +52,6 @@ def get_files(paths, ext, **kwargs):
     return files
 
 
-# def get_default_params(exposures, optics, amp_order=1):
-
-#     # These are the default parameters, they are _always_ present
-#     positions = {}
-#     fluxes = {}
-#     aberrations = {}
-#     one_on_fs = {}
-#     reflectivity = {}
-#     biases = {}
-#     separations = {}
-#     contrasts = {}
-#     position_angles = {}
-#     for exp in exposures:
-
-# im = np.where(exp.badpix, np.nan, exp.slopes[0])
-# psf = np.where(np.isnan(im), 0.0, im)
-
-# # Get pixel scale in arcseconds
-# if hasattr(optics, "focal_length"):
-#     pixel_scale = dlu.rad2arcsec(1e-6 * optics.psf_pixel_scale / optics.focal_length)
-# else:
-#     pixel_scale = optics.psf_pixel_scale
-# position = find_position(psf, pixel_scale)
-# positions[exp.fit.get_key(exp, "positions")] = position
-
-# flux = np.log10(1.05 * exp.ngroups * np.nansum(exp.slopes[0]))
-# fluxes[exp.fit.get_key(exp, "fluxes")] = flux
-
-# abers = np.zeros_like(optics.pupil_mask.abb_coeffs)
-# aberrations[exp.fit.get_key(exp, "aberrations")] = abers
-
-# if optics.pupil_mask.amp_coeffs is not None:
-#     reflects = np.zeros_like(optics.pupil_mask.amp_coeffs)
-#     reflectivity[exp.fit.get_key(exp, "reflectivity")] = reflects
-
-# one_on_f = np.zeros((exp.ngroups, 80, amp_order + 1))
-# one_on_fs[exp.fit.get_key(exp, "one_on_fs")] = one_on_f
-# biases[exp.fit.get_key(exp, "biases")] = np.zeros((80, 80))
-
-# separations[exp.fit.get_key(exp, "separations")] = 0.15  # arcsec, ~2 pixels
-# contrasts[exp.fit.get_key(exp, "contrasts")] = 2.0  # 100x contrast
-# position_angles[exp.fit.get_key(exp, "position_angles")] = 0.0  # degrees
-
-# return {
-#     "positions": positions,
-#     "fluxes": fluxes,
-#     "aberrations": aberrations,
-#     "reflectivity": reflectivity,
-#     "one_on_fs": one_on_fs,
-#     "biases": biases,
-#     "separations": separations,
-#     "contrasts": contrasts,
-#     "position_angles": position_angles,
-# }
-
-
-# def initialise_vis(vis_model, exposures):
-#     """At present this assumes that we are fitting a spline visibility"""
-
-#     params = {
-#         "amplitudes": {},
-#         "phases": {},
-#     }
-#     # n = vis_model.knot_map.size // 2
-#     n = vis_model.knot_inds.size
-#     for exp in exposures:
-#         params["amplitudes"][f"{exp.get_key('amplitudes')}"] = np.ones(n)
-#         params["phases"][f"{exp.get_key('phases')}"] = np.zeros(n)
-#     return params
-
-
 def initialise_params(
     files,
     exposures,
@@ -149,6 +78,7 @@ def initialise_params(
     for file in files:
         if file["PRIMARY"].header["EXP_TYPE"] == "NIS_AMI":
             star_files.append(file)
+    # params["Teffs"] = get_Teffs(star_files, Teff_cache=Teff_cache)
     params["Teffs"] = get_Teffs(star_files, Teff_cache=Teff_cache)
 
     return params

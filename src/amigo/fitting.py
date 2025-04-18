@@ -96,12 +96,15 @@ def get_val_grad_fn(loss_fn):
 
     # Injects the model parameters, and takes the loss over the batch, and applied
     # the gradient transformation
-    @eqx.filter_value_and_grad
+    # @eqx.filter_value_and_grad
     def _val_grad_fn(model_params, model, exposures, args):
         model = model_params.inject(model)
-        return np.array([loss_fn(model, exp, args) for exp in exposures]).sum()
+        keys = [exp.key for exp in exposures]
+        losses, aux = zip(*[loss_fn(model, exp, args) for exp in exposures])
+        return np.array(losses).sum(), dict(zip(keys, aux))
+        # return np.array([loss_fn(model, exp, args) for exp in exposures]).sum()
 
-    return _val_grad_fn
+    return eqx.filter_value_and_grad(_val_grad_fn, has_aux=True)
 
 
 # Returns the jitted the loss function
@@ -110,7 +113,8 @@ def get_norm_loss_fn(val_grad_fn, grad_fn=None):
     @eqx.filter_jit
     def _norm_loss_fn(model_params, lr_model, model, batch, args):
         print("Compiling Loss function...")
-        loss, grads = val_grad_fn(model_params, model, batch, args)
+        # loss, grads = val_grad_fn(model_params, model, batch, args)
+        (loss, aux), grads = val_grad_fn(model_params, model, batch, args)
 
         # Apply the lr normalisation
         grads = jtu.map(lambda x, y: x * y, grads, lr_model)
@@ -118,8 +122,9 @@ def get_norm_loss_fn(val_grad_fn, grad_fn=None):
         # Apply user normalisation if exists
         if grad_fn is not None:
             grads, args = grad_fn(model, grads, args)
-        return loss, grads, args
+        return loss, grads, args, aux
 
+    # return eqx.debug.assert_max_traces(_norm_loss_fn, max_traces=3)
     return _norm_loss_fn
 
 
@@ -212,15 +217,17 @@ class Result(zdx.Base):
     state: ModelParams
     lr_model: ModelParams
     history: ParamHistory
+    aux: dict
     meta_data: dict
 
-    def __init__(self, losses, model, state, history, lr_model, meta_data=None):
+    def __init__(self, losses, model, aux, state, history, lr_model, meta_data=None):
         self.losses = losses
         self.model = model
         self.state = state
         self.history = history
         self.lr_model = lr_model
         self.meta_data = meta_data
+        self.aux = aux
 
 
 class Trainer(zdx.Base):
@@ -230,6 +237,7 @@ class Trainer(zdx.Base):
     grad_fn: callable
     norm_fn: callable
     looper_fn: callable
+    aux_fn: callable
     cache: str
 
     def __init__(
@@ -239,6 +247,7 @@ class Trainer(zdx.Base):
         grad_fn=None,
         norm_fn=None,
         looper_fn=None,
+        aux_fn=None,
         cache="cache",
     ):
         """
@@ -253,6 +262,7 @@ class Trainer(zdx.Base):
         self.grad_fn = grad_fn
         self.norm_fn = norm_fn
         self.looper_fn = looper_fn
+        self.aux_fn = aux_fn
         self.fishers = None
         self.cache = cache
 
@@ -267,9 +277,11 @@ class Trainer(zdx.Base):
         parameters=[],
         recalculate=False,
         overwrite=False,
-        verbose=False,
+        verbose=True,
         save=True,
         args=None,
+        reduce_ram=False,
+        batch_size=1,
     ):
         # RANDOM TODO: Models params should be renamed ParamsDict everywhere and always
         # Use the dark current data to get a measure of the read noise
@@ -277,7 +289,31 @@ class Trainer(zdx.Base):
         def fisher_fn(model, exposure, param):
             slopes, cov = covariance_model(model, exposure)
             exposure = exposure.set(["slopes", "cov"], [slopes, cov])
-            return -FIM(model, param, self.loss_fn, exposure, args)
+
+            # NOTE: FIM doesnt return aux, so even though has_aux=True, it wont be returned
+            if args is not None:
+                fmat = FIM(
+                    model,
+                    param,
+                    self.loss_fn,
+                    exposure,
+                    args,
+                    reduce_ram=reduce_ram,
+                    has_aux=True,
+                    batch_size=batch_size,
+                )
+            else:
+                fmat = FIM(
+                    model,
+                    param,
+                    self.loss_fn,
+                    exposure,
+                    reduce_ram=reduce_ram,
+                    has_aux=True,
+                    batch_size=batch_size,
+                )
+
+            return -fmat
 
         # Calculate the fishers
         fishers = calc_fishers(
@@ -297,7 +333,9 @@ class Trainer(zdx.Base):
             return self.set("fishers", {**self.fishers, **fishers})
         return self.set("fishers", fishers)
 
-    def finalise(self, t0, model, loss_dict, model_params, history, lr_model, epochs, success):
+    def finalise(
+        self, t0, model, loss_dict, aux, model_params, history, lr_model, epochs, success
+    ):
         """Prints stats and returns the result object"""
         # Final execution time
         elapsed_time = time.time() - t0
@@ -312,6 +350,7 @@ class Trainer(zdx.Base):
         return Result(
             losses=loss_dict,
             model=model_params.inject(model),
+            aux=aux,
             state=model_params,
             history=history,
             lr_model=lr_model,
@@ -383,6 +422,7 @@ class Trainer(zdx.Base):
         t0 = time.time()
         looper = tqdm(range(0, epochs))
         loss_dict = dict([(key, []) for key in batches.keys()])
+        aux_dict = {}
 
         # Loop
         for epoch in looper:
@@ -398,17 +438,21 @@ class Trainer(zdx.Base):
             # Loop over randomised batch order
             for batch_key, batch in batches.items():
                 # Calculate the loss and gradients
-                loss, new_grads, args = loss_fn(model_params, lrs, model, batch, args)
+                loss, new_grads, args, aux = loss_fn(model_params, lrs, model, batch, args)
                 grads += new_grads
 
-                # Append the mean batch loss to the loss dictionary
+                # Append the mean batch loss to the loss dictionary and update aux dict
                 loss_dict[batch_key].append(loss / len(batch))
+
+                #
+                if self.aux_fn is not None:
+                    aux_dict = self.aux_fn(aux_dict, aux)
 
                 # Check for NaNs and exit if so
                 if np.isnan(loss):
                     print(f"Loss is NaN on epoch {epoch}, exiting fit")
                     return self.finalise(
-                        t0, model, loss_dict, model_params, history, lrs, epochs, False
+                        t0, model, loss_dict, aux, model_params, history, lrs, epochs, False
                     )
 
             # Update the regular parameters and append to history
@@ -426,4 +470,4 @@ class Trainer(zdx.Base):
                 self.second_print(t1, epochs)
 
         # Print the runtime stats and return Result object
-        return self.finalise(t0, model, loss_dict, model_params, history, lrs, epochs, True)
+        return self.finalise(t0, model, loss_dict, aux, model_params, history, lrs, epochs, True)

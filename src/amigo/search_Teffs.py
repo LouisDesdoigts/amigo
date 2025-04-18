@@ -1,4 +1,3 @@
-import os
 import pyia
 import jax.numpy as np
 from astroquery.simbad import Simbad
@@ -77,10 +76,9 @@ def get_Teff(targ_name):
 
 
 def get_Teffs(files, default=4500, skip_search=False, Teff_cache="files/Teffs"):
-    # def get_Teffs(exposures, default=4500, skip_search=False, Teff_cache="files/Teffs"):
-    # Check whether the specified cache directory exists
-    if not os.path.exists(Teff_cache):
-        os.makedirs(Teff_cache)
+    # # Check whether the specified cache directory exists
+    # if not os.path.exists(Teff_cache):
+    #     os.makedirs(Teff_cache)
 
     Teffs = {}
     for file in files:
@@ -102,13 +100,14 @@ def get_Teffs(files, default=4500, skip_search=False, Teff_cache="files/Teffs"):
             print("Warning using default Teff")
             continue
 
-        Teff = get_Teff(file[0].header["TARGNAME"])
+        # Teff = get_Teff(file[0].header["TARGNAME"])
+        Teff = np.array(5e3)
 
         if Teff == -1:
             print(f"No Teff found for {prop_name}, defaulting to 4500K")
             Teffs[prop_name] = default
         else:
             Teffs[prop_name] = Teff
-            np.save(f"{Teff_cache}/{prop_name}.npy", Teff)
+            # np.save(f"{Teff_cache}/{prop_name}.npy", Teff)
 
     return Teffs

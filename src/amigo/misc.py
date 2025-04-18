@@ -182,11 +182,11 @@ def nuke_brightest(file, n=0):
 
 
 @eqx.filter_jit
-def interp(image, knot_coords, sample_coords, method="linear"):
+def interp(image, knot_coords, sample_coords, method="linear", fill=0.0):
     xs, ys = knot_coords
     xpts, ypts = sample_coords.reshape(2, -1)
 
-    return ipx.interp2d(ypts, xpts, ys[:, 0], xs[0], image, method=method, extrap=0.0).reshape(
+    return ipx.interp2d(ypts, xpts, ys[:, 0], xs[0], image, method=method, extrap=fill).reshape(
         sample_coords[0].shape
     )
 

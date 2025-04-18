@@ -32,6 +32,20 @@ def get_slope_cov_mask(n_slope):
     # return -(read_noise**2) * mask
 
 
+def build_cov(var, read_std):
+    # Get the slope covariance matrix (diagonal)
+    slope_cov = np.eye(len(var))[..., None, None] * var[None, ...]
+
+    # Get the read noise covariance mask
+    slope_cov_mask = get_slope_cov_mask(len(var))
+
+    # Create the read noise covariance matrix
+    read_cov = read_std[None, None, ...] * slope_cov_mask[..., None, None]
+
+    # Return the combined covariance matrix
+    return slope_cov + read_cov
+
+
 # def log_likelihood(slope, exposure, read_noise=0, return_im=False):
 def log_likelihood(slope, exposure, return_im=False):
     """
@@ -81,8 +95,8 @@ def posterior(model, exposure, per_pix=True, return_im=False):
     return np.nansum(posterior_vec)
 
 
-def reg_loss_fn(model, exposure, args):
-    return -np.array(posterior(model, exposure, per_pix=True)).sum()
+# def reg_loss_fn(model, exposure, args):
+#     return -np.array(posterior(model, exposure, per_pix=True)).sum()
 
 
 def check_symmetric(mat):
@@ -164,17 +178,3 @@ def covariance_model(model, exposure):
     cov /= cov_support
 
     return slopes, cov
-
-
-def build_cov(var, read_std):
-    # Get the slope covariance matrix (diagonal)
-    slope_cov = np.eye(len(var))[..., None, None] * var[None, ...]
-
-    # Get the read noise covariance mask
-    slope_cov_mask = get_slope_cov_mask(len(var))
-
-    # Create the read noise covariance matrix
-    read_cov = read_std[None, None, ...] * slope_cov_mask[..., None, None]
-
-    # Return the combined covariance matrix
-    return slope_cov + read_cov

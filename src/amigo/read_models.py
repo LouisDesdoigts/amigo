@@ -6,6 +6,8 @@ import dLux.utils as dlu
 from jax import Array, vmap
 from jax.scipy.signal import convolve
 from .detector_models import LayeredDetector
+import jax
+import zodiax as zdx
 
 
 def gen_fourier_signal(single_ramp, coeffs, period=1024):
@@ -82,19 +84,41 @@ class ADC(dl.detector_layers.DetectorLayer):
         return ramp.add("data", correction)
 
 
-class PixelBias(dl.detector_layers.DetectorLayer):
-    bias: Array
+# class PixelBias(dl.detector_layers.DetectorLayer):
+#     bias: Array
 
-    def __init__(self, bias=None):
-        if bias is not None:
-            self.bias = np.array(bias, float)
-        else:
-            self.bias = bias
+#     def __init__(self, bias=None):
+#         if bias is not None:
+#             self.bias = np.array(bias, float)
+#         else:
+#             self.bias = bias
+
+#     def apply(self, ramp):
+#         if self.bias is None:
+#             return ramp
+#         return ramp.add("data", self.bias)
+
+
+class PixelNonLinearity(zdx.Base):
+    """Assumes that the bias has already been added to the ramp"""
+
+    non_linearity: jax.Array
+
+    def __init__(self, poly_order=2):
+        self.non_linearity = np.zeros((poly_order - 1, 80, 80))
 
     def apply(self, ramp):
-        if self.bias is None:
-            return ramp
-        return ramp.add("data", self.bias)
+        # Get the non-linear, per-pixel gain form voltage to counts
+        # Assumes that bias has already been added back into the ramp
+        # the ramp here is actually the _voltage_ in each pixel
+        data = ramp.data / 2**16
+        # coeffs = self.non_linearity.at[-1].add(np.ones_like(data[0]))
+
+        shape = (1, *data.shape[-2:])
+        coeffs = np.concatenate([self.non_linearity, np.ones(shape), np.zeros(shape)], axis=0)
+        # coeffs = np.concatenate([coeffs, np.zeros((1, *data.shape[-2:]))], axis=0)
+        counts = np.polyval(coeffs, data)
+        return ramp.set("data", counts * 2**16)
 
 
 class ReadModel(LayeredDetector):
@@ -109,8 +133,9 @@ class ReadModel(LayeredDetector):
             ipc = IPC(np.load(file_path))
         else:
             ipc = None
-        layers.append(("pixel_bias", PixelBias(bias=bias)))
+        # layers.append(("pixel_bias", PixelBias(bias=bias)))
         layers.append(("IPC", ipc))
+        layers.append(("pixel_non_linearity", PixelNonLinearity()))
         layers.append(("amplifier", Amplifier(one_on_fs)))
-        layers.append(("ADC", ADC(ADC_coeffs)))
+        # layers.append(("ADC", ADC(ADC_coeffs)))
         self.layers = dlu.list2dictionary(layers, ordered=True)

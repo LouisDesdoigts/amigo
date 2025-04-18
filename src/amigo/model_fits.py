@@ -5,12 +5,10 @@ import dLux as dl
 import dLux.utils as dlu
 import jax.numpy as np
 from jax import lax, vmap
-from .misc import find_position, planck, gen_surface
+from .misc import find_position, gen_surface
 from .ramp_models import Ramp
-from .latent_ode_models import GainDiffusionRamp
 from .optical_models import gen_powers
-
-# from .core_models import Exposure
+from .ramp_models import model_ramp
 
 
 class Exposure(zdx.Base):
@@ -85,10 +83,13 @@ class Exposure(zdx.Base):
         )
 
         # Log flux
-        slope_flux = self.ngroups + (1 / self.ngroups)
+        # slope_flux = self.ngroups + (1 / self.ngroups)
         params["fluxes"] = (
+            # self.key,
             self.get_key("fluxes"),
-            np.log10(slope_flux * np.nansum(self.slopes[0])),
+            # np.log10(slope_flux * np.nansum(self.slopes[0])),
+            # np.log10(np.nanmean(self.slopes[0])),
+            np.log10((80**2) * np.nanmean(im)),
         )
 
         # Aberrations
@@ -100,10 +101,20 @@ class Exposure(zdx.Base):
         # Defocus
         params["defocus"] = self.get_key("defocus"), np.array(0.01)
 
+        # Spectral slope
+        params["spectra"] = self.get_key("spectra"), np.array(0.0)
+
+        # Beam coefficients
+        params["beam_coeffs"] = (
+            self.get_key("beam_coeffs"),
+            np.zeros_like(optics.pupil_mask.primary_beam),
+        )
+
         # Reflectivity
         if self.fit_reflectivity:
             params["reflectivity"] = (
                 self.get_key("reflectivity"),
+                # np.zeros(optics.pupil_mask.amp_coeffs.shape[1]-1),
                 np.zeros_like(optics.pupil_mask.amp_coeffs),
             )
 
@@ -122,8 +133,9 @@ class Exposure(zdx.Base):
         if isinstance(self, SplineVisFit):
             if vis_model is None:
                 raise ValueError("vis_model must be provided for SplineVisFit")
-            n = vis_model.knot_inds.size
-            params["amplitudes"] = (self.get_key("amplitudes"), np.ones(n))
+            # n = vis_model.pixel_vis.n_knots
+            n = vis_model.n_terms  # // 2
+            params["amplitudes"] = (self.get_key("amplitudes"), np.zeros(n))
             params["phases"] = (self.get_key("phases"), np.zeros(n))
 
         # Binary parameters
@@ -190,18 +202,23 @@ class ModelFit(Exposure):
             "contrasts",
             "separations",
             "position_angles",
+            "fluxes",
         ]:
             return self.key
 
         if param in ["amplitudes", "phases"]:
             return "_".join([self.star, self.filter])
 
-        if param in ["aberrations", "reflectivity"]:
+        # if param in ["aberrations", "reflectivity"]:
+        #     return "_".join([self.program, self.filter])
+        if param == "aberrations":
             return "_".join([self.program, self.filter])
-            # return self.program
 
-        if param == "fluxes":
-            return "_".join([self.star, self.filter])
+        if param in ["reflectivity", "beam_coeffs", "defocus"]:
+            return self.filter
+
+        # if param == "fluxes":
+        #     return "_".join([self.star, self.filter])
 
         if param == "biases":
             return self.program
@@ -209,8 +226,11 @@ class ModelFit(Exposure):
         if param == "Teffs":
             return self.star
 
-        if param == "defocus":
-            return self.filter
+        if param == "spectra":
+            return "_".join([self.star, self.filter])
+
+        # if param == "defocus":
+        #     return self.filter
 
         raise ValueError(f"Parameter {param} has no key")
 
@@ -228,10 +248,12 @@ class ModelFit(Exposure):
             "fluxes",
             "aberrations",
             "reflectivity",
+            "beam_coeffs",
             "positions",
             "one_on_fs",
             "biases",
             "Teffs",
+            "spectra",
             "contrasts",
             "separations",
             "position_angles",
@@ -245,7 +267,10 @@ class ModelFit(Exposure):
     # def get_spectra(self, model, exposure):
     def get_spectra(self, model):
         wavels, filt_weights = model.filters[self.filter]
-        weights = filt_weights * planck(wavels, model.Teffs[self.star])
+        # weights = filt_weights * planck(wavels, model.Teffs[self.star])
+        xs = np.linspace(-1, 1, len(wavels))
+        spectra_slopes = 1 + model.get(self.map_param("spectra")) * xs
+        weights = filt_weights * spectra_slopes * wavels
         return wavels, weights / weights.sum()
 
     # def update_optics(self, model, exposure):
@@ -263,14 +288,28 @@ class ModelFit(Exposure):
                 coefficients = lax.stop_gradient(coefficients)
             optics = optics.set("pupil_mask.abb_coeffs", coefficients)
 
-        if self.fit_reflectivity:
-            coefficients = model.reflectivity[self.get_key("reflectivity")]
+        # if self.fit_reflectivity:
+        #     # Should have shape (9,) - Full shape is (7, 10), but we ignore pistons and
+        #     # project the same reflectivity across each hole. Should be different
+        #     # per filter.
+        #     coefficients = model.reflectivity[self.get_key("reflectivity")]
+        #     coefficients = np.concatenate([np.zeros((1)), coefficients], axis=0)
+        #     coefficients = np.ones((7, 10)) * coefficients[None]
 
-            # Stop gradient for science targets
-            if not self.calibrator:
-                coefficients = lax.stop_gradient(coefficients)
+        if hasattr(model, "reflectivity"):
+            coefficients = model.reflectivity[self.get_key("reflectivity")]
             optics = optics.set("pupil_mask.amp_coeffs", coefficients)
 
+        #     # Stop gradient for science targets
+        #     if not self.calibrator:
+        #         coefficients = lax.stop_gradient(coefficients)
+        #     optics = optics.set("pupil_mask.amp_coeffs", coefficients)
+
+        # # Set the mask distortion per filter
+        # beam_coeffs = model.get(self.map_param("beam_coeffs"))
+        # optics = optics.set("pupil_mask.primary_beam", beam_coeffs)
+
+        # Set the defocus
         optics = optics.set("defocus", model.defocus[self.get_key("defocus")])
 
         return optics
@@ -296,28 +335,29 @@ class ModelFit(Exposure):
 
     # def model_detector(self, psf, model, exposure):
     def model_illuminance(self, psf, model):
-        flux = 10 ** model.fluxes[self.get_key("fluxes")]
+        # flux = 10 ** model.fluxes[self.get_key("fluxes")]
+        flux = self.ngroups * 10 ** model.fluxes[self.get_key("fluxes")]
         psf = eqx.filter_jit(model.detector.apply)(psf)
         return psf.multiply("data", flux)
 
     def model_ramp(self, illuminance, model, return_bleed=False):
+        illum = illuminance.data
+        ramp_model = model.detector.ramp
 
-        # # Ensure latent_paths exists if we need it
-        # if return_paths:
-        #     latent_paths = 0.0
+        # Get the charge (bias) and paste badpixels with median
+        illum_small = dlu.downsample(illum, 3, mean=False)
+        bias = self.ramp[0] - (illum_small / self.ngroups)
+        bias = np.where(self.badpix, np.median(bias), bias)
 
-        # Special case of latent ODE models returning paths
-        if isinstance(model.detector.ramp, GainDiffusionRamp):
-            ramp, latent_paths = model.detector.evolve_ramp(illuminance.data, self.ngroups)
-            # ramp, latent_paths = eqx.filter_jit(model.detector.evolve_ramp)(
-            #     illuminance.data, self.ngroups
-            # )
+        #
+        if ramp_model is None:
+            illum = dlu.downsample(illum, self.oversample, mean=False)
+            ramp = model_ramp(illum, self.ngroups) + bias
+            bleed = 0.0
+
         else:
-            # ramp = model.detector.evolve_ramp(illuminance.data, self.ngroups)
-            # ramp = eqx.filter_jit(model.detector.evolve_ramp)(illuminance.data, self.ngroups)
-            ramp, bleed = model.detector.evolve_ramp(
-                illuminance.data, self.ngroups, self.ramp[0], self.badpix
-            )
+            # Bias should be added in here
+            ramp, bleed = ramp_model.evolve_ramp(illum, bias, self.ngroups, return_bleed=True)
 
         # Return the ramp
         ramp = Ramp(ramp, illuminance.pixel_scale)
@@ -326,17 +366,13 @@ class ModelFit(Exposure):
         return ramp
 
     def model_read(self, ramp, model):
-        # Re-add the bias to the ramp
-        est_bias = self.ramp[0] - ramp.data[0]
-
         # Update one on fs if we are fitting for it
         if self.fit_one_on_fs:
-            model = model.set("read.one_one_fs", model.one_on_fs[self.get_key("one_one_fs")])
+            model = model.set("read.one_on_fs", model.one_on_fs[self.get_key("one_on_fs")])
 
         # Update bias value
         if self.fit_bias:
-            est_bias += model.biases[self.get_key("biases")]
-        model = model.set("pixel_bias.bias", est_bias)
+            model = model.set("pixel_bias.bias", model.biases[self.get_key("biases")])
 
         # Apply the read effects
         return eqx.filter_jit(model.read.apply)(ramp)
@@ -518,7 +554,7 @@ class SplineVisFit(PointFit):
         # Get the visibilities
         amps = model.amplitudes[self.get_key("amplitudes")]
         phases = model.phases[self.get_key("phases")]
-        return model.vis_model.model_vis(wfs, amps, phases)
+        return model.vis_model.model_vis(wfs, amps, phases, self.filter)
 
     def model_psf(self, model):
         wfs = self.model_wfs(model)

@@ -1,7 +1,7 @@
 import os
 import zodiax as zdx
 import jax.numpy as np
-from jax import jit, grad, linearize, lax
+from jax import jit, grad, linearize, lax, vmap
 from .misc import tqdm
 import jax
 
@@ -30,24 +30,30 @@ def calc_fisher(
 
     # Check for cached fisher mats
     if os.path.exists(file_path):
-        fisher = np.load(file_path)
 
-        # Always recalculate nan values
-        if np.isnan(fisher).any():
-            recalculate = True
+        try:
+            fisher = np.load(file_path)
 
-        # Check shape matches expectation
-        if fisher.shape[0] != N:
-
-            # If overwrite, set recalculate to True
-            if overwrite:
+            # Always recalculate nan values
+            if np.isnan(fisher).any():
                 recalculate = True
 
-            # Else raise an error
-            else:
-                raise ValueError(
-                    f"Saved fisher has a shape miss-match for {exposure.key}, {param_path}"
-                )
+            # Check shape matches expectation
+            if fisher.shape[0] != N:
+
+                # If overwrite, set recalculate to True
+                if overwrite:
+                    recalculate = True
+
+                # Else raise an error
+                else:
+                    raise ValueError(
+                        f"Saved fisher has a shape miss-match for {exposure.key}, {param_path}"
+                    )
+
+        # Some bug causes non-arrays to be saved. Overwrite them in this case
+        except ValueError:
+            recalculate = True
 
     # File doesn't exists, need to recalculate
     else:
@@ -136,14 +142,33 @@ hessian is _naturally_ diagonal, else the results are spurious.
 """
 
 
-def hessian(f, x):
+def hessian(f, x, has_aux=False, batch_size=1):
     # Jit the sub-function here since it is called many times
-    _, hvp = linearize(grad(f), x)
+    if has_aux:
+        _, hvp, aux = linearize(grad(f, has_aux=has_aux), x, has_aux=has_aux)
+    else:
+        _, hvp = linearize(grad(f), x)
     hvp = jit(hvp)
 
-    # Build and stack
+    # Build the basis
     basis = np.eye(x.size).reshape(-1, *x.shape)
-    return np.stack([hvp(e) for e in basis]).reshape(x.shape + x.shape)
+
+    if batch_size == 1:
+        return np.stack([hvp(e) for e in basis]).reshape(x.shape + x.shape)
+
+    hvp = vmap(hvp)
+
+    # Break it into batches
+    n_batch = np.maximum(1, len(basis) // batch_size)
+    basis = np.array_split(basis, n_batch)
+
+    # fmats = []
+    # for batch in basis:
+    #     fmats.append(hvp(batch))
+
+    return np.concatenate([hvp(batch) for batch in basis])
+
+    # return np.concatenate(fmats)
 
 
 def FIM(
@@ -151,6 +176,9 @@ def FIM(
     parameters,
     loglike_fn,
     *loglike_args,
+    has_aux=False,
+    reduce_ram=False,
+    batch_size=1,
     **loglike_kwargs,
 ):
     # Build X vec
@@ -170,8 +198,16 @@ def FIM(
         parametric_pytree = _perturb(X, pytree, parameters, shapes, lengths)
         return loglike_fn(parametric_pytree, *loglike_args, **loglike_kwargs)
 
-    # return hessian(loglike_fn_vec, X)
-    return jit(jax.hessian(loglike_fn_vec))(X)
+    # Note reduce ram is removed until has_aux is implemented
+    if reduce_ram:
+        return hessian(loglike_fn_vec, X, has_aux=has_aux, batch_size=batch_size)
+    else:
+        if has_aux:
+            fim, aux = jit(jax.hessian(loglike_fn_vec, has_aux=has_aux))(X)
+        else:
+            fim = jit(jax.hessian(loglike_fn_vec, has_aux=has_aux))(X)
+    return fim
+    # return jit(jax.hessian(loglike_fn_vec, has_aux=has_aux))(X)
 
 
 def _perturb(X, pytree, parameters, shapes, lengths):

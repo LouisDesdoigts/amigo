@@ -1,6 +1,7 @@
 import equinox as eqx
 import zodiax as zdx
 import jax.numpy as np
+import jax.tree as jtu
 import dLux as dl
 import dLux.utils as dlu
 from jax import vmap
@@ -15,27 +16,27 @@ def get_hole_mask(pt, mask, coords, k=100):
     return mask.at[sy:ey, sx:ex].set(True)
 
 
-def calc_splodge_masks(optics, thresh=1e-10, downsample=8):
-    holes = optics.holes
-    mask = optics.calc_mask(optics.wf_npixels, optics.diameter)
-    coords = dlu.pixel_coords(optics.wf_npixels, optics.diameter)
+# def calc_splodge_masks(optics, thresh=1e-10, downsample=8):
+#     holes = optics.holes
+#     mask = optics.calc_mask(optics.wf_npixels, optics.diameter)
+#     coords = dlu.pixel_coords(optics.wf_npixels, optics.diameter)
 
-    splodge_masks = {}
-    for i in range(len(holes)):
-        for j in range(len(holes)):
-            if i == j or (j, i) in splodge_masks.keys():
-                continue
+#     splodge_masks = {}
+#     for i in range(len(holes)):
+#         for j in range(len(holes)):
+#             if i == j or (j, i) in splodge_masks.keys():
+#                 continue
 
-            pt1, pt2 = holes[i], holes[j]
-            hole_mask = np.zeros_like(mask, bool)
-            hole_mask = get_hole_mask(pt1, hole_mask, coords)
-            hole_mask = get_hole_mask(pt2, hole_mask, coords)
+#             pt1, pt2 = holes[i], holes[j]
+#             hole_mask = np.zeros_like(mask, bool)
+#             hole_mask = get_hole_mask(pt1, hole_mask, coords)
+#             hole_mask = get_hole_mask(pt2, hole_mask, coords)
 
-            reduced_mask = dlu.downsample(mask * hole_mask, downsample)
-            corr = correlate(reduced_mask, reduced_mask, mode="full", method="fft")
-            corr /= corr.max()
-            splodge_masks[(i, j)] = (corr > thresh).astype(float)
-    return splodge_masks
+#             reduced_mask = dlu.downsample(mask * hole_mask, downsample)
+#             corr = correlate(reduced_mask, reduced_mask, mode="full", method="fft")
+#             corr /= corr.max()
+#             splodge_masks[(i, j)] = (corr > thresh).astype(float)
+#     return splodge_masks
 
 
 def build_vis_pts(amp_vec, pha_vec, shape):
@@ -55,6 +56,34 @@ def find_knot_inds(full_knot_map):
     flat_knot_map = full_knot_map.flatten()
     n = len(flat_knot_map) // 2
     return np.where(flat_knot_map[:n])
+
+
+def calc_splodge_masks(optics, thresh=1e-3):
+    from amigo.vis_models_old import get_hole_mask
+
+    holes = optics.holes
+    mask = optics.calc_mask(optics.wf_npixels, optics.diameter)
+    mask = dlu.downsample(mask, 8)
+    coords = dlu.pixel_coords(len(mask), optics.diameter)
+
+    splodge_masks = {}
+    for i in range(len(holes)):
+        for j in range(len(holes)):
+            if i == j or (j, i) in splodge_masks.keys():
+                continue
+
+            pt1, pt2 = holes[i], holes[j]
+            hole_mask = np.zeros_like(mask, bool)
+            hole_mask = get_hole_mask(pt1, hole_mask, coords, k=12)
+            hole_mask = get_hole_mask(pt2, hole_mask, coords, k=12)
+
+            reduced_mask = mask * hole_mask
+            corr = correlate(reduced_mask, reduced_mask, method="fft")
+            corr /= corr.max()
+            if thresh is not None:
+                corr = (corr > thresh).astype(float)
+            splodge_masks[(i, j)] = corr
+    return splodge_masks
 
 
 class MFTVis(zdx.Base):
@@ -98,11 +127,24 @@ class MFTVis(zdx.Base):
 
         otf_support = dlu.downsample(self.otf_mask, sample_factor)
         full_knot_map = otf_support > 0.55
-        self.knot_inds = np.array(find_knot_inds(full_knot_map))
+        # self.knot_inds = np.array(find_knot_inds(full_knot_map))
 
-        self.knot_map = find_knot_map(full_knot_map)
-        self.conj_map = np.flip(self.knot_map.flatten()).reshape(self.knot_map.shape)
-        # print("N Knots", self.knot_map.sum())
+        # Get the splodge masks
+        masks = np.stack(jtu.leaves(calc_splodge_masks(optics)))
+        mean_otf_support = dlu.downsample(masks.sum(0), 5, mean=True)
+        otf_mask = (mean_otf_support >= 1.0).astype(int)
+
+        # Get the splodge masks
+        masks = np.stack(jtu.leaves(calc_splodge_masks(optics, thresh=None)))
+        otf_support = dlu.downsample(masks.sum(0), 5, mean=True)
+        corr_mask = otf_support > 0.02
+
+        #
+        knot_map = find_knot_map(full_knot_map).astype(int)
+        true_knot_map = (knot_map + otf_mask + corr_mask) == 3
+        self.knot_map = true_knot_map
+        self.conj_map = np.flip(true_knot_map.flatten()).reshape(true_knot_map.shape)
+        self.knot_inds = np.array(find_knot_inds(self.knot_map + self.conj_map))
 
     @property
     def valid_knot_coords(self):

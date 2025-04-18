@@ -6,8 +6,6 @@ import jax
 from jax.scipy.stats import multivariate_normal
 from .misc import interp
 import equinox as eqx
-from .ramp_models import model_ramp
-from .latent_ode_models import GainDiffusionRamp
 
 
 def quadratic_SRF(a, oversample, norm=True):
@@ -186,7 +184,7 @@ class SUB80Detector(LayeredDetector):
     def __init__(
         self,
         ramp_model=None,
-        oversample=4,
+        oversample=3,
         npixels_in=80,
         rot_angle=+0.56126717,
         anisotropy=1.00765,
@@ -230,26 +228,26 @@ class SUB80Detector(LayeredDetector):
 
         raise AttributeError(f"SUB80Detector.ODE has no attribute {key}")
 
-    def evolve_ramp(self, illuminance, ngroups, z_point, badpix):
+    # def evolve_ramp(self, illuminance, ngroups, z_point, badpix):
 
-        if self.ramp is None:
-            # sensitivity = self.sensitivity_map
-            illuminance = dlu.downsample(illuminance, self.oversample, mean=False)
-            return model_ramp(illuminance, ngroups)
+    #     if self.ramp is None:
+    #         # sensitivity = self.sensitivity_map
+    #         illuminance = dlu.downsample(illuminance, self.oversample, mean=False)
+    #         return model_ramp(illuminance, ngroups)
 
-        elif isinstance(self.ramp, GainDiffusionRamp):
-            sensitivity = self.sensitivity_map
-            ramp, latent_paths = self.ramp.evolve_ramp(illuminance, ngroups, sensitivity)
-            return ramp, latent_paths
+    #     elif isinstance(self.ramp, GainDiffusionRamp):
+    #         sensitivity = self.sensitivity_map
+    #         ramp, latent_paths = self.ramp.evolve_ramp(illuminance, ngroups, sensitivity)
+    #         return ramp, latent_paths
 
-        # This should be manually coded for the PolyPredictive ramp model, with the FF
-        # and SRF included in the inputs.
-        else:
-            ramp, bleeds = self.ramp.evolve_ramp(illuminance, ngroups, z_point, None, badpix)
-            return ramp, bleeds
+    #     # This should be manually coded for the PolyPredictive ramp model, with the FF
+    #     # and SRF included in the inputs.
+    #     else:
+    #         ramp, bleeds = self.ramp.evolve_ramp(illuminance, ngroups, z_point, None, badpix)
+    #         return ramp, bleeds
 
-        # else:
-        #     raise NotImplementedError("No implementation for this ramp type")
+    # else:
+    #     raise NotImplementedError("No implementation for this ramp type")
 
 
 # class SUB80Ramp(dl.detectors.BaseDetector):
