@@ -104,11 +104,11 @@ class Exposure(zdx.Base):
         # Spectral slope
         params["spectra"] = self.get_key("spectra"), np.array(0.0)
 
-        # Beam coefficients
-        params["beam_coeffs"] = (
-            self.get_key("beam_coeffs"),
-            np.zeros_like(optics.pupil_mask.primary_beam),
-        )
+        # # Beam coefficients
+        # params["beam_coeffs"] = (
+        #     self.get_key("beam_coeffs"),
+        #     np.zeros_like(optics.pupil_mask.primary_beam),
+        # )
 
         # Reflectivity
         if self.fit_reflectivity:
@@ -214,7 +214,10 @@ class ModelFit(Exposure):
         if param == "aberrations":
             return "_".join([self.program, self.filter])
 
-        if param in ["reflectivity", "beam_coeffs", "defocus"]:
+        # if param in ["reflectivity", "beam_coeffs", "defocus"]:
+        #     return self.filter
+
+        if param in ["reflectivity", "defocus"]:
             return self.filter
 
         # if param == "fluxes":
@@ -268,7 +271,7 @@ class ModelFit(Exposure):
     def get_spectra(self, model):
         wavels, filt_weights = model.filters[self.filter]
         # weights = filt_weights * planck(wavels, model.Teffs[self.star])
-        xs = np.linspace(-1, 1, len(wavels))
+        xs = np.linspace(-1, 1, len(wavels), endpoint=True)
         spectra_slopes = 1 + model.get(self.map_param("spectra")) * xs
         weights = filt_weights * spectra_slopes * wavels
         return wavels, weights / weights.sum()

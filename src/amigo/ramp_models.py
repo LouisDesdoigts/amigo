@@ -155,6 +155,41 @@ def apply_kernels_stride(illuminance, kernels, stride=3):
     return convd_vec.reshape(shape[2:])
 
 
+class RNNRamp(WrapperHolder):
+    sensitivity_model: PixelSensitivity
+    bleed: bool
+    norm: int
+
+    def __init__(self, conv_rnn, gain_model, norm=2**15, bleed=True):
+        values, structure = build_wrapper(conv_rnn)
+        self.values = values
+        self.structure = structure
+        self.norm = norm
+        self.sensitivity_model = gain_model
+        self.bleed = bleed
+
+    def __getattr__(self, key):
+        if hasattr(self.sensitivity_model, key):
+            return getattr(self.sensitivity_model, key)
+        raise AttributeError(f"RNNRamp has no attribute {key}")
+
+    def evolve_ramp(self, illuminance, bias, ngroups, return_bleed=False):
+        # Normalise the Illuminance and charge
+        illuminance = illuminance / self.norm
+        bias = bias / self.norm
+
+        # Evolve the ramp
+        sensitivity = self.sensitivity_model.sensitivity
+        charge_ramp, bleed = self.build(bias, illuminance, sensitivity, self.bleed)
+
+        # Interpolate the ramps to the number of groups
+        ramp = self.norm * interp_ramp(charge_ramp, ngroups)
+
+        if return_bleed:
+            return ramp, bleed
+        return ramp
+
+
 class DFRNN(eqx.Module):
     """ "Dynamic Filter Recurrent Neural Network (DFRNN) to model charge diffusion and
     bleeding."""
@@ -163,7 +198,7 @@ class DFRNN(eqx.Module):
     use_bias: bool
     time_steps: int = eqx.field(static=True)
 
-    def __init__(self, key, order=3, time_steps=10, use_bias=False):
+    def __init__(self, key, order=2, time_steps=8, use_bias=True):
         self.kernel_model = DFN(order=order, key=key)
         self.time_steps = time_steps
         self.use_bias = use_bias
@@ -175,14 +210,13 @@ class DFRNN(eqx.Module):
         illum = dlu.downsample(sensitivity * illuminance, 3, mean=False)
         sensitivity = dlu.downsample(sensitivity, 3, mean=True)
 
-        # Evolve the charge (include the relative bias)
-        # Normalise the bias - we only care about the _relative_ pixel bias for bleeding
-        # We take the median in order to avoid badpixels biasing the result
-
+        # Get the initial charge
         if self.use_bias:
             charge = bias - np.mean(bias)
         else:
             charge = np.zeros_like(bias)
+
+        # Evolve the charge
         charges, diffusions = [charge], []
         for _ in range(self.time_steps):
 
@@ -295,38 +329,3 @@ class DFN(eqx.Module):
         coords = vmap(self.distort_fn)(1 * coeffs_vec).reshape(npix, npix, 2, 3, 3)
         kernels = calc_kernels(coords)
         return kernels
-
-
-class RNNRamp(WrapperHolder):
-    sensitivity_model: PixelSensitivity
-    bleed: bool
-    norm: int
-
-    def __init__(self, conv_rnn, gain_model, norm=2**15, bleed=True):
-        values, structure = build_wrapper(conv_rnn)
-        self.values = values
-        self.structure = structure
-        self.norm = norm
-        self.sensitivity_model = gain_model
-        self.bleed = bleed
-
-    def __getattr__(self, key):
-        if hasattr(self.sensitivity_model, key):
-            return getattr(self.sensitivity_model, key)
-        raise AttributeError(f"RNNRamp has no attribute {key}")
-
-    def evolve_ramp(self, illuminance, bias, ngroups, return_bleed=False):
-        # Normalise the Illuminance and charge
-        illuminance = illuminance / self.norm
-        bias = bias / self.norm
-
-        # Evolve the ramp
-        sensitivity = self.sensitivity_model.sensitivity
-        charge_ramp, bleed = self.build(bias, illuminance, sensitivity, self.bleed)
-
-        # Interpolate the ramps to the number of groups
-        ramp = self.norm * interp_ramp(charge_ramp, ngroups)
-
-        if return_bleed:
-            return ramp, bleed
-        return ramp

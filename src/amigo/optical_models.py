@@ -218,6 +218,7 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
             self.amp_coeffs = None
 
         self.corners = corners
+        # self.corners = np.array(corners, dtype=float)
 
     def eval_basis(self, basis, coeffs, npixels=1024):
         small_eval = eval_small_basis(basis, coeffs)
@@ -275,15 +276,10 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
 
     def calc_transmission(self):
         if self.amp_basis is not None:
-            return self.transmission + super().calc_transmission(
+            return self.transmission * super().calc_transmission(
                 npixels=self.transmission.shape[0]
             )
         return self.transmission
-
-    def calc_aberrations(self):
-        if self.abb_basis is not None:
-            return dlu.eval_basis(self.abb_basis, self.abb_coeffs)
-        return np.zeros_like(self.transmission)
 
     def apply(self, wavefront):
         wavefront *= self.calc_transmission()
@@ -298,7 +294,7 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
     f2f: Array
     normalise: bool
     transformation: None
-    softness: float
+    # softness: float
     primary_beam: Array
     primary_powers: Array
 
@@ -314,7 +310,7 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         amplitude_orders=None,
         oversize=1.1,
         polike=False,
-        softness=1.0,
+        # softness=0.5,
     ):
         if holes is None:
             holes = get_initial_holes(diameter, npixels)
@@ -324,7 +320,7 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         self.normalise = bool(normalise)
 
         #
-        self.softness = np.array(softness, float)
+        # self.softness = np.array(softness, float)
         self.primary_powers = np.array(gen_powers(4))[:, 1:]
         self.primary_beam = np.zeros((7, *self.primary_powers.shape))
 
@@ -352,7 +348,8 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         # holes = distort_coords(self.holes.T[..., None], self.distortion, powers)[..., 0].T
 
         # Apply the per-hole primary-beam distortion
-        coords = dlu.pixel_coords(npixels, diameter)
+        npix = oversample * npixels
+        coords = dlu.pixel_coords(npix, diameter)
         distort_fn = lambda coeffs: distort_coords(coords, coeffs, self.primary_powers)
         coords = vmap(distort_fn)(self.primary_beam)
         # coords = distort_coords(coords, self.primary_beam, self.primary_powers)
@@ -361,7 +358,8 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         hole_coords = vmap(dlu.translate_coords)(coords, holes)
         # hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, self.holes)
         # mask = calc_mask(hole_coords, self.f2f, self.softness * diameter / npixels)
-        return calc_mask(hole_coords, self.f2f, self.softness * diameter / npixels)
+        mask = calc_mask(hole_coords, self.f2f, 0.5 * diameter / npix)
+        return dlu.downsample(mask, oversample, mean=True)
 
     def apply(self, wavefront):
         wavefront *= self.calc_transmission(npixels=wavefront.npixels)
@@ -391,7 +389,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         distortion_orders=3,
         coherence_orders=4,
         oversample=3,
-        defocus_type=None,
+        defocus_type="fft",
         #
         pupil_mask=None,
         opd=None,
@@ -405,7 +403,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         defocus=0.01,
         polike=False,
         unique_holes=False,
-        static_opd=False,
+        static=True,
     ):
         if defocus_type not in ["phase", "fft", None]:
             raise ValueError("defocus_type must be one of 'phase', 'fft', or None")
@@ -421,25 +419,37 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
 
         layers = []
 
-        if static_opd:
-            layers += [("wfs_opd", dl.AberratedLayer(opd=np.zeros((1024, 1024))))]
+        # if static_opd:
+        #     layers += [("wfs_opd", dl.AberratedLayer(opd=np.zeros((1024, 1024))))]
 
         layers += [("InvertY", dl.Flip(0))]
 
         # layers += [("fresnel_pre", FreeSpace(d_dist=0.1))]
 
         if pupil_mask is None:
-            pupil_mask = DynamicApertureMask(
-                distortion_orders=distortion_orders,
-                diameter=diameter,
-                npixels=wf_npixels,
-                f2f=f2f,
-                normalise=normalise,
-                aberration_orders=radial_orders,
-                amplitude_orders=coherence_orders,
-                oversize=oversize,
-                polike=polike,
-            )
+            if not static:
+                pupil_mask = DynamicApertureMask(
+                    distortion_orders=distortion_orders,
+                    diameter=diameter,
+                    npixels=wf_npixels,
+                    f2f=f2f,
+                    normalise=normalise,
+                    aberration_orders=radial_orders,
+                    amplitude_orders=coherence_orders,
+                    oversize=oversize,
+                    polike=polike,
+                )
+            else:
+                pupil_mask = StaticApertureMask(
+                    diameter=diameter,
+                    npixels=wf_npixels,
+                    f2f=f2f,
+                    normalise=normalise,
+                    aberration_orders=radial_orders,
+                    amplitude_orders=coherence_orders,
+                    oversize=oversize,
+                    polike=polike,
+                )
         layers += [("pupil_mask", pupil_mask)]
 
         # layers += [("fresnel_post", FreeSpace(d_dist=-0.1))]
@@ -447,10 +457,15 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         self.layers = dlu.list2dictionary(layers, ordered=True)
 
         # Get the corners of the arrays for sparse propagation
+        if not hasattr(self, "holes"):
+            holes = get_initial_holes(diameter, wf_npixels)
+        else:
+            holes = self.holes
         basis = np.zeros((1, 1, self.wf_npixels, self.wf_npixels))
         coords = dlu.pixel_coords(self.wf_npixels, self.diameter)
-        _, corners = reduce_basis(basis, coords, self.holes, size=180)
+        _, corners = reduce_basis(basis, coords, holes, size=180)
         self.corners = corners
+        # self.corners = np.array(corners, dtype=float)
 
     def propagate_mono(self, wavelength, offset=np.zeros(2), return_wf=False):
         """

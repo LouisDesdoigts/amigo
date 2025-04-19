@@ -44,10 +44,8 @@ def summarise_fit(
     inferno = colormaps["inferno"]
     seismic = colormaps["seismic"]
 
-    # slopes = model_fn(model, exposure)
     slopes = exposure(model)
     data = exposure.slopes
-
     residual = data - slopes
 
     #
@@ -58,12 +56,10 @@ def summarise_fit(
         # posterior_im = exposure.from_vec(posterior_vec)
 
     # loglike_im = exposure.log_likelihood(slopes, return_im=True)
-
     nan_mask = np.where(np.isnan(posterior_im))
-    slopes = slopes.at[:, *nan_mask].set(np.nan)
-    data = data.at[:, *nan_mask].set(np.nan)
 
-    final_loss = np.nansum(-posterior_im) / np.prod(np.array(data.shape[-2:]))
+    # final_loss = np.nansum(-posterior_im) / np.prod(np.array(data.shape[-2:]))
+    final_loss = np.nanmean(-posterior_im)
 
     norm_res_slope = residual / (exposure.variance**0.5)
     norm_res_slope = norm_res_slope.at[:, *nan_mask].set(np.nan)
@@ -75,6 +71,9 @@ def summarise_fit(
     x = np.nanmax(np.abs(norm_res_vec))
     xs = np.linspace(-x, x, 200)
     ys = jsp.stats.norm.pdf(xs)
+
+    slopes = slopes.at[:, *nan_mask].set(np.nan)
+    data = data.at[:, *nan_mask].set(np.nan)
 
     effective_data = data.sum(0)
     effective_psf = slopes.sum(0)

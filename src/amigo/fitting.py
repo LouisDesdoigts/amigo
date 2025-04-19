@@ -251,7 +251,7 @@ class Trainer(zdx.Base):
         exposures,
         parameters=[],
         recalculate=False,
-        overwrite=False,
+        overwrite=True,
         verbose=True,
         save=True,
         args=None,
