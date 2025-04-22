@@ -46,25 +46,25 @@ def get_files(paths, ext, **kwargs):
     return files
 
 
-def initialise_params(
-    exposures,
-    optics,
-    vis_model=None,
-):
-    # NOTE: This method should be improved to take the _average_ over params that are
-    # constrained by multiple exposures
+# def initialise_params(
+#     exposures,
+#     optics,
+#     vis_model=None,
+# ):
+#     # NOTE: This method should be improved to take the _average_ over params that are
+#     # constrained by multiple exposures
 
-    params = {}
-    for exp in exposures:
-        if vis_model is not None:
-            param_dict = exp.initialise_params(optics, vis_model=vis_model)
-        else:
-            param_dict = exp.initialise_params(optics)
-        for param, (key, value) in param_dict.items():
-            if param not in params.keys():
-                params[param] = {}
-            params[param][key] = value
-    return params
+#     params = {}
+#     for exp in exposures:
+#         if vis_model is not None:
+#             param_dict = exp.initialise_params(optics, vis_model=vis_model)
+#         else:
+#             param_dict = exp.initialise_params(optics)
+#         for param, (key, value) in param_dict.items():
+#             if param not in params.keys():
+#                 params[param] = {}
+#             params[param][key] = value
+#     return params
 
 
 def repopulate(model, history, index=-1):

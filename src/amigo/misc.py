@@ -64,7 +64,7 @@ def interp_badpix(array):
     return np.where(np.isnan(fixed), 0.0, fixed)
 
 
-def find_position(psf, pixel_scale=0.065524085, window_size: int = 35):
+def find_position(psf, pixel_scale=0.065524085, window_size: int = 30):
     # TODO: Maybe iterate this operation to gain resilience to bad pixels?
 
     # Interpolate the bad pixels

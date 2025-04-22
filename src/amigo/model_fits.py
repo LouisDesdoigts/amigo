@@ -83,12 +83,8 @@ class Exposure(zdx.Base):
         )
 
         # Log flux
-        # slope_flux = self.ngroups + (1 / self.ngroups)
         params["fluxes"] = (
-            # self.key,
             self.get_key("fluxes"),
-            # np.log10(slope_flux * np.nansum(self.slopes[0])),
-            # np.log10(np.nanmean(self.slopes[0])),
             np.log10((80**2) * np.nanmean(im)),
         )
 
@@ -98,23 +94,16 @@ class Exposure(zdx.Base):
             np.zeros_like(optics.pupil_mask.abb_coeffs),
         )
 
-        # Defocus
-        params["defocus"] = self.get_key("defocus"), np.array(0.01)
-
         # Spectral slope
         params["spectra"] = self.get_key("spectra"), np.array(0.0)
 
-        # # Beam coefficients
-        # params["beam_coeffs"] = (
-        #     self.get_key("beam_coeffs"),
-        #     np.zeros_like(optics.pupil_mask.primary_beam),
-        # )
+        # Defocus
+        params["defocus"] = self.get_key("defocus"), np.array(0.01)
 
         # Reflectivity
         if self.fit_reflectivity:
             params["reflectivity"] = (
                 self.get_key("reflectivity"),
-                # np.zeros(optics.pupil_mask.amp_coeffs.shape[1]-1),
                 np.zeros_like(optics.pupil_mask.amp_coeffs),
             )
 

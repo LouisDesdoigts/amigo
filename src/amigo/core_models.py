@@ -38,13 +38,25 @@ class AmigoModel(BaseModeller):
     # ramp: None
     read: None
 
-    def __init__(self, params, optics, detector, read, vis_model=None):
-        self.params = params
+    def __init__(self, exposures, optics, detector, read, vis_model=None):
+
         self.optics = optics
         self.detector = detector
         # self.ramp = ramp
         self.read = read
         self.vis_model = vis_model
+
+        params = {}
+        for exp in exposures:
+            if vis_model is not None:
+                param_dict = exp.initialise_params(optics, vis_model=self.vis_model)
+            else:
+                param_dict = exp.initialise_params(optics)
+            for param, (key, value) in param_dict.items():
+                if param not in params.keys():
+                    params[param] = {}
+                params[param][key] = value
+        self.params = params
 
     # def model(self, exposure, **kwargs):
     #     return exposure.fit(self, exposure, **kwargs)
@@ -66,6 +78,21 @@ class AmigoModel(BaseModeller):
         if hasattr(self.vis_model, key):
             return getattr(self.vis_model, key)
         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
+
+    # def initialise_params(self, exposures):
+    #     # NOTE: This method should be improved to take the _average_ over params that are
+    #     # constrained by multiple exposures
+    #     params = {}
+    #     for exp in exposures:
+    #         if self.vis_model is not None:
+    #             param_dict = exp.initialise_params(self.optics, vis_model=self.vis_model)
+    #         else:
+    #             param_dict = exp.initialise_params(self.optics)
+    #         for param, (key, value) in param_dict.items():
+    #             if param not in params.keys():
+    #                 params[param] = {}
+    #             params[param][key] = value
+    #     return self.set("params", params)
 
 
 class ModelParams(BaseModeller):
