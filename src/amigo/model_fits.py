@@ -19,14 +19,16 @@ class Exposure(zdx.Base):
     """
 
     slopes: jax.Array
-    # variance: jax.Array
     cov: jax.Array
     ramp: jax.Array
-    # ramp_variance: jax.Array
     ramp_cov: jax.Array
     support: jax.Array
     badpix: jax.Array
     slope_support: jax.Array
+    parang: jax.Array
+    calibrator: bool = eqx.field(static=True)
+
+    #
     nints: int = eqx.field(static=True)
     filter: str = eqx.field(static=True)
     star: str = eqx.field(static=True)
@@ -36,19 +38,18 @@ class Exposure(zdx.Base):
     act_id: str = eqx.field(static=True)
     visit: str = eqx.field(static=True)
     dither: str = eqx.field(static=True)
-    calibrator: bool = eqx.field(static=True)
-    # fit: object = eqx.field(static=True)
 
-    def __init__(self, file):  # , fit):
+    def __init__(self, file):
         self.slopes = np.array(file["SLOPE"].data, float)
-        # self.variance = np.array(file["SLOPE_ERR"].data, float) ** 2
-        self.cov = np.array(file["SLOPE_ERR"].data, float)
+        self.cov = np.array(file["SLOPE_COV"].data, float)
         self.badpix = np.array(file["BADPIX"].data, bool)
         self.support = np.where(~np.array(file["BADPIX"].data, bool))
         self.ramp = np.asarray(file["RAMP"].data, float)
-        # self.ramp_variance = np.asarray(file["RAMP_ERR"].data, float) ** 2
-        self.ramp_cov = np.asarray(file["RAMP_ERR"].data, float)
+        self.ramp_cov = np.asarray(file["RAMP_COV"].data, float)
         self.slope_support = np.asarray(file["SLOPE_SUP"].data, int)
+        self.parang = np.array(file[0].header["ROLL_REF"], float)
+
+        #
         self.nints = file[0].header["NINTS"]
         self.filter = file[0].header["FILTER"]
         self.star = file[0].header["TARGPROP"]
@@ -59,7 +60,6 @@ class Exposure(zdx.Base):
         self.dither = file[0].header["EXPOSURE"]
         self.calibrator = bool(file[0].header["IS_PSF"])
         self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
-        # self.fit = fit
 
     def print_summary(self):
         print(
@@ -403,24 +403,12 @@ class FlatFit(ModelFit):
     polynomial_powers: np.ndarray
 
     def __init__(self, file, fit_one_on_fs=False):
-        self.slopes = np.array(file["SLOPE"].data, float)
-        # self.variance = np.array(file["SLOPE_ERR"].data, float) ** 2
-        self.cov = np.array(file["SLOPE_ERR"].data, float)
-        self.badpix = np.array(file["BADPIX"].data, bool)
-        self.support = np.where(~np.array(file["BADPIX"].data, bool))
-        self.ramp = np.asarray(file["RAMP"].data, float)
-        # self.ramp_variance = np.asarray(file["RAMP_ERR"].data, float) ** 2
-        self.ramp_cov = np.asarray(file["RAMP_ERR"].data, float)
-        self.slope_support = np.asarray(file["SLOPE_SUP"].data, int)
-        self.nints = file[0].header["NINTS"]
-        self.filter = file[0].header["FILTER"]
+        file[0].header["IS_PSF"] = False
+
+        super().__init__(file)
         self.star = "NIS_LAMP"
         self.observation = "FLAT"
         self.program = "FLAT"
-        self.act_id = file[0].header["ACT_ID"]
-        self.visit = file[0].header["VISITGRP"]
-        self.dither = file[0].header["EXPOSURE"]
-        self.calibrator = False
         self.filename = f"FLAT_{self.filter}"
         self.fit_one_on_fs = fit_one_on_fs
         self.fit_reflectivity = False

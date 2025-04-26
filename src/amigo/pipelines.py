@@ -23,25 +23,12 @@ def delete_contents(path):
 
 def process_calslope(
     input_dir,
-    output_dir="calslope/",
+    output_dir,
     sigma=3.0,
-    # chunk_size=0,
-    # n_groups=None,  # how many groups of the ramp to use NOTE Does nothing rn
     clean_dir=True,
     flat=False,
     correct_ADC=True,
 ):
-    """
-    Chunk size determines the maximum number of integrations in a 'chunk'. Each chunk
-    is saved to its own file with an integer extension added. This breaks the data set
-    into smaller time series to help avoid issues with any time-variation in the data.
-    A chunk_size of zero will do no chunking and process the data all in one.
-
-    This will (presently) always reprocess data
-
-    if clean_dir is True, the existisng contents of the output_dir will be deleted prior
-    to procesing, so ensure no old files are hanging around
-    """
     if input_dir[-1] != "/":
         input_dir += "/"
     if output_dir[-1] != "/":
@@ -173,10 +160,6 @@ def process_data(file, data, sigma=3.0, correct_ADC=True, flat=False):
         amp, period = 2, 1024
         data = data - amp * np.sin(2 * np.pi * np.nanmean(data, axis=0) / period)
 
-    badpix = np.load(pkg.resource_filename(__name__, "data/badpix.npy"))
-    # badpix = badpix.at[:5, :].set(True)
-    data = data.at[:, :, badpix].set(np.nan)
-
     if flat:
         slopes = np.diff(data, axis=1)
         slopes = apply_sigma_clip(slopes, axis=(0, 1, 2, 3), sigma=sigma)
@@ -189,11 +172,11 @@ def process_data(file, data, sigma=3.0, correct_ADC=True, flat=False):
     slopes = apply_sigma_clip(slopes, axis=0, sigma=sigma)
 
     # Rebuild the data with the nan'd values cut upper ramps
-    data = rebuild_ramps(data, slopes)
-    slopes = np.diff(data, axis=1)
+    ramps = rebuild_ramps(data, slopes)
+    slopes = np.diff(ramps, axis=1)
 
     # Return the values
-    return update_headers(file, slopes)
+    return update_headers(file, ramps, slopes)
 
 
 def calc_mean_and_cov(data):
@@ -217,7 +200,13 @@ def calc_mean_and_cov(data):
 
 def nancov(X):
     """Compute nan-aware covariance and ensure PSD."""
-    cov = calc_nancov(X, eps=0)  # Compute covariance without regularization
+    cov = calc_nancov(X, eps=1e-6)  # Compute covariance without regularization
+
+    # # Only take the covariances of the adjacent groups - Things like non-linear gain
+    # # and low integration counts can cause spurious likelihoods values
+    # tri = np.tri(len(cov), k=1).astype(bool)
+    # cov *= (tri & tri.T)
+    cov *= np.eye(len(cov))
     return make_psd(cov, eps=1e-6)  # Ensure positive semi-definite
 
 
@@ -240,26 +229,18 @@ def make_psd(A, eps=1e-6):
     return eigvecs @ np.diag(eigvals) @ eigvecs.T  # Reconstruct matrix
 
 
-def update_headers(
-    file,
-    data,
-    slopes,
-    # ramp,
-    # ramp_cov,
-    # ramp_support,
-    # slope,
-    # slope_cov,
-    # slope_support,
-    # badpix,
-):
-
-    badpix = np.load(pkg.resource_filename(__name__, "data/badpix.npy"))
+def update_headers(file, ramps, slopes, min_supp=5):
 
     # Calculate the ramp mean and covariance
-    ramp, ramp_cov, ramp_support = calc_mean_and_cov(data)
+    ramp, ramp_cov, ramp_support = calc_mean_and_cov(ramps)
 
     # Calculate the slope mean and covariance
     slopes, slope_cov, slope_support = calc_mean_and_cov(slopes)
+
+    # Calculate the bad pixel mask
+    badpix = np.load(pkg.resource_filename(__name__, "data/badpix.npy"))
+    badpix = badpix.at[:5].set(True)
+    badpix = (badpix | (slope_support.min(0) < min_supp)).astype(int)
 
     # Save the Outputs
     header = fits.Header()
