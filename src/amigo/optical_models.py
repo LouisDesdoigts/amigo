@@ -399,7 +399,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         diameter=6.603464,
         wf_npixels=1024,
         f2f=0.80,
-        oversize=1.1,
+        oversize=1.2,
         defocus=0.01,
         polike=False,
         unique_holes=False,

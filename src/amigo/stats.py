@@ -102,46 +102,12 @@ def check_positive_semi_definite(mat):
 
 
 def variance_model(model, exposure, true_read_noise=False, read_noise=10):
-    """
-    True read noise will use the CRDS read noise array, else it will use a constant
-    value as determined by the input. true_read_noise therefore supersedes read_noise.
-    Using a flat value of 10 seems to be more accurate that the CRDS array.
-
-    That said I think the data has overly ambitious variances as a consequence of the
-    sigma clipping that is performed. We could determine the variance analytically from
-    the variance of the individual pixel values, but we will look at this later.
-    """
-
-    nan_mask = np.isnan(exposure.slopes)
-
-    # Estimate the photon covariance
-    slopes = exposure(model)  # .model(exposure)
-
-    # TODO: Update with exposure.pixel_support
-    slopes = slopes.at[np.where(nan_mask)].set(np.nan)
-    variance = slopes / exposure.nints
-
-    # Read noise covariance
-    if true_read_noise:
-        rn = np.load(pkg.resource_filename(__name__, "data/SUB80_readnoise.npy"))
-    else:
-        rn = read_noise
-    read_variance = (rn**2) * np.ones((80, 80)) / exposure.nints
-    variance += read_variance[None, ...]
-
-    return slopes, variance
+    slopes, cov = covariance_model(model, exposure)
+    inds = np.arange(len(slopes))
+    return slopes, cov[inds, inds]
 
 
 def covariance_model(model, exposure):
-    """
-    True read noise will use the CRDS read noise array, else it will use a constant
-    value as determined by the input. true_read_noise therefore supersedes read_noise.
-    Using a flat value of 10 seems to be more accurate that the CRDS array.
-
-    That said I think the data has overly ambitious variances as a consequence of the
-    sigma clipping that is performed. We could determine the variance analytically from
-    the variance of the individual pixel values, but we will look at this later.
-    """
     # Estimate the photon covariance
     slopes = exposure(model)
 

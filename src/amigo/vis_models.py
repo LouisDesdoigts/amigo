@@ -111,3 +111,30 @@ class VisModel(zdx.Base):
         phase = np.dot(phases, self.phase_matrix[filter])
         psf = inject_vis(wfs.psf, amp, phase, self.otf_coords, uv_coords)
         return dl.PSF(psf, wfs.pixel_scale.mean(0))
+
+
+def vis_jac_fn(model, exp):
+    wfs = exp.model_wfs(model)
+    wls = wfs.wavelength
+    psf_pscale = wfs.pixel_scale[0]
+
+    npix = 2 * model.vis_model.otf_coords.shape[-1]
+    pscale = 0.5 * np.diff(model.vis_model.otf_coords[0, 0]).mean()
+
+    # Fourier Functions
+    to_uv = vmap(lambda arr, wl: dlu.MFT(arr, wl, psf_pscale, npix, pscale))
+    downsample = vmap(lambda arr: dlu.downsample(arr, 2, mean=True))
+
+    # Calculate the visibility maps
+    vis = downsample(to_uv(wfs.psf, wls))
+    vis = np.mean(vis, axis=0)
+    vis = vis.flatten()[: vis.size // 2]
+
+    #
+    amps = np.abs(vis)
+    phases = np.angle(vis)
+
+    #
+    amp_mat = np.linalg.pinv(model.vis_model.amp_matrix[exp.filter])
+    phase_mat = np.linalg.pinv(model.vis_model.phase_matrix[exp.filter])
+    return np.dot(amps, amp_mat), np.dot(phases, phase_mat)

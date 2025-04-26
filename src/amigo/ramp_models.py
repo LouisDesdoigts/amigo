@@ -160,7 +160,7 @@ class RNNRamp(WrapperHolder):
     bleed: bool
     norm: int
 
-    def __init__(self, conv_rnn, gain_model, norm=2**15, bleed=True):
+    def __init__(self, conv_rnn, gain_model, norm=2**14, bleed=True):
         values, structure = build_wrapper(conv_rnn)
         self.values = values
         self.structure = structure
