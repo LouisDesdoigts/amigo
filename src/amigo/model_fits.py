@@ -5,6 +5,7 @@ import dLux as dl
 import dLux.utils as dlu
 import jax.numpy as np
 from jax import lax, vmap
+import pkg_resources as pkg
 from .misc import find_position, gen_surface
 from .ramp_models import Ramp
 from .optical_models import gen_powers
@@ -42,12 +43,16 @@ class Exposure(zdx.Base):
     def __init__(self, file):
         self.slopes = np.array(file["SLOPE"].data, float)
         self.cov = np.array(file["SLOPE_COV"].data, float)
-        self.badpix = np.array(file["BADPIX"].data, bool)
         self.support = np.where(~np.array(file["BADPIX"].data, bool))
         self.ramp = np.asarray(file["RAMP"].data, float)
         self.ramp_cov = np.asarray(file["RAMP_COV"].data, float)
         self.slope_support = np.asarray(file["SLOPE_SUP"].data, int)
         self.parang = np.array(file[0].header["ROLL_REF"], float)
+
+        # Make sure we have all the baxpixels
+        static_badpix = np.load(pkg.resource_filename(__name__, "data/badpix.npy"))
+        pipeline_badpix = np.array(file["BADPIX"].data, bool)
+        self.badpix = static_badpix | pipeline_badpix
 
         #
         self.nints = file[0].header["NINTS"]
@@ -85,7 +90,7 @@ class Exposure(zdx.Base):
         # Log flux
         params["fluxes"] = (
             self.get_key("fluxes"),
-            np.log10((80**2) * np.nanmean(im)),
+            np.log10((80**2) * 1.61 * np.nanmean(im)),
         )
 
         # Aberrations
@@ -117,22 +122,6 @@ class Exposure(zdx.Base):
         # Biases
         if self.fit_bias:
             params["biases"] = (self.get_key("biases"), np.zeros((80, 80)))
-
-        # Visibilities
-        if isinstance(self, SplineVisFit):
-            if vis_model is None:
-                raise ValueError("vis_model must be provided for SplineVisFit")
-            # n = vis_model.pixel_vis.n_knots
-            n = vis_model.n_terms  # // 2
-            params["amplitudes"] = (self.get_key("amplitudes"), np.zeros(n))
-            params["phases"] = (self.get_key("phases"), np.zeros(n))
-
-        # Binary parameters
-        if isinstance(self, BinaryFit):
-            raise NotImplementedError("BinaryFit initialisation not yet implemented")
-            params["separation"] = (self.get_key("separation"), 0.15)
-            params["contrast"] = (self.get_key("contrast"), 2.0)
-            params["position_angle"] = (self.get_key("position_angle"), 0.0)
 
         return params
 
@@ -369,7 +358,17 @@ class ModelFit(Exposure):
         # Apply the read effects
         return eqx.filter_jit(model.read.apply)(ramp)
 
+    def nuke_pixel_grads(self, model):
+        FF = lax.stop_gradient(model.FF)
+        non_linearity = lax.stop_gradient(model.non_linearity)
+        return model.set(["FF", "non_linearity"], [FF, non_linearity])
+
     def simulate(self, model, return_bleed=False):
+        #
+        # if not isinstance(model, FlatFit):
+        model = self.nuke_pixel_grads(model)
+
+        #
         psf = self.model_psf(model)
         illuminance = self.model_illuminance(psf, model)
         if return_bleed:
@@ -430,11 +429,13 @@ class FlatFit(ModelFit):
     def initialise_params(self, optics, vis_model=None, one_on_fs_order=1):
         params = {}
 
+        im = np.where(self.badpix, np.nan, self.slopes[0])
+        # psf = np.where(np.isnan(im), 0.0, im)
+
         # Log flux
-        slope_flux = self.ngroups + (1 / self.ngroups)
         params["fluxes"] = (
             self.get_key("fluxes"),
-            np.log10(slope_flux * np.nansum(self.slopes[0])),
+            np.log10((80**2) * 1.61 * np.nanmean(im)),
         )
 
         # Polynomial fit coefficients
@@ -495,7 +496,8 @@ class FlatFit(ModelFit):
 
         # Get the illuminance
         coeffs = model.flat_coeffs[self.get_key("flat_coeffs")]
-        flux = 10 ** model.fluxes[self.get_key("fluxes")]
+        # flux = 10 ** model.fluxes[self.get_key("fluxes")]
+        flux = self.ngroups * 10 ** model.fluxes[self.get_key("fluxes")]
         surface = 1.0 + gen_surface(coords, coeffs, self.polynomial_powers)
         illuminance = flux * (surface / surface.sum())
 
@@ -518,6 +520,17 @@ class SplineVisFit(PointFit):
     def __init__(self, *args, joint_fit=True, **kwargs):
         self.joint_fit = bool(joint_fit)
         super().__init__(*args, **kwargs)
+
+    def initialise_params(self, optics, vis_model=None, one_on_fs_order=1):
+        params = super().initialise_params(
+            optics, vis_model=vis_model, one_on_fs_order=one_on_fs_order
+        )
+        if vis_model is None:
+            raise ValueError("vis_model must be provided for SplineVisFit")
+        n = vis_model.n_terms
+        params["amplitudes"] = (self.get_key("amplitudes"), np.zeros(n))
+        params["phases"] = (self.get_key("phases"), np.zeros(n))
+        return params
 
     def get_key(self, param):
 
@@ -543,6 +556,17 @@ class SplineVisFit(PointFit):
 
 
 class BinaryFit(ModelFit):
+
+    def initialise_params(self, optics, vis_model=None, one_on_fs_order=1):
+        params = super().initialise_params(
+            optics, vis_model=vis_model, one_on_fs_order=one_on_fs_order
+        )
+        # Binary parameters
+        raise NotImplementedError("BinaryFit initialisation not yet implemented")
+        params["separation"] = (self.get_key("separation"), 0.15)
+        params["contrast"] = (self.get_key("contrast"), 2.0)
+        params["position_angle"] = (self.get_key("position_angle"), 0.0)
+        return params
 
     # Maybe overwrite this to get the binary spectra
     def get_spectra(self, model, exposure):

@@ -28,6 +28,7 @@ def process_calslope(
     clean_dir=True,
     flat=False,
     correct_ADC=True,
+    use_cov=False,
 ):
     if input_dir[-1] != "/":
         input_dir += "/"
@@ -105,7 +106,9 @@ def process_calslope(
 
         # Open new file and process the data
         file = fits.open(file_calslope)
-        file = process_data(file, data, sigma=sigma, correct_ADC=correct_ADC, flat=flat)
+        file = process_data(
+            file, data, sigma=sigma, correct_ADC=correct_ADC, flat=flat, use_cov=use_cov
+        )
 
         # Remove the redundant or undesired extensions
         del file["SCI"]
@@ -146,7 +149,7 @@ def rebuild_ramps(data, slopes):
     return np.concatenate([data[:, :1], data[:, :1] + clean_ramp], axis=1)
 
 
-def process_data(file, data, sigma=3.0, correct_ADC=True, flat=False):
+def process_data(file, data, sigma=3.0, correct_ADC=True, flat=False, use_cov=False):
     """
     Processes the data and saves the outputs to the file
 
@@ -176,10 +179,10 @@ def process_data(file, data, sigma=3.0, correct_ADC=True, flat=False):
     slopes = np.diff(ramps, axis=1)
 
     # Return the values
-    return update_headers(file, ramps, slopes)
+    return update_headers(file, ramps, slopes, use_cov=use_cov)
 
 
-def calc_mean_and_cov(data):
+def calc_mean_and_cov(data, read_std):
     # Get the pixel support and mean
     support = np.asarray(~np.isnan(data), int).sum(axis=0)
     mean = np.nanmean(data, axis=0)
@@ -198,19 +201,7 @@ def calc_mean_and_cov(data):
     return mean, cov, support
 
 
-def nancov(X):
-    """Compute nan-aware covariance and ensure PSD."""
-    cov = calc_nancov(X, eps=1e-6)  # Compute covariance without regularization
-
-    # # Only take the covariances of the adjacent groups - Things like non-linear gain
-    # # and low integration counts can cause spurious likelihoods values
-    # tri = np.tri(len(cov), k=1).astype(bool)
-    # cov *= (tri & tri.T)
-    cov *= np.eye(len(cov))
-    return make_psd(cov, eps=1e-6)  # Ensure positive semi-definite
-
-
-def calc_nancov(X, eps=1e-6):
+def nancov(X, eps=1e-6):
     """Compute covariance while ignoring NaNs."""
     mask = np.isnan(X)
     valid_counts = np.sum(~mask, axis=1, keepdims=True)
@@ -229,13 +220,19 @@ def make_psd(A, eps=1e-6):
     return eigvecs @ np.diag(eigvals) @ eigvecs.T  # Reconstruct matrix
 
 
-def update_headers(file, ramps, slopes, min_supp=5):
+def update_headers(file, ramps, slopes, min_supp=5, use_cov=False):
+    # Get the read noise to populate the covariance matrix
+    read_std = np.load(pkg.resource_filename(__name__, "data/SUB80_readnoise.npy"))
 
     # Calculate the ramp mean and covariance
-    ramp, ramp_cov, ramp_support = calc_mean_and_cov(ramps)
+    ramp, ramp_cov, ramp_support = calc_mean_and_cov(ramps, read_std)
 
     # Calculate the slope mean and covariance
-    slopes, slope_cov, slope_support = calc_mean_and_cov(slopes)
+    slopes, slope_cov, slope_support = calc_mean_and_cov(slopes, read_std)
+
+    if not use_cov:
+        ramp_cov *= np.eye(ramp_cov.shape[0])[..., None, None]
+        slope_cov *= np.eye(slope_cov.shape[0])[..., None, None]
 
     # Calculate the bad pixel mask
     badpix = np.load(pkg.resource_filename(__name__, "data/badpix.npy"))

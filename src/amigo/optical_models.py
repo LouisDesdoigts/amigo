@@ -1,4 +1,5 @@
 import pkg_resources as pkg
+import equinox as eqx
 import zodiax as zdx
 from jax import Array, vmap
 import jax.numpy as np
@@ -140,14 +141,14 @@ def reduce_basis(basis, coords, holes, size=180):
     npixels = len(xs)
     pixel_scale = np.diff(xs, axis=0).mean()
 
-    # Re-scale the coordinates to pixel units
-    arr_coords = coords / pixel_scale
+    # # Re-scale the coordinates to pixel units
+    # arr_coords = coords / pixel_scale
 
     # Shift the coordinates to be centred at the corner (ie array indexed)
     cen_pix = npixels / 2
     if npixels % 2 == 0:
         cen_pix -= 0.5
-    arr_coords = arr_coords + (npixels / 2)
+    # arr_coords = arr_coords + (npixels / 2)
 
     # Get the holes positions in units of pixels
     holes_pix = np.rint((holes / pixel_scale) + cen_pix).astype(int)
@@ -289,14 +290,34 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
         return wavefront
 
 
+def calc_corners(holes, npixels, diameter, size):
+    # Shift the coordinates to be centred at the corner (ie array indexed)
+    cen_pix = npixels / 2
+    if npixels % 2 == 0:
+        cen_pix -= 0.5
+
+    # Get the corners of the hole cut outs
+    pixel_scale = diameter / npixels
+    holes_pix = np.rint((holes / pixel_scale) + cen_pix).astype(int)
+    corners = holes_pix - size // 2
+    return corners
+
+
+def calc_mask_hole(coeffs, coords, hole_cen, powers, ap_fn, oversample=3):
+    coords += hole_cen[:, None, None]
+    coords = distort_coords(coords, coeffs, powers)
+    return dlu.downsample(ap_fn(coords), oversample, mean=True)
+
+
 class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLayer):
     holes: Array
     f2f: Array
     normalise: bool
     transformation: None
-    # softness: float
     primary_beam: Array
     primary_powers: Array
+    corners: Array
+    size: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -308,9 +329,9 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         normalise=True,
         aberration_orders=None,
         amplitude_orders=None,
-        oversize=1.1,
+        oversize=1.2,
         polike=False,
-        # softness=0.5,
+        size=180,
     ):
         if holes is None:
             holes = get_initial_holes(diameter, npixels)
@@ -323,6 +344,8 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         # self.softness = np.array(softness, float)
         self.primary_powers = np.array(gen_powers(4))[:, 1:]
         self.primary_beam = np.zeros((7, *self.primary_powers.shape))
+        self.corners = calc_corners(holes, npixels, diameter, size)
+        self.size = size
 
         # Get undistorted coordinates for aberrations
         coords = dlu.pixel_coords(npixels, diameter)
@@ -339,27 +362,57 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         )
 
     def calc_mask(self, npixels, diameter, oversample=3):
-        # npix = npixels * oversample
-        # coords = self.transformation.apply(dlu.pixel_coords(npixels, diameter))
+        pixel_scale = diameter / npixels
 
-        # Distort the hole coordinates
+        # Get the oversample sub-array coordinates
+        npix = npixels * oversample
+        full_size = self.size * oversample
+        full_pixel_scale = diameter / npix
+        small_diam = full_size * full_pixel_scale
+        coords = dlu.pixel_coords(full_size, small_diam)
+
+        # Calculate the offset
         distort_fn = lambda coords: distort_coords(coords, self.distortion, self.primary_powers)
         holes = distort_fn(self.holes.T[..., None])[..., 0].T
-        # holes = distort_coords(self.holes.T[..., None], self.distortion, powers)[..., 0].T
+        offset = holes - (pixel_scale * (2 * self.corners + self.size) - diameter) / 2
 
-        # Apply the per-hole primary-beam distortion
-        npix = oversample * npixels
-        coords = dlu.pixel_coords(npix, diameter)
-        distort_fn = lambda coeffs: distort_coords(coords, coeffs, self.primary_powers)
-        coords = vmap(distort_fn)(self.primary_beam)
-        # coords = distort_coords(coords, self.primary_beam, self.primary_powers)
+        # Calculate the individual apertures
+        ap_fn = lambda coords: dlu.soft_reg_polygon(
+            coords, self.f2f / np.sqrt(3), 6, 0.25 * pixel_scale
+        )
+        mask_fn = lambda coeffs, cen: calc_mask_hole(
+            coeffs, coords, cen, self.primary_powers, ap_fn
+        )
+        apertures = vmap(mask_fn)(self.primary_beam, offset)
 
-        # Shift to the hole positions
-        hole_coords = vmap(dlu.translate_coords)(coords, holes)
-        # hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, self.holes)
-        # mask = calc_mask(hole_coords, self.f2f, self.softness * diameter / npixels)
-        mask = calc_mask(hole_coords, self.f2f, 0.5 * diameter / npix)
-        return dlu.downsample(mask, oversample, mean=True)
+        # Paste into the full array
+        full = np.zeros((1024, 1024))
+        for ind, (j, i) in enumerate(self.corners):
+            full = dynamic_update_slice(full, apertures[ind], (i, j))
+        return full
+
+    # def calc_mask(self, npixels, diameter, oversample=3):
+    #     # npix = npixels * oversample
+    #     # coords = self.transformation.apply(dlu.pixel_coords(npixels, diameter))
+
+    #     # Distort the hole coordinates
+    # distort_fn = lambda coords: distort_coords(coords, self.distortion, self.primary_powers)
+    # holes = distort_fn(self.holes.T[..., None])[..., 0].T
+    # holes = distort_coords(self.holes.T[..., None], self.distortion, powers)[..., 0].T
+
+    #     # Apply the per-hole primary-beam distortion
+    #     npix = oversample * npixels
+    #     coords = dlu.pixel_coords(npix, diameter)
+    #     distort_fn = lambda coeffs: distort_coords(coords, coeffs, self.primary_powers)
+    #     coords = vmap(distort_fn)(self.primary_beam)
+    #     # coords = distort_coords(coords, self.primary_beam, self.primary_powers)
+
+    #     # Shift to the hole positions
+    #     hole_coords = vmap(dlu.translate_coords)(coords, holes)
+    #     # hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, self.holes)
+    #     # mask = calc_mask(hole_coords, self.f2f, self.softness * diameter / npixels)
+    #     mask = calc_mask(hole_coords, self.f2f, 0.5 * diameter / npix)
+    #     return dlu.downsample(mask, oversample, mean=True)
 
     def apply(self, wavefront):
         wavefront *= self.calc_transmission(npixels=wavefront.npixels)

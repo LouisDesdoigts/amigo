@@ -31,7 +31,8 @@ def build_cov(var, read_std):
     slope_cov_mask = get_slope_cov_mask(len(var))
 
     # Create the read noise covariance matrix
-    read_cov = read_std[None, None, ...] * slope_cov_mask[..., None, None]
+    # 2x here to account for the two reads that contribute to the slope
+    read_cov = 2 * read_std[None, None, ...] * slope_cov_mask[..., None, None]
 
     # Return the combined covariance matrix
     return slope_cov + read_cov
@@ -101,7 +102,7 @@ def check_positive_semi_definite(mat):
     )
 
 
-def variance_model(model, exposure, true_read_noise=False, read_noise=10):
+def variance_model(model, exposure):
     slopes, cov = covariance_model(model, exposure)
     inds = np.arange(len(slopes))
     return slopes, cov[inds, inds]

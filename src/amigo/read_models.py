@@ -103,28 +103,36 @@ class PixelNonLinearity(zdx.Base):
     """Assumes that the bias has already been added to the ramp"""
 
     non_linearity: jax.Array
+    gain: jax.Array
 
-    def __init__(self, poly_order=2):
+    def __init__(self, gain=1.61, poly_order=2):
+        self.gain = np.array(gain, float)
         self.non_linearity = np.zeros((poly_order - 1, 80, 80))
 
     def apply(self, ramp):
         # Get the non-linear, per-pixel gain form voltage to counts
         # Assumes that bias has already been added back into the ramp
         # the ramp here is actually the _voltage_ in each pixel
-        data = ramp.data / 2**16
+        electrons = ramp.data / 2**16
         # coeffs = self.non_linearity.at[-1].add(np.ones_like(data[0]))
 
-        shape = (1, *data.shape[-2:])
+        shape = (1, *electrons.shape[-2:])
         coeffs = np.concatenate([self.non_linearity, np.ones(shape), np.zeros(shape)], axis=0)
         # coeffs = np.concatenate([coeffs, np.zeros((1, *data.shape[-2:]))], axis=0)
-        counts = np.polyval(coeffs, data)
-        return ramp.set("data", counts * 2**16)
+        counts = np.polyval(coeffs, electrons)
+        return ramp.set("data", (counts * 2**16) / self.gain)
 
 
 class ReadModel(LayeredDetector):
 
     def __init__(
-        self, dark_current=0.25, ipc=True, one_on_fs=None, ADC_coeffs=np.zeros((3, 2)), bias=None
+        self,
+        dark_current=0.25,
+        ipc=True,
+        one_on_fs=None,
+        ADC_coeffs=np.zeros((3, 2)),
+        bias=None,
+        gain=1.61,
     ):
         layers = []
         layers.append(("read", DarkCurrent(dark_current)))
@@ -135,7 +143,7 @@ class ReadModel(LayeredDetector):
             ipc = None
         # layers.append(("pixel_bias", PixelBias(bias=bias)))
         layers.append(("IPC", ipc))
-        layers.append(("pixel_non_linearity", PixelNonLinearity()))
+        layers.append(("pixel_non_linearity", PixelNonLinearity(gain=gain)))
         layers.append(("amplifier", Amplifier(one_on_fs)))
         # layers.append(("ADC", ADC(ADC_coeffs)))
         self.layers = dlu.list2dictionary(layers, ordered=True)
