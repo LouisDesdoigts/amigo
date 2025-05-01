@@ -105,9 +105,9 @@ import jax.tree as jtu
 import numpy as onp
 import time
 from datetime import timedelta
-from amigo.core_models import ModelParams, ParamHistory
-from amigo.misc import tqdm
-from amigo.fitting import (
+from .core_models import ModelParams, ParamHistory
+from .misc import tqdm
+from .fitting import (
     get_optimiser,
     get_val_grad_fn,
     get_norm_loss_fn,

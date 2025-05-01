@@ -6,10 +6,10 @@ from jax import vmap
 import dLux as dl
 from jax.lax import dynamic_slice as dyn_slice
 import dLux.utils as dlu
-from amigo.optical_models import gen_powers, distort_coords
-from amigo.detector_models import PixelSensitivity
-from amigo.misc import interp_ramp
-from amigo.core_models import build_wrapper, WrapperHolder
+from .optical_models import gen_powers, distort_coords
+from .detector_models import PixelSensitivity
+from .misc import interp_ramp
+from .core_models import build_wrapper, WrapperHolder
 
 
 class Ramp(dl.PSF):

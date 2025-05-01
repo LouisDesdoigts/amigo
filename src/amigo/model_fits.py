@@ -184,7 +184,7 @@ class ModelFit(Exposure):
         ]:
             return self.key
 
-        if param in ["amplitudes", "phases"]:
+        if param in ["amplitudes", "phases", "vis"]:
             return "_".join([self.star, self.filter])
 
         # if param in ["aberrations", "reflectivity"]:
@@ -226,6 +226,7 @@ class ModelFit(Exposure):
         if param in [
             "amplitudes",
             "phases",
+            "vis",
             "fluxes",
             "aberrations",
             "reflectivity",
@@ -530,13 +531,14 @@ class SplineVisFit(PointFit):
         n = vis_model.n_terms
         params["amplitudes"] = (self.get_key("amplitudes"), np.zeros(n))
         params["phases"] = (self.get_key("phases"), np.zeros(n))
+        # params["vis"] = (self.get_key("amplitudes"), np.zeros(n))
         return params
 
     def get_key(self, param):
 
         # Return the per exposure key if not joint fitting
         if not self.joint_fit:
-            if param in ["amplitudes", "phases"]:
+            if param in ["amplitudes", "phases", "vis"]:
                 return self.key
 
         return super().get_key(param)
@@ -548,9 +550,14 @@ class SplineVisFit(PointFit):
         amps = model.amplitudes[self.get_key("amplitudes")]
         phases = model.phases[self.get_key("phases")]
         return model.vis_model.model_vis(wfs, amps, phases, self.filter)
+        # latent_vis = model.vis[self.get_key("vis")]
+        # return model.vis_model.model_vis(wfs, latent_vis, self.filter)
 
     def model_psf(self, model):
         wfs = self.model_wfs(model)
+        # wfs = wfs.downsample(2)
+        # fn = eqx.filter_vmap(lambda wf, _: wf.downsample(2))(wfs, wfs.wls)
+
         psf = self.model_vis(wfs, model)
         return psf
 

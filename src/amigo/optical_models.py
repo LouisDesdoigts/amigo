@@ -433,6 +433,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
     defocus_type: str
     defocus: np.ndarray
     corners: np.ndarray
+    wf_oversample: int
 
     def __init__(
         self,
@@ -442,6 +443,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         distortion_orders=3,
         coherence_orders=4,
         oversample=3,
+        wf_oversample=2,
         defocus_type="fft",
         #
         pupil_mask=None,
@@ -465,6 +467,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         self.diameter = diameter
         self.psf_npixels = psf_npixels
         self.oversample = oversample
+        self.wf_oversample = wf_oversample
         self.psf_pixel_scale = pixel_scale
         self.defocus = np.array(defocus, float)
         self.defocus_type = defocus_type
@@ -540,7 +543,8 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             if `return_wf` is True, returns the Wavefront object.
         """
         # Initialise wavefront
-        wf = dl.Wavefront(self.wf_npixels, self.diameter, wavelength)
+        # wf = dl.Wavefront(self.wf_npixels, self.diameter, wavelength)
+        wf = Wavefront(self.wf_npixels, self.diameter, wavelength)
         wf = wf.tilt(offset)
 
         # Apply layers
@@ -548,9 +552,10 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             wf *= layer
 
         # Propagate
-        true_pixel_scale = self.psf_pixel_scale / self.oversample
+        full_oversample = self.wf_oversample * self.oversample
+        true_pixel_scale = self.psf_pixel_scale / full_oversample
         pixel_scale = dlu.arcsec2rad(true_pixel_scale)
-        psf_npixels = self.psf_npixels * self.oversample
+        psf_npixels = self.psf_npixels * full_oversample
 
         if self.defocus_type == "phase":
             first, second = dlu.propagation.fresnel_phase_factors(
@@ -580,10 +585,45 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             # wf = wf.propagate(psf_npixels, pixel_scale)
             wf = propagate_sparse(wf, psf_npixels, pixel_scale, corners=self.corners, size=180)
 
+        # Downsample and normalise the wavefront
+        psf = wf.psf
+        phase = wf.phase
+        psf = dlu.downsample(psf, self.wf_oversample, mean=False)
+        phase = dlu.downsample(phase, self.wf_oversample, mean=True)
+        wf = wf.set(
+            ["pixel_scale", "amplitude", "phase"],
+            [wf.pixel_scale * self.wf_oversample, np.sqrt(psf), phase],
+        )
+
+        # DOWN-SAMPLING VIA THE AVG PHASOR GIVES A DIFFERENT ANSWER
+        # power = np.sum(wf.amplitude ** 2)
+        # wf = wf.downsample(self.wf_oversample)
+        # wf = wf.multiply("amplitude", np.sqrt(power / np.sum(wf.amplitude**2)))
+
         # Return PSF or Wavefront
         if return_wf:
             return wf
         return wf.psf
+
+
+class Wavefront(dl.Wavefront):
+
+    def downsample(self, factor=2):
+        """
+        Downsample the wavefront by a factor of 2.
+        """
+        phasor = self.phasor
+        real = dlu.downsample(phasor.real, factor, mean=True)
+        imag = dlu.downsample(phasor.imag, factor, mean=True)
+        phasor = real + 1j * imag
+        amplitude = np.abs(phasor)
+        phase = np.angle(phasor)
+
+        pixel_scale = self.pixel_scale * factor
+        return self.set(
+            ["pixel_scale", "amplitude", "phase"],
+            [pixel_scale, amplitude, phase],
+        )
 
 
 def SparseMFT(

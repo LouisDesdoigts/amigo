@@ -1,4 +1,4 @@
-from amigo.fisher import FIM
+from .fisher import FIM
 import equinox as eqx
 import zodiax as zdx
 import time
