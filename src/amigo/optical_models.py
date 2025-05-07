@@ -5,7 +5,7 @@ from jax import Array, vmap
 import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
-from .misc import calc_throughput
+from .misc import calc_throughput, interp
 from jax.lax import dynamic_update_slice, dynamic_slice
 from dLux.utils.propagation import transfer_matrix, calc_nfringes
 
@@ -433,7 +433,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
     defocus_type: str
     defocus: np.ndarray
     corners: np.ndarray
-    wf_oversample: int
+    psf_upsample: int
 
     def __init__(
         self,
@@ -443,7 +443,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         distortion_orders=3,
         coherence_orders=4,
         oversample=3,
-        wf_oversample=2,
+        psf_upsample=5,
         defocus_type="fft",
         #
         pupil_mask=None,
@@ -467,7 +467,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         self.diameter = diameter
         self.psf_npixels = psf_npixels
         self.oversample = oversample
-        self.wf_oversample = wf_oversample
+        self.psf_upsample = psf_upsample
         self.psf_pixel_scale = pixel_scale
         self.defocus = np.array(defocus, float)
         self.defocus_type = defocus_type
@@ -552,10 +552,9 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             wf *= layer
 
         # Propagate
-        full_oversample = self.wf_oversample * self.oversample
-        true_pixel_scale = self.psf_pixel_scale / full_oversample
+        true_pixel_scale = self.psf_pixel_scale / self.oversample
         pixel_scale = dlu.arcsec2rad(true_pixel_scale)
-        psf_npixels = self.psf_npixels * full_oversample
+        psf_npixels = self.psf_npixels * self.oversample
 
         if self.defocus_type == "phase":
             first, second = dlu.propagation.fresnel_phase_factors(
@@ -585,20 +584,13 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             # wf = wf.propagate(psf_npixels, pixel_scale)
             wf = propagate_sparse(wf, psf_npixels, pixel_scale, corners=self.corners, size=180)
 
-        # Downsample and normalise the wavefront
-        psf = wf.psf
-        phase = wf.phase
-        psf = dlu.downsample(psf, self.wf_oversample, mean=False)
-        phase = dlu.downsample(phase, self.wf_oversample, mean=True)
-        wf = wf.set(
-            ["pixel_scale", "amplitude", "phase"],
-            [wf.pixel_scale * self.wf_oversample, np.sqrt(psf), phase],
-        )
-
-        # DOWN-SAMPLING VIA THE AVG PHASOR GIVES A DIFFERENT ANSWER
-        # power = np.sum(wf.amplitude ** 2)
-        # wf = wf.downsample(self.wf_oversample)
-        # wf = wf.multiply("amplitude", np.sqrt(power / np.sum(wf.amplitude**2)))
+        # Upsample and then downsample to get more PSF precision
+        knots = dlu.pixel_coords(psf_npixels, 2)
+        sample_coords = dlu.pixel_coords(psf_npixels * self.psf_upsample, 2)
+        psf = interp(wf.psf, knots, sample_coords, "cubic2")
+        psf = dlu.downsample(psf, self.psf_upsample, mean=True)
+        psf = np.where(psf < 0, 0.0, psf)
+        wf = wf.set("amplitude", np.sqrt(psf))
 
         # Return PSF or Wavefront
         if return_wf:

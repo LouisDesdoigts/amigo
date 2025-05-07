@@ -252,7 +252,7 @@ class ModelFit(Exposure):
         # weights = filt_weights * planck(wavels, model.Teffs[self.star])
         xs = np.linspace(-1, 1, len(wavels), endpoint=True)
         spectra_slopes = 1 + model.get(self.map_param("spectra")) * xs
-        weights = filt_weights * spectra_slopes * wavels
+        weights = filt_weights * spectra_slopes  # * wavels
         return wavels, weights / weights.sum()
 
     # def update_optics(self, model, exposure):

@@ -5,6 +5,7 @@ import equinox as eqx
 from jax import vmap
 import dLux.utils as dlu
 from drpangloss.models import BinaryModelCartesian
+from drpangloss.models import OIData
 
 # def batched_fn(fn, array, n_batch=1):
 #     print(array.shape)
@@ -153,9 +154,6 @@ def optimized_contrast_grid(data_obj, model_class, samples_dict, n_batch=50):
     return out.reshape(vals.shape[1:]).T  # check the shapes output here
 
 
-from drpangloss.models import OIData
-
-
 class AmigoOIData(OIData):
     Kphi: np.ndarray
     d_Kphi: np.ndarray
@@ -269,15 +267,15 @@ def calibrate_amplitudes(amp_1, amp_2, cov_1, cov_2):
     return r, cov_r
 
 
-def calibrate_phases(phase_1, phase_2, cov_1, cov_2):
+def calibrate_phases(sci_phase, cal_phases, sci_cov, cal_cov):
     """Propagate covariance for element-wise phase difference Δφ = phase_1 - phase_2."""
-    n = phase_1.shape[0]
+    n = sci_phase.shape[0]
 
     J1 = jnp.eye(n)
     J2 = -jnp.eye(n)
 
-    cov_dphi = J1 @ cov_1 @ J1.T + J2 @ cov_2 @ J2.T
-    dphi = phase_1 - phase_2
+    cov_dphi = J1 @ sci_cov @ J1.T + J2 @ cal_cov @ J2.T
+    dphi = sci_phase - cal_phases
     return dphi, cov_dphi
 
 

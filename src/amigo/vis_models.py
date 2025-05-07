@@ -49,10 +49,10 @@ def inject_vis(wfs, log_amps, phases, otf_coords):
     return np.abs(from_uv(splodges)).sum(0)
 
 
-def project(latent_vis, V):
-    vis_vec = np.dot(latent_vis, V)
-    log_amp, phase = np.array_split(vis_vec, 2, axis=0)
-    return log_amp, phase
+# def project(latent_vis, V):
+#     vis_vec = np.dot(latent_vis, V)
+#     log_amp, phase = np.array_split(vis_vec, 2, axis=0)
+#     return log_amp, phase
 
 
 # class LogVisModel(zdx.Base):
@@ -149,11 +149,7 @@ def vis_jac_fn(model, exp):
 
     # # Project the resulting visibilities to the latent space
     log_vis = np.log(vis)
-    vis_vec = np.concatenate([log_vis.real, log_vis.imag])
-    V_inv = np.linalg.pinv(model.vis_model.V[exp.filter])
-    return np.dot(vis_vec, V_inv)
-
-    # # Project the resulting visibilities to the latent space
-    # vis_vec = np.concatenate([np.log10(np.abs(vis)), np.angle(vis)])
-    # V_inv = np.linalg.pinv(model.vis_model.V[exp.filter])
-    # return np.dot(vis_vec, V_inv)
+    log_amp, phase = log_vis.real, log_vis.imag
+    V_amp_inv = np.linalg.pinv(model.vis_model.V_amp[exp.filter])
+    V_phase_inv = np.linalg.pinv(model.vis_model.V_phase[exp.filter])
+    return np.dot(log_amp, V_amp_inv), np.dot(phase, V_phase_inv)
