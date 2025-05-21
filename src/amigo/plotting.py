@@ -3,7 +3,8 @@ import jax.scipy as jsp
 import dLux.utils as dlu
 import matplotlib.pyplot as plt
 from matplotlib import colormaps, colors
-from .stats import posterior
+
+# from .stats import posterior
 
 inferno = colormaps["inferno"]
 seismic = colormaps["seismic"]
@@ -38,7 +39,7 @@ def summarise_fit(
     full_bias=False,
     aberrations=False,
     pow=0.5,
-    loglike_fn=None,
+    # loglike_fn=None,
 ):
 
     inferno = colormaps["inferno"]
@@ -48,18 +49,11 @@ def summarise_fit(
     data = exposure.slopes
     residual = data - slopes
 
-    #
-    if loglike_fn is not None:
-        posterior_im = loglike_fn(model, exposure, return_im=True)
-    else:
-        posterior_im = posterior(model, exposure, return_im=True)
-        # posterior_im = exposure.from_vec(posterior_vec)
+    loglike_im = exposure.loglike(model, return_im=True)
+    nan_mask = np.where(np.isnan(loglike_im))
 
-    # loglike_im = exposure.log_likelihood(slopes, return_im=True)
-    nan_mask = np.where(np.isnan(posterior_im))
-
-    # final_loss = np.nansum(-posterior_im) / np.prod(np.array(data.shape[-2:]))
-    final_loss = np.nanmean(-posterior_im)
+    # final_loss = np.nansum(-loglike_im) / np.prod(np.array(data.shape[-2:]))
+    final_loss = np.nanmean(-loglike_im)
 
     norm_res_slope = residual / (exposure.variance**0.5)
     norm_res_slope = norm_res_slope.at[:, *nan_mask].set(np.nan)
@@ -92,8 +86,8 @@ def summarise_fit(
         plt.figure(figsize=(15, 4))
         plt.subplot(1, 3, 1)
         plt.title(f"Pixel neg log posterior: {final_loss:,.1f}")
-        plt.imshow(-posterior_im, cmap=inferno)
-        # plt.imshow(-np.where(exposure.badpix, -10000., posterior_im), cmap=inferno)
+        plt.imshow(-loglike_im, cmap=inferno)
+        # plt.imshow(-np.where(exposure.badpix, -10000., loglike_im), cmap=inferno)
         plt.colorbar()
 
         v = np.nanmax(np.abs(norm_res_slope.mean(0)))
@@ -129,7 +123,7 @@ def summarise_fit(
 
             plt.subplot(1, 3, 3)
             plt.title(f"Pixel neg log posterior: {final_loss:,.1f}")
-            plt.imshow(-posterior_im, cmap=inferno)
+            plt.imshow(-loglike_im, cmap=inferno)
             plt.colorbar()
 
             plt.tight_layout()

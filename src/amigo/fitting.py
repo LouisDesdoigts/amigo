@@ -154,7 +154,7 @@ def populate_lr_model(fishers, exposures, model_params):
     return jtu.map(inv_fn, fisher_params, model_params)
 
 
-def batch_exposures(exposures, n_batch=None, batch_size=None, key=None):
+def batch_exposures(exposures, n_batch=None, batch_size=None, key="batch"):
     # Both have a value
     if n_batch is not None and batch_size is not None:
         raise ValueError
@@ -186,23 +186,8 @@ def batch_exposures(exposures, n_batch=None, batch_size=None, key=None):
     return batches
 
 
-class Result(zdx.Base):
-    losses: dict
-    model: zdx.Base
-    state: ModelParams
-    lr_model: ModelParams
-    history: ParamHistory
-    aux: dict
-    meta_data: dict
-
-    def __init__(self, losses, model, aux, state, history, lr_model, meta_data=None):
-        self.losses = losses
-        self.model = model
-        self.state = state
-        self.history = history
-        self.lr_model = lr_model
-        self.meta_data = meta_data
-        self.aux = aux
+def loss_fn(model, exposure, args=None):
+    return -np.nanmean(exposure.mv_zscore(model)), ()
 
 
 class Trainer(zdx.Base):
@@ -217,7 +202,7 @@ class Trainer(zdx.Base):
 
     def __init__(
         self,
-        loss_fn,
+        loss_fn=loss_fn,
         args_fn=None,
         grad_fn=None,
         norm_fn=None,
@@ -245,6 +230,32 @@ class Trainer(zdx.Base):
         loss = np.array([v[-1] for v in loss_dict.values()]).mean(0)
         looper.set_description(f"Loss: {loss:.2f}")
 
+    def populate_fishers(self, model, exposures, hessians, parameters):
+        fishers = {}
+        for exp in exposures:
+            flux_ratio = exp.nints * (exp.ngroups - 1) / exp.ngroups
+            flux = flux_ratio * 10 ** model.get(exp.map_param("fluxes"))
+            for param in parameters:
+                try:
+                    hess = hessians[param][exp.filter]
+                    hess *= -flux / 80**2
+
+                    # Match the piston gradient nuking for aberrations
+                    if param == "aberrations":
+                        hess = hess.at[:, 0].set(0)
+                        hess = hess.at[0, :].set(0)
+
+                    # Reduce the Hessian down to the number of vis_basis terms
+                    if param == "amplitudes" or param == "phases":
+                        n_basis = model.vis_model.n_basis
+                        hess = hess[:n_basis, :n_basis]
+
+                    # Add the hessian to the fishers
+                    fishers[f"{exp.key}.{param}"] = hess
+                except KeyError:
+                    print(f"KeyError: {param} not in hessians for {exp.key}, skipped")
+        return self.set("fishers", fishers)
+
     def update_fishers(
         self,
         model,
@@ -255,11 +266,17 @@ class Trainer(zdx.Base):
         verbose=True,
         save=True,
         args=None,
-        reduce_ram=False,
-        batch_size=1,
+        # reduce_ram=False,
+        batch_size=None,
     ):
         # RANDOM TODO: Models params should be renamed ParamsDict everywhere and always
         # Use the dark current data to get a measure of the read noise
+
+        if batch_size is None:
+            batch_size = 1
+            reduce_ram = False
+        else:
+            reduce_ram = True
 
         def fisher_fn(model, exposure, param):
             slopes, cov = covariance_model(model, exposure)
@@ -446,3 +463,22 @@ class Trainer(zdx.Base):
 
         # Print the runtime stats and return Result object
         return self.finalise(t0, model, loss_dict, aux, model_params, history, lrs, epochs, True)
+
+
+class Result(zdx.Base):
+    losses: dict
+    model: zdx.Base
+    state: ModelParams
+    lr_model: ModelParams
+    history: ParamHistory
+    aux: dict
+    meta_data: dict
+
+    def __init__(self, losses, model, aux, state, history, lr_model, meta_data=None):
+        self.losses = losses
+        self.model = model
+        self.state = state
+        self.history = history
+        self.lr_model = lr_model
+        self.meta_data = meta_data
+        self.aux = aux

@@ -2,43 +2,10 @@ import pkg_resources as pkg
 import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
-import jax
 from jax.scipy.stats import multivariate_normal
 from .misc import interp
 import equinox as eqx
-import zodiax as zdx
-
-
-def quadratic_SRF(a, oversample, norm=True):
-    """
-    norm will normalise the SRF to have a mean of 1
-    """
-    coords = dlu.pixel_coords(oversample, 2)
-    quad = 1 - np.sum((a * coords) ** 2, axis=0)
-    if norm:
-        quad -= quad.mean() - 1
-    return quad
-
-
-def broadcast_subpixel(pixels, subpixel):
-    npix = pixels.shape[1]
-    oversample = subpixel.shape[0]
-    bc_sens_map = subpixel[None, :, None, :] * pixels[:, None, :, None]
-    return bc_sens_map.reshape((npix * oversample, npix * oversample))
-
-
-class PixelSensitivity(zdx.Base):
-    FF: jax.Array
-    SRF: jax.Array
-
-    def __init__(self, FF=np.ones((80, 80)), SRF=0.1):
-        self.FF = np.array(FF, float)
-        self.SRF = np.array(SRF, float)
-
-    @property
-    def sensitivity(self):
-        """Return the oversampled (240, 240) pixel sensitivities"""
-        return broadcast_subpixel(self.FF, quadratic_SRF(self.SRF, 3))
+from .ramp_models import RNNRamp
 
 
 class Resample(dl.layers.detector_layers.DetectorLayer):
@@ -157,7 +124,7 @@ class SUB80Detector(LayeredDetector):
 
     def __init__(
         self,
-        ramp_model=None,
+        ramp_model=RNNRamp(),
         oversample=3,
         npixels_in=80,
         rot_angle=+0.56126717,

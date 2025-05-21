@@ -1,6 +1,7 @@
 import jax.numpy as np
+import jax.scipy as jsp
 from jax import vmap, lax
-from jax.scipy.stats import multivariate_normal as mvn
+import equinox as eqx
 import pkg_resources as pkg
 
 
@@ -20,7 +21,6 @@ def get_slope_cov_mask(n_slope):
     tri = np.tri(n_slope, n_slope, 1)
     mask = (tri * tri.T) - np.eye(n_slope)
     return -mask
-    # return -(read_noise**2) * mask
 
 
 def build_cov(var, read_std):
@@ -36,55 +36,6 @@ def build_cov(var, read_std):
 
     # Return the combined covariance matrix
     return slope_cov + read_cov
-
-
-# def log_likelihood(slope, exposure, read_noise=0, return_im=False):
-def log_likelihood(slope, exposure, return_im=False):
-    """
-    Note we have the infrastructure for dealing with the slope read noise
-    covariance, but it seems to give nan likelihoods when read_noise > ~6. As such
-    we leave the _capability_ here but set the read_noise to default of zero.
-    """
-    # Get the model, data, and variances
-    slope_vec = exposure.to_vec(slope)
-    data_vec = exposure.to_vec(exposure.slopes)
-    cov_vec = exposure.to_vec(exposure.cov)
-
-    # # Get the covariance matrix from the data variance (diagonal)
-    # cov_vec = np.eye(exposure.nslopes)[None, ...] * var_vec[..., None]
-
-    # # Get the read noise covariance and combine with the data covariance
-    # read_cov_mask = get_slope_cov_mask(exposure.nslopes)
-    # cov_vec += (read_noise * read_cov_mask / exposure.nints)[None, ...]
-
-    # Calculate per-pixel likelihood
-    loglike_fn = vmap(lambda x, mu, cov: mvn.logpdf(x, mu, cov))
-    loglike_vec = loglike_fn(slope_vec, data_vec, cov_vec)
-
-    # Return image or vector
-    if return_im:
-        # NOTE: Adds nans to the empty spots
-        return exposure.from_vec(loglike_vec)
-    return loglike_vec
-
-
-def prior(*args, **kwargs):
-    return 0.0
-
-
-def posterior(model, exposure, per_pix=True, return_im=False):
-    # Get the model
-    slopes = exposure(model)
-    posterior_vec = prior(model, slopes, exposure) + log_likelihood(slopes, exposure)
-
-    # return image
-    if return_im:
-        return exposure.from_vec(posterior_vec)
-
-    # return per pixel or total
-    if per_pix:
-        return np.nanmean(posterior_vec)
-    return np.nansum(posterior_vec)
 
 
 def check_symmetric(mat):
@@ -134,10 +85,6 @@ def covariance_model(model, exposure):
     return slopes, cov
 
 
-from jax.flatten_util import ravel_pytree
-import equinox as eqx
-
-
 def batched_jacobian(X, fn, n_batch=1):
     Xs = np.array_split(X, n_batch)
     rebuild = lambda X_batch, index: X.at[index : index + len(X_batch)].set(X_batch)
@@ -151,39 +98,61 @@ def batched_jacobian(X, fn, n_batch=1):
     return np.concatenate([batched_jac_fn(x, index) for x, index in zip(Xs, starts)], axis=-1).T
 
 
-def model_batched_jacobian(fn, model, exp, params, n_batch=1):
-    key_fn = lambda param: exp.map_param(param)
-    params = {key_fn(key): model.get(key_fn(key)) for key in params}
-    X, unravel_fn = ravel_pytree(params)
-    Xs = np.array_split(X, n_batch)
-
-    rebuild = lambda X_batch, index: X.at[index : index + len(X_batch)].set(X_batch)
-    lens = np.cumsum(np.array([len(x) for x in Xs]))[:-1]
-    starts = np.concatenate([np.array([0]), lens])
-
-    @eqx.filter_jacfwd
-    def batched_jac_fn(x, index, model, exp):
-        params = unravel_fn(rebuild(x, index))
-        for param, value in params.items():
-            model = model.set(param, value)
-        return eqx.filter_jit(fn)(model, exp)
-
-    return np.concatenate(
-        [batched_jac_fn(x, index, model, exp) for x, index in zip(Xs, starts)], axis=-1
-    )
+def gauss_hessian(J, cov):
+    # Gauss-Newton hessian approximation under the assumption of a multivariate normal
+    return J @ (np.linalg.inv(cov) @ J.T)
 
 
-def decompose(J, values):
-    # Get the covariance matrix
-    cov = np.eye(values.size) * values[..., None]
+def mv_zscore(x, mu, cov):
+    """Multivariate z-score, return identical gradients to normal log-likelihood"""
+    return -0.5 * np.dot(x - mu, np.dot(np.linalg.inv(cov), x - mu))
 
-    # Get the hessian
-    hess = J @ (cov @ J.T)
 
+def loglike(x, mu, cov):
+    """Multivariate log-likelihood"""
+    return jsp.stats.multivariate_normal.logpdf(x, mean=mu, cov=cov)
+
+
+def decompose(hess, normalise=True):
     # Get the eigenvalues and eigenvectors
     eigvals, eigvecs = np.linalg.eig(hess)
-    eigvecs, eigvals = np.real(eigvecs).T, np.real(eigvals)
+    eigvecs, eigvals = eigvecs.real.T, eigvals.real
 
-    #
-    eigvals /= eigvals[0]
-    return hess, eigvals, eigvecs
+    # Normalise
+    if normalise:
+        eigvals /= eigvals[0]
+    return eigvals, eigvecs
+
+
+def svd(jacobian, normalise=True):
+    u, s, vh = np.linalg.svd(jacobian, full_matrices=True)
+    if normalise:
+        s /= s[0]
+    return u, s, vh
+
+
+def orthogonalise(x, cov):
+    eig_vals, eig_vecs = np.linalg.eig(cov)
+    eig_vals, eig_vecs = eig_vals.real, eig_vecs.real.T
+    ortho_cov = np.dot(eig_vecs, np.dot(cov, np.linalg.inv(eig_vecs)))
+    ortho_x = np.dot(eig_vecs, x)
+    return ortho_x, ortho_cov, eig_vecs, eig_vals
+
+
+def weighted_average(values, errors):
+    var = errors**2
+    weights = 1 / var
+    average = np.sum(weights * values) / np.sum(weights)
+    uncertainty = np.sqrt(np.sum(np.square(weights * errors))) / np.sum(weights)
+    return average, uncertainty
+
+
+def bin_data(x, y, bin_inds):
+    return np.array([weighted_average(x[inds], y[inds]) for inds in bin_inds]).T
+
+
+def chi2(x, pred, std, ddof):
+    res = x - pred
+    z_score = res / std
+    chi2 = np.nansum(z_score**2) / ddof
+    return chi2

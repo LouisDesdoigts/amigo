@@ -10,6 +10,7 @@ from .misc import find_position, gen_surface
 from .ramp_models import Ramp
 from .optical_models import gen_powers
 from .ramp_models import model_ramp
+from .stats import mv_zscore, loglike
 
 
 class Exposure(zdx.Base):
@@ -81,29 +82,21 @@ class Exposure(zdx.Base):
         im = np.where(self.badpix, np.nan, self.slopes[0])
         psf = np.where(np.isnan(im), 0.0, im)
 
+        # Position
+        pos = find_position(psf, optics.psf_pixel_scale)
+        pos += np.array([-optics.psf_pixel_scale / 4, 0])  # apply small shift, seems to help
+
+        # Log flux (1.6 is the ~ gain)
+        log_flux = np.log10((80**2) * 1.61 * np.nanmean(im))
+
+        # Initialise flat WF
+        abb = np.zeros_like(optics.pupil_mask.abb_coeffs)
+
         # positions
-        params["positions"] = (
-            self.get_key("positions"),
-            find_position(psf, optics.psf_pixel_scale),
-        )
-
-        # Log flux
-        params["fluxes"] = (
-            self.get_key("fluxes"),
-            np.log10((80**2) * 1.61 * np.nanmean(im)),
-        )
-
-        # Aberrations
-        params["aberrations"] = (
-            self.get_key("aberrations"),
-            np.zeros_like(optics.pupil_mask.abb_coeffs),
-        )
-
-        # Spectral slope
+        params["positions"] = (self.get_key("positions"), pos)
+        params["fluxes"] = (self.get_key("fluxes"), log_flux)
+        params["aberrations"] = (self.get_key("aberrations"), abb)
         params["spectra"] = self.get_key("spectra"), np.array(0.0)
-
-        # Defocus
-        params["defocus"] = self.get_key("defocus"), np.array(0.01)
 
         # Reflectivity
         if self.fit_reflectivity:
@@ -170,7 +163,40 @@ class ModelFit(Exposure):
         self.validator = bool(validator)
         super().__init__(*args, **kwargs)
 
-    # def get_key(self, exposure, param):
+    def mv_zscore(self, model, return_im=False):
+        slopes = np.diff(self.simulate(model).data, axis=0)
+
+        # Get the model, data, and variances
+        slope_vec = self.to_vec(slopes)
+        data_vec = self.to_vec(self.slopes)
+        cov_vec = self.to_vec(self.cov)
+
+        # Calculate per-pixel z-scores
+        z_vec = vmap(mv_zscore)(slope_vec, data_vec, cov_vec)
+
+        # Return image or vector
+        if return_im:
+            # NOTE: Adds nans to the empty spots
+            return self.from_vec(z_vec)
+        return z_vec
+
+    def loglike(self, model, return_im=False):
+        slopes = np.diff(self.simulate(model).data, axis=0)
+
+        # Get the model, data, and variances
+        slope_vec = self.to_vec(slopes)
+        data_vec = self.to_vec(self.slopes)
+        cov_vec = self.to_vec(self.cov)
+
+        # Calculate per-pixel z-scores
+        z_vec = vmap(loglike)(slope_vec, data_vec, cov_vec)
+
+        # Return image or vector
+        if return_im:
+            # NOTE: Adds nans to the empty spots
+            return self.from_vec(z_vec)
+        return z_vec
+
     def get_key(self, param):
 
         # Unique to each exposure
@@ -215,7 +241,6 @@ class ModelFit(Exposure):
 
         raise ValueError(f"Parameter {param} has no key")
 
-    # def map_param(self, exposure, param):
     def map_param(self, param):
         """
         The `key` argument will return only the _key_ extension of the parameter path,
@@ -246,16 +271,13 @@ class ModelFit(Exposure):
         # Else its global
         return param
 
-    # def get_spectra(self, model, exposure):
     def get_spectra(self, model):
         wavels, filt_weights = model.filters[self.filter]
-        # weights = filt_weights * planck(wavels, model.Teffs[self.star])
         xs = np.linspace(-1, 1, len(wavels), endpoint=True)
         spectra_slopes = 1 + model.get(self.map_param("spectra")) * xs
         weights = filt_weights * spectra_slopes  # * wavels
         return wavels, weights / weights.sum()
 
-    # def update_optics(self, model, exposure):
     def update_optics(self, model):
         optics = model.optics
         if "aberrations" in model.params.keys():
@@ -270,33 +292,15 @@ class ModelFit(Exposure):
                 coefficients = lax.stop_gradient(coefficients)
             optics = optics.set("pupil_mask.abb_coeffs", coefficients)
 
-        # if self.fit_reflectivity:
-        #     # Should have shape (9,) - Full shape is (7, 10), but we ignore pistons and
-        #     # project the same reflectivity across each hole. Should be different
-        #     # per filter.
-        #     coefficients = model.reflectivity[self.get_key("reflectivity")]
-        #     coefficients = np.concatenate([np.zeros((1)), coefficients], axis=0)
-        #     coefficients = np.ones((7, 10)) * coefficients[None]
-
         if hasattr(model, "reflectivity"):
             coefficients = model.reflectivity[self.get_key("reflectivity")]
             optics = optics.set("pupil_mask.amp_coeffs", coefficients)
-
-        #     # Stop gradient for science targets
-        #     if not self.calibrator:
-        #         coefficients = lax.stop_gradient(coefficients)
-        #     optics = optics.set("pupil_mask.amp_coeffs", coefficients)
-
-        # # Set the mask distortion per filter
-        # beam_coeffs = model.get(self.map_param("beam_coeffs"))
-        # optics = optics.set("pupil_mask.primary_beam", beam_coeffs)
 
         # Set the defocus
         optics = optics.set("defocus", model.defocus[self.get_key("defocus")])
 
         return optics
 
-    # def model_wfs(self, model, exposure):
     def model_wfs(self, model):
         wavels, weights = self.get_spectra(model)
         optics = self.update_optics(model)
@@ -310,14 +314,11 @@ class ModelFit(Exposure):
             wfs = wfs.set(["plane", "units"], ["Focal", "Angular"])
         return wfs
 
-    # def model_psf(self, model, exposure):
     def model_psf(self, model):
         wfs = self.model_wfs(model)
         return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale.mean(0))
 
-    # def model_detector(self, psf, model, exposure):
     def model_illuminance(self, psf, model):
-        # flux = 10 ** model.fluxes[self.get_key("fluxes")]
         flux = self.ngroups * 10 ** model.fluxes[self.get_key("fluxes")]
         psf = eqx.filter_jit(model.detector.apply)(psf)
         return psf.multiply("data", flux)
@@ -528,7 +529,7 @@ class SplineVisFit(PointFit):
         )
         if vis_model is None:
             raise ValueError("vis_model must be provided for SplineVisFit")
-        n = vis_model.n_terms
+        n = vis_model.n_basis
         params["amplitudes"] = (self.get_key("amplitudes"), np.zeros(n))
         params["phases"] = (self.get_key("phases"), np.zeros(n))
         # params["vis"] = (self.get_key("amplitudes"), np.zeros(n))

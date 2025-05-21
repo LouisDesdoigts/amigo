@@ -1,8 +1,10 @@
+import jax
 import zodiax as zdx
-import jax.tree as jtu
-from jax.lax import dynamic_slice as lax_slice
 import equinox as eqx
 import jax.numpy as np
+import jax.tree as jtu
+from jax.lax import dynamic_slice as lax_slice
+from jax.flatten_util import ravel_pytree
 
 
 class BaseModeller(zdx.Base):
@@ -35,31 +37,46 @@ class AmigoModel(BaseModeller):
     optics: None
     vis_model: None
     detector: None
-    # ramp: None
     read: None
 
-    def __init__(self, exposures, optics, detector, read, vis_model=None):
-
-        self.optics = optics
-        self.detector = detector
-        # self.ramp = ramp
-        self.read = read
-        self.vis_model = vis_model
+    def __init__(self, exposures, optics, detector, read, state, vis_model=None):
+        optics = optics.set("transmission", state["transmission"])
+        detector = detector.set(
+            ["FF", "jitter.r", "ramp.values"],
+            [state["FF"], state["jitter.r"], state["ramp.values"]],
+        )
+        read = read.set(
+            ["dark_current", "non_linearity"],
+            [state["dark_current"], state["non_linearity"]],
+        )
 
         params = {}
         for exp in exposures:
             if vis_model is not None:
-                param_dict = exp.initialise_params(optics, vis_model=self.vis_model)
+                param_dict = exp.initialise_params(optics, vis_model=vis_model)
             else:
                 param_dict = exp.initialise_params(optics)
             for param, (key, value) in param_dict.items():
                 if param not in params.keys():
                     params[param] = {}
                 params[param][key] = value
-        self.params = params
+        abb = state["aberrations"]
+        params["aberrations"] = jtu.map(lambda x: abb, params["aberrations"])
+        params["defocus"] = state["defocus"]
 
-    # def model(self, exposure, **kwargs):
-    #     return exposure.fit(self, exposure, **kwargs)
+        # This seems to fix some recompile issues
+        def fn(x):
+            if isinstance(x, jax.Array):
+                if "i" in x.dtype.str:
+                    return x
+                return np.array(x, dtype=float)
+            return x
+
+        self.params = jtu.map(lambda x: fn(x), params)
+        self.optics = jtu.map(lambda x: fn(x), optics)
+        self.detector = jtu.map(lambda x: fn(x), detector)
+        self.read = jtu.map(lambda x: fn(x), read)
+        self.vis_model = jtu.map(lambda x: fn(x), vis_model)
 
     def __getattr__(self, key):
         if key in self.params:
@@ -71,28 +88,11 @@ class AmigoModel(BaseModeller):
             return getattr(self.optics, key)
         if hasattr(self.detector, key):
             return getattr(self.detector, key)
-        # if hasattr(self.ramp, key):
-        #     return getattr(self.ramp, key)
         if hasattr(self.read, key):
             return getattr(self.read, key)
         if hasattr(self.vis_model, key):
             return getattr(self.vis_model, key)
         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
-
-    # def initialise_params(self, exposures):
-    #     # NOTE: This method should be improved to take the _average_ over params that are
-    #     # constrained by multiple exposures
-    #     params = {}
-    #     for exp in exposures:
-    #         if self.vis_model is not None:
-    #             param_dict = exp.initialise_params(self.optics, vis_model=self.vis_model)
-    #         else:
-    #             param_dict = exp.initialise_params(self.optics)
-    #         for param, (key, value) in param_dict.items():
-    #             if param not in params.keys():
-    #                 params[param] = {}
-    #             params[param][key] = value
-    #     return self.set("params", params)
 
 
 class ModelParams(BaseModeller):
@@ -157,6 +157,20 @@ class ModelParams(BaseModeller):
 
     def combine(self, params2):
         return ModelParams({**self.params, **params2.params})
+
+    def jacfwd(self, fn, n_batch=1):
+        X, unravel_fn = ravel_pytree(self)
+        Xs = np.array_split(X, n_batch)
+        rebuild = lambda X_batch, index: X.at[index : index + len(X_batch)].set(X_batch)
+        lens = np.cumsum(np.array([len(x) for x in Xs]))[:-1]
+        starts = np.concatenate([np.array([0]), lens])
+
+        @eqx.filter_jacfwd
+        def batched_jac_fn(x, index):
+            model_params = unravel_fn(rebuild(x, index))
+            return eqx.filter_jit(fn)(model_params)
+
+        return np.concatenate([batched_jac_fn(x, index) for x, index in zip(Xs, starts)], axis=-1)
 
 
 import numpy as onp

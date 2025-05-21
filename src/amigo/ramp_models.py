@@ -1,3 +1,5 @@
+import jax
+import zodiax as zdx
 import jax.numpy as np
 import jax.random as jr
 import jax.nn as nn
@@ -7,7 +9,6 @@ import dLux as dl
 from jax.lax import dynamic_slice as dyn_slice
 import dLux.utils as dlu
 from .optical_models import gen_powers, distort_coords
-from .detector_models import PixelSensitivity
 from .misc import interp_ramp
 from .core_models import build_wrapper, WrapperHolder
 
@@ -21,6 +22,38 @@ def model_ramp(psf, ngroups):
     should have shape (npix, npix) and return shape (ngroups, npix, npix)"""
     lin_ramp = (np.arange(ngroups) + 1) / ngroups
     return psf[None, ...] * lin_ramp[..., None, None]
+
+
+def quadratic_SRF(a, oversample, norm=True):
+    """
+    norm will normalise the SRF to have a mean of 1
+    """
+    coords = dlu.pixel_coords(oversample, 2)
+    quad = 1 - np.sum((a * coords) ** 2, axis=0)
+    if norm:
+        quad -= quad.mean() - 1
+    return quad
+
+
+def broadcast_subpixel(pixels, subpixel):
+    npix = pixels.shape[1]
+    oversample = subpixel.shape[0]
+    bc_sens_map = subpixel[None, :, None, :] * pixels[:, None, :, None]
+    return bc_sens_map.reshape((npix * oversample, npix * oversample))
+
+
+class PixelSensitivity(zdx.Base):
+    FF: jax.Array
+    SRF: jax.Array
+
+    def __init__(self, FF=np.ones((80, 80)), SRF=0.1):
+        self.FF = np.array(FF, float)
+        self.SRF = np.array(SRF, float)
+
+    @property
+    def sensitivity(self):
+        """Return the oversampled (240, 240) pixel sensitivities"""
+        return broadcast_subpixel(self.FF, quadratic_SRF(self.SRF, 3))
 
 
 def to_edges(box):
@@ -155,41 +188,6 @@ def apply_kernels_stride(illuminance, kernels, stride=3):
     return convd_vec.reshape(shape[2:])
 
 
-class RNNRamp(WrapperHolder):
-    sensitivity_model: PixelSensitivity
-    bleed: bool
-    norm: int
-
-    def __init__(self, conv_rnn, gain_model, norm=2**14, bleed=True):
-        values, structure = build_wrapper(conv_rnn)
-        self.values = values
-        self.structure = structure
-        self.norm = norm
-        self.sensitivity_model = gain_model
-        self.bleed = bleed
-
-    def __getattr__(self, key):
-        if hasattr(self.sensitivity_model, key):
-            return getattr(self.sensitivity_model, key)
-        raise AttributeError(f"RNNRamp has no attribute {key}")
-
-    def evolve_ramp(self, illuminance, bias, ngroups, return_bleed=False):
-        # Normalise the Illuminance and charge
-        illuminance = illuminance / self.norm
-        bias = bias / self.norm
-
-        # Evolve the ramp
-        sensitivity = self.sensitivity_model.sensitivity
-        charge_ramp, bleed = self.build(bias, illuminance, sensitivity, self.bleed)
-
-        # Interpolate the ramps to the number of groups
-        ramp = self.norm * interp_ramp(charge_ramp, ngroups)
-
-        if return_bleed:
-            return ramp, bleed
-        return ramp
-
-
 class DFRNN(eqx.Module):
     """ "Dynamic Filter Recurrent Neural Network (DFRNN) to model charge diffusion and
     bleeding."""
@@ -198,7 +196,7 @@ class DFRNN(eqx.Module):
     use_bias: bool
     time_steps: int = eqx.field(static=True)
 
-    def __init__(self, key, order=2, time_steps=8, use_bias=True):
+    def __init__(self, key=jr.key(0), order=2, time_steps=8, use_bias=True):
         self.kernel_model = DFN(order=order, key=key)
         self.time_steps = time_steps
         self.use_bias = use_bias
@@ -255,7 +253,7 @@ class DFN(eqx.Module):
     # dense: eqx.Module  # CNN to encode charge/bias distribution
     distort_fn: callable  # Function to distort the kernels
 
-    def __init__(self, order=3, key=None):
+    def __init__(self, order=3, key=jr.key(0)):
 
         # Coordinate distortion set up
         knots = dlu.pixel_coords(3, 1)
@@ -329,3 +327,39 @@ class DFN(eqx.Module):
         coords = vmap(self.distort_fn)(1 * coeffs_vec).reshape(npix, npix, 2, 3, 3)
         kernels = calc_kernels(coords)
         return kernels
+
+
+class RNNRamp(WrapperHolder):
+    sensitivity_model: PixelSensitivity
+    bleed: bool
+    norm: int
+
+    def __init__(self, conv_rnn=DFRNN(), gain_model=PixelSensitivity(), norm=2**14, bleed=True):
+
+        values, structure = build_wrapper(conv_rnn)
+        self.values = values
+        self.structure = structure
+        self.norm = norm
+        self.sensitivity_model = gain_model
+        self.bleed = bleed
+
+    def __getattr__(self, key):
+        if hasattr(self.sensitivity_model, key):
+            return getattr(self.sensitivity_model, key)
+        raise AttributeError(f"RNNRamp has no attribute {key}")
+
+    def evolve_ramp(self, illuminance, bias, ngroups, return_bleed=False):
+        # Normalise the Illuminance and charge
+        illuminance = illuminance / self.norm
+        bias = bias / self.norm
+
+        # Evolve the ramp
+        sensitivity = self.sensitivity_model.sensitivity
+        charge_ramp, bleed = self.build(bias, illuminance, sensitivity, self.bleed)
+
+        # Interpolate the ramps to the number of groups
+        ramp = self.norm * interp_ramp(charge_ramp, ngroups)
+
+        if return_bleed:
+            return ramp, bleed
+        return ramp
