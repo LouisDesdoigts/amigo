@@ -1,6 +1,6 @@
 [project]
 name = "amigo"
-version = "0.0.8"
+version = "0.0.9"
 description = "A pipeline for interferometric fitting of AMI data from JWST"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,10 +15,7 @@ dependencies = [
   "jaxlib", 
   "zodiax>=0.4.1",
   "dLux",
-  "astroquery",
-  "pyia",
   "tqdm",
-  "uncertainties",
   "interpax",
   "IPython",
   "matplotlib",
