@@ -1,9 +1,9 @@
 [project]
 name = "amigo"
-version = "0.0.3"
+version = "0.0.8"
 description = "A pipeline for interferometric fitting of AMI data from JWST"
 readme = "README.md"
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.11"
 license = {file = "LICENSE.md"}
 authors = [
   {name = "Louis Desdoigts", email = "louis.desdoigts@sydney.edu.au"},
@@ -16,13 +16,12 @@ dependencies = [
   "zodiax>=0.4.1",
   "dLux",
   "astroquery",
-  "jwst",
   "pyia",
-  "webbpsf",
   "tqdm",
   "uncertainties",
-  "dLuxWebbpsf @ git+https://github.com/itroitskaya/dLuxWebbpsf.git",
-  "xara @ git+https://github.com/fmartinache/xara.git",
+  "interpax",
+  "IPython",
+  "matplotlib",
 ]
 
 classifiers=[

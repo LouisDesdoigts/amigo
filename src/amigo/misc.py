@@ -1,5 +1,27 @@
 import jax.numpy as np
-from jax import vmap
+import jax.scipy as jsp
+import numpy as onp
+from scipy.ndimage import center_of_mass
+from scipy.interpolate import griddata
+import pkg_resources as pkg
+import interpax as ipx
+import equinox as eqx
+
+# Import tqdm appropriately. Note we need the # noqa to get ruff to allow this syntax
+from IPython import get_ipython
+
+if get_ipython() is not None:
+    # Running in Jupyter Notebook
+    from tqdm.notebook import tqdm  # noqa
+else:
+    # Running in a script or other non-Jupyter environment
+    from tqdm import tqdm  # noqa
+
+
+def calc_laplacian(arr):
+    """Laplacian - ie scalar field divergence (I think)"""
+    lap_mat = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
+    return jsp.signal.convolve(arr, lap_mat, mode="same")
 
 
 def planck(wav, T):
@@ -29,35 +51,186 @@ def planck(wav, T):
         )
         - 1.0
     )
-
     return np.power(10, logA + logB)
 
 
-def least_sq(x, y):
-    A = np.vstack([x, np.ones(len(x))]).T
-    m, b = np.linalg.lstsq(A, y, rcond=None)[0]
-    return m, b
+def interp_badpix(array):
+    # Get the coordinates of the good pixels
+    x, y = np.indices(array.shape)
+    good_pixels = ~np.isnan(array)
+
+    # Interpolate over the bad pixels
+    fixed = griddata((x[good_pixels], y[good_pixels]), array[good_pixels], (x, y), method="cubic")
+    return np.where(np.isnan(fixed), 0.0, fixed)
 
 
-def fit_slope(y):
-    return least_sq(np.arange(len(y)) + 1, y)
+def find_position(psf, pixel_scale=0.065524085, window_size: int = 30):
+    # TODO: Maybe iterate this operation to gain resilience to bad pixels?
+
+    # Interpolate the bad pixels
+    psf = onp.array(interp_badpix(psf))
+
+    if window_size is not None:
+
+        # grabbing index of the peak pixel
+        idx = np.unravel_index(np.argmax(psf), psf.shape)
+
+        # checking to see the window is within the subarray
+        for size in [idx[0], idx[1], psf.shape[0] - idx[0], psf.shape[1] - idx[1]]:
+
+            # if the window is too big, reduce it
+            if window_size // 2 > size:
+                window_size = 2 * size
+
+        # zeroing out outside the window
+        psf[: idx[0] - window_size // 2, :] = 0
+        psf[idx[0] + window_size // 2 :, :] = 0
+        psf[:, : idx[1] - window_size // 2] = 0
+        psf[:, idx[1] + window_size // 2 :] = 0
+
+    # Compute the center of mass
+    cen = np.array(center_of_mass(psf))
+
+    # Convert back to paraxial coordinates
+    cen -= (np.array(psf.shape) - 1) / 2
+
+    # Scale and flip the y
+    y, x = cen * pixel_scale * np.array([-1, 1])
+
+    # Return as (x, y)
+    return np.array([x, y])
 
 
-def slope_im(im):
-    ms, bs = vmap(fit_slope)(im.reshape(len(im), -1).T)
-    return ms.reshape(im.shape[1:]), bs.reshape(im.shape[1:])
+def full_to_SUB80(full_arr, npix_out=80, fill=0.0):
+    """
+    This is taken from the JWST pipeline, so its probably correct.
+
+    The padding adds zeros to the edges of the array, keeping the SUB80 array centered.
+    """
+    xstart = 1045
+    ystart = 1
+    xsize = 80
+    ysize = 80
+    xstop = xstart + xsize - 1
+    ystop = ystart + ysize - 1
+    SUB80 = full_arr[ystart - 1 : ystop, xstart - 1 : xstop]
+    if npix_out != 80:
+        pad = (npix_out - 80) // 2
+        SUB80 = np.pad(SUB80, pad, constant_values=fill)
+    return SUB80
 
 
-def convert_adjacent_to_true(bool_array):
-    trues = np.array(np.where(bool_array))
-    trues = np.swapaxes(trues, 0, 1)
-    for i in range(len(trues)):
-        y, x = trues[i]
-        bool_array = bool_array.at[y, x + 1].set(True)
-        bool_array = bool_array.at[y, x - 1].set(True)
-        bool_array = bool_array.at[y + 1, x].set(True)
-        bool_array = bool_array.at[y - 1, x].set(True)
+def calc_throughput(filt, nwavels=9):
+
+    if filt not in ["F380M", "F430M", "F480M", "F277W"]:
+        raise ValueError("Supported filters are F380M, F430M, F480M, F277W.")
+
+    # filter_path = os.path.join()
+    file_path = pkg.resource_filename(__name__, f"/data/filters/{filt}.dat")
+    wl_array, throughput_array = np.array(onp.loadtxt(file_path, unpack=True))
+
+    edges = np.linspace(wl_array.min(), wl_array.max(), nwavels + 1)
+    wavels = np.linspace(wl_array.min(), wl_array.max(), 2 * nwavels + 1)[1::2]
+
+    areas = []
+    for i in range(nwavels):
+        cond1 = edges[i] < wl_array
+        cond2 = wl_array < edges[i + 1]
+        throughput = np.where(cond1 & cond2, throughput_array, 0)
+        areas.append(jsp.integrate.trapezoid(y=throughput, x=wl_array))
+
+    areas = np.array(areas)
+    weights = areas / areas.sum()
+
+    wavels *= 1e-10
+    return np.array([wavels, weights])
+
+
+def convert_adjacent_to_true(bool_array, n=1, corners=False):
+    for i in range(n):
+        trues = np.array(np.where(bool_array))
+        trues = np.swapaxes(trues, 0, 1)
+        for i in range(len(trues)):
+            y, x = trues[i]
+            bool_array = bool_array.at[y, x + 1].set(True)
+            bool_array = bool_array.at[y, x - 1].set(True)
+            bool_array = bool_array.at[y + 1, x].set(True)
+            bool_array = bool_array.at[y - 1, x].set(True)
+            if corners:
+                bool_array = bool_array.at[y + 1, x + 1].set(True)
+                bool_array = bool_array.at[y - 1, x - 1].set(True)
+                bool_array = bool_array.at[y + 1, x - 1].set(True)
+                bool_array = bool_array.at[y - 1, x + 1].set(True)
     return bool_array
 
 
-#
+def nearest_fn(pt, coords):
+    dist = np.hypot(*(coords - pt[:, None, None]))
+    return dist == dist.min()
+
+
+def nuke_brightest(file, n=0):
+    im = np.array(file["SLOPE"].data.sum(0))
+    badpix = np.array(file["BADPIX"].data)
+    im = np.where(badpix, np.nan, im)
+
+    for i in range(n):
+        badpix = badpix.at[np.where(im == np.nanmax(im))].set(1)
+        im = np.where(badpix, np.nan, im)
+
+    file["BADPIX"].data = badpix
+
+
+@eqx.filter_jit
+def interp(image, knot_coords, sample_coords, method="linear", fill=0.0):
+    xs, ys = knot_coords
+    xpts, ypts = sample_coords.reshape(2, -1)
+
+    return ipx.interp2d(ypts, xpts, ys[:, 0], xs[0], image, method=method, extrap=fill).reshape(
+        sample_coords[0].shape
+    )
+
+
+@eqx.filter_jit
+def interp_ramp(ramp, ngroups, method="cubic2", extrap=True):
+    # Assumes that the ramp time samples are from 0 to 1.
+    ts = np.linspace(0, 1, len(ramp))
+    groups = (np.arange(ngroups) + 1) / ngroups
+
+    # Build the vectorised interpolator
+    interpolator = eqx.filter_vmap(
+        lambda f: ipx.interp1d(groups, ts, f, method=method, extrap=extrap),
+        in_axes=1,
+        out_axes=1,
+    )
+
+    # Get the group sample points and interpolate the ramp
+    ramp_vec = ramp.reshape(len(ramp), -1)
+    return interpolator(ramp_vec).reshape(ngroups, *ramp.shape[1:])
+
+
+def populate_from_state(model, state):
+    if not isinstance(state, dict):
+        state = state.params
+
+    # Populate parameters
+    for param_key, value in state.items():
+        if isinstance(value, dict):
+            for exp_key, sub_value in value.items():
+                try:
+                    model = model.set(f"{param_key}.{exp_key}", sub_value)
+
+                # Catch key not existing since we might not have a certain exposure here
+                except KeyError:
+                    pass
+        else:
+            model = model.set(param_key, value)
+    return model
+
+
+def gen_surface(coords, coeffs, pows):
+    """The only difference here and the fn in amigo is this one return the sum of the
+    distortion, not the coords + distortion"""
+    pow_base = np.multiply(*(coords[:, None, ...] ** pows[..., None, None]))
+    surface = np.sum(coeffs[..., None, None] * pow_base[None, ...], axis=1)
+    return surface.sum(0)

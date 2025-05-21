@@ -1,14 +1,8 @@
 import jax.numpy as np
+import jax.scipy as jsp
 from jax import vmap, lax
-from .detector_layers import model_amplifier
-
-
-def total_read_noise(bias, one_on_fs):
-    return bias[None, ...] + vmap(model_amplifier)(one_on_fs)
-
-
-def total_amplifier_noise(one_on_fs):
-    return vmap(model_amplifier)(one_on_fs)
+import equinox as eqx
+import pkg_resources as pkg
 
 
 # Noise modelling
@@ -23,152 +17,25 @@ def get_read_cov(read_noise, ngroups):
     return read_fn(pix_idx, pix_idx)
 
 
-def build_cov(var):
-    Is = np.arange(len(var))
-    IJs = np.array(np.meshgrid(Is, Is))
-
-    vals = vmap(vmap(vmap(lambda ind: var[ind], 0), 1), 0)(IJs)
-    cov = np.min(vals, (0))
-    return cov
-
-
-import pkg_resources as pkg
-
-
-def variance_model(model, exposure, true_read_noise=False, read_noise=10):
-    """
-    True read noise will use the CRDS read noise array, else it will use a constant
-    value as determined by the input. true_read_noise therefore supersedes read_noise.
-    Using a flat value of 10 seems to be more accurate that the CRDS array.
-
-    That said I think the data has overly ambitious variances as a consequence of the
-    sigma clipping that is performed. We could determine the variance analytically from
-    the variance of the individual pixel values, but we will look at this later.
-    """
-
-    nan_mask = np.isnan(exposure.data)
-
-    # Estimate the photon covariance
-    psf = model_fn(model, exposure)
-
-    psf = psf.at[np.where(nan_mask)].set(np.nan)
-    variance = psf / exposure.nints
-
-    # Read noise covariance
-    if true_read_noise:
-        rn = np.load(pkg.resource_filename(__name__, "data/SUB80_readnoise.npy"))
-    else:
-        rn = read_noise
-    read_variance = (rn**2) * np.ones((80, 80)) / exposure.nints
-    variance += read_variance[None, ...]
-
-    return psf, variance
-
-
-from amigo.modelling import model_fn
-
-# def log_likelihood(x, mean, var):
-#     return norm.logpdf(x, mean, np.sqrt(var))
-
-
-def get_slope_cov(n_slope, read_noise):
+def get_slope_cov_mask(n_slope):
     tri = np.tri(n_slope, n_slope, 1)
     mask = (tri * tri.T) - np.eye(n_slope)
-    return -(read_noise**2) * mask
+    return -mask
 
 
-# def log_likelihood(x, mean, var, read_noise=10):
-#     cov = np.eye(len(var)) * var + get_slope_cov(len(var), read_noise)
-#     return mvn.logpdf(x, mean, cov)
+def build_cov(var, read_std):
+    # Get the slope covariance matrix (diagonal)
+    slope_cov = np.eye(len(var))[..., None, None] * var[None, ...]
 
+    # Get the read noise covariance mask
+    slope_cov_mask = get_slope_cov_mask(len(var))
 
-# def posterior(
-#     model,
-#     exposure,
-#     per_pix=True,
-#     as_psf=False,
-#     photon=False,
-#     return_vec=False,
-#     return_image=False,
-#     **kwargs,
-# ):
+    # Create the read noise covariance matrix
+    # 2x here to account for the two reads that contribute to the slope
+    read_cov = 2 * read_std[None, None, ...] * slope_cov_mask[..., None, None]
 
-
-# def posterior(model, exposure, per_pix=True, return_vec=False, return_image=False, **kwargs):
-#     to_vec = lambda x: exposure.to_vec(x)
-#     slopes = to_vec(model_fn(model, exposure, **kwargs))
-#     data = to_vec(exposure.data)
-#     var = to_vec(exposure.variance)
-
-#     posterior = vmap(log_likelihood, (0, 0, 0))(slopes, data, var)
-
-#     if return_vec:
-#         return posterior
-#         # pass
-
-#     # if return_image:
-#     # loglike_vec = np.nansum(self.loglike_vec(ramp), axis=1)
-#     # return (np.nan * np.ones_like(ramp[0])).at[*self.support].set(loglike_vec)
-#     # return posterior
-
-#     if per_pix:
-#         return np.nanmean(posterior)
-#     return np.nansum(posterior)
-
-
-def posterior(model, exposure, per_pix=True, return_vec=False, return_im=False, **kwargs):
-    # Get the model
-    slopes = model_fn(model, exposure, **kwargs)
-
-    # Return vector
-    if return_vec:
-        return exposure.log_likelihood(slopes)
-
-    # return image
-    if return_im:
-        return exposure.log_likelihood(slopes, return_im=True)
-
-    # Return mean or sum
-    posterior = exposure.log_likelihood(slopes)
-    if per_pix:
-        return np.nanmean(posterior)
-    return np.nansum(posterior)
-
-
-# def loss_fn(model, exposures, **kwargs):
-def loss_fn(model, args, **kwargs):
-    # exposures, step_mappers, model_fn = args
-    exposures, step_mappers = args
-    return -np.array([posterior(model, exp, per_pix=True, **kwargs) for exp in exposures]).sum()
-
-
-# def build_covariance_matrix(var, read_noise=None, min_value=True):
-#     """
-#     The off-diagonal covariance terms cov(i, j), can be the minimum value of:
-#         1. The value: min(var(i), var(j))
-#         2. The index: var(min(i, j))
-
-#     if min_value is True (default), then the minimum value is chosen, otherwise the
-#     minimum index is chosen. Testing show min index results in some data sets being
-#     majority nan, as the resulting covariance matrix is non symmetric or positive
-#     semi-definite.
-
-#     Read noise can optional be added to the diagonal terms.
-#     """
-#     Is = np.arange(len(var))
-#     IJs = np.array(np.meshgrid(Is, Is))
-
-#     if min_value:
-#         vals = vmap(vmap(vmap(lambda ind: var[ind], 0), 1), 0)(IJs)
-#         cov = np.min(vals, (0))
-#     else:
-#         inds = vmap(vmap(vmap(lambda ind: ind, 0), 1), 0)(IJs)
-#         cov = var[np.min(inds, 0)]
-
-#     if read_noise is not None:
-#         cov += get_read_cov(read_noise, len(var))
-
-#     return cov
+    # Return the combined covariance matrix
+    return slope_cov + read_cov
 
 
 def check_symmetric(mat):
@@ -186,4 +53,106 @@ def check_positive_semi_definite(mat):
     )
 
 
-#
+def variance_model(model, exposure):
+    slopes, cov = covariance_model(model, exposure)
+    inds = np.arange(len(slopes))
+    return slopes, cov[inds, inds]
+
+
+def covariance_model(model, exposure):
+    # Estimate the photon covariance
+    slopes = exposure(model)
+
+    # Pixel read noise
+    read_std = np.load(pkg.resource_filename(__name__, "data/SUB80_readnoise.npy"))
+    # read_std = np.load("../../amigo/src/amigo/data/SUB80_readnoise.npy")
+    read_var = read_std**2
+
+    # Add the 2x read noise to the variance
+    variance = 2 * read_var + slopes
+
+    # Build the covariance matrix
+    cov = build_cov(variance, read_std)
+
+    # Get the covariance matrix support - slightly more complex than it seems since the
+    # the off diagonal terms are constructed from two different reads, which can both
+    # have different support values. Here I simply take the mean support over both
+    # reads, constructed in such a way to match the entries of the covariance matrix.
+    support = exposure.slope_support
+    cov_support = (support[None, ...] + support[:, None, ...]) / 2
+    cov /= cov_support
+
+    return slopes, cov
+
+
+def batched_jacobian(X, fn, n_batch=1):
+    Xs = np.array_split(X, n_batch)
+    rebuild = lambda X_batch, index: X.at[index : index + len(X_batch)].set(X_batch)
+    lens = np.cumsum(np.array([len(x) for x in Xs]))[:-1]
+    starts = np.concatenate([np.array([0]), lens])
+
+    @eqx.filter_jacfwd
+    def batched_jac_fn(x, index):
+        return eqx.filter_jit(fn)(rebuild(x, index))
+
+    return np.concatenate([batched_jac_fn(x, index) for x, index in zip(Xs, starts)], axis=-1).T
+
+
+def gauss_hessian(J, cov):
+    # Gauss-Newton hessian approximation under the assumption of a multivariate normal
+    return J @ (np.linalg.inv(cov) @ J.T)
+
+
+def mv_zscore(x, mu, cov):
+    """Multivariate z-score, return identical gradients to normal log-likelihood"""
+    return -0.5 * np.dot(x - mu, np.dot(np.linalg.inv(cov), x - mu))
+
+
+def loglike(x, mu, cov):
+    """Multivariate log-likelihood"""
+    return jsp.stats.multivariate_normal.logpdf(x, mean=mu, cov=cov)
+
+
+def decompose(hess, normalise=True):
+    # Get the eigenvalues and eigenvectors
+    eigvals, eigvecs = np.linalg.eig(hess)
+    eigvecs, eigvals = eigvecs.real.T, eigvals.real
+
+    # Normalise
+    if normalise:
+        eigvals /= eigvals[0]
+    return eigvals, eigvecs
+
+
+def svd(jacobian, normalise=True):
+    u, s, vh = np.linalg.svd(jacobian, full_matrices=True)
+    if normalise:
+        s /= s[0]
+    return u, s, vh
+
+
+def orthogonalise(x, cov):
+    eig_vals, eig_vecs = np.linalg.eig(cov)
+    eig_vals, eig_vecs = eig_vals.real, eig_vecs.real.T
+    ortho_cov = np.dot(eig_vecs, np.dot(cov, np.linalg.inv(eig_vecs)))
+    ortho_x = np.dot(eig_vecs, x)
+    return ortho_x, ortho_cov, eig_vecs, eig_vals
+
+
+def weighted_average(values, errors):
+    var = errors**2
+    weights = 1 / var
+    average = np.sum(weights * values) / np.sum(weights)
+    uncertainty = np.sqrt(np.sum(np.square(weights * errors))) / np.sum(weights)
+    return average, uncertainty
+
+
+def bin_data(x, y, bin_inds):
+    return np.array([weighted_average(x[inds], y[inds]) for inds in bin_inds]).T
+
+
+def chi2(x, pred, std, ddof):
+    res = x - pred
+    z_score = res / std
+    chi2 = np.nansum(z_score**2) / ddof
+    return chi2
