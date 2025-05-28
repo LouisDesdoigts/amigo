@@ -113,6 +113,13 @@ def loglike(x, mu, cov):
     return jsp.stats.multivariate_normal.logpdf(x, mean=mu, cov=cov)
 
 
+def svd(jacobian, normalise=True):
+    u, s, vh = np.linalg.svd(jacobian, full_matrices=True)
+    if normalise:
+        s /= s[0]
+    return u, s, vh
+
+
 def decompose(hess, normalise=True):
     # Get the eigenvalues and eigenvectors
     eigvals, eigvecs = np.linalg.eig(hess)
@@ -124,19 +131,41 @@ def decompose(hess, normalise=True):
     return eigvals, eigvecs
 
 
-def svd(jacobian, normalise=True):
-    u, s, vh = np.linalg.svd(jacobian, full_matrices=True)
-    if normalise:
-        s /= s[0]
-    return u, s, vh
+# def orthogonalise(x, cov):
+#     eig_vals, eig_vecs = np.linalg.eig(cov)
+#     eig_vals, eig_vecs = eig_vals.real, eig_vecs.real.T
+#     ortho_cov = np.dot(eig_vecs, np.dot(cov, np.linalg.inv(eig_vecs)))
+#     ortho_x = np.dot(eig_vecs, x)
+#     return ortho_x, ortho_cov, eig_vecs, eig_vals
 
 
 def orthogonalise(x, cov):
-    eig_vals, eig_vecs = np.linalg.eig(cov)
-    eig_vals, eig_vecs = eig_vals.real, eig_vecs.real.T
-    ortho_cov = np.dot(eig_vecs, np.dot(cov, np.linalg.inv(eig_vecs)))
-    ortho_x = np.dot(eig_vecs, x)
-    return ortho_x, ortho_cov, eig_vecs, eig_vals
+    # P = calc_projection(cov=cov, unit=normalise)[0]
+    eig_vals, P = decompose(cov, normalise=False)
+    ortho_cov = P @ (cov @ P.T)
+    ortho_x = np.dot(P, x)
+    return ortho_x, ortho_cov, P
+
+
+def calc_projection(fmat=None, cov=None, unit=True):
+    if fmat is None and cov is None:
+        raise ValueError("Must provide either fmat or cov")
+    mat = fmat if fmat is not None else cov
+
+    # Dont normalise the values since we need them
+    eig_vals, eig_vecs = decompose(mat, normalise=False)
+
+    # Eigen values of cov and fisher matrices are inverse
+    if fmat is not None:
+        scale = eig_vals**0.5
+    else:
+        scale = eig_vals**-0.5
+
+    # Project to orthogonal or ortho-normal space
+    projection = eig_vecs
+    if unit:
+        projection *= scale[:, None]
+    return projection, eig_vecs, eig_vals
 
 
 def weighted_average(values, errors):

@@ -9,7 +9,6 @@ import pkg_resources as pkg
 from .misc import find_position, gen_surface
 from .ramp_models import Ramp
 from .optical_models import gen_powers
-from .ramp_models import model_ramp
 from .stats import mv_zscore, loglike
 
 
@@ -96,7 +95,8 @@ class Exposure(zdx.Base):
         params["positions"] = (self.get_key("positions"), pos)
         params["fluxes"] = (self.get_key("fluxes"), log_flux)
         params["aberrations"] = (self.get_key("aberrations"), abb)
-        params["spectra"] = self.get_key("spectra"), np.array(0.0)
+        params["spectra"] = (self.get_key("spectra"), np.array(0.0))
+        params["defocus"] = (self.get_key("defocus"), np.array(0.01))
 
         # Reflectivity
         if self.fit_reflectivity:
@@ -164,7 +164,7 @@ class ModelFit(Exposure):
         super().__init__(*args, **kwargs)
 
     def mv_zscore(self, model, return_im=False):
-        slopes = np.diff(self.simulate(model).data, axis=0)
+        slopes = self(model)
 
         # Get the model, data, and variances
         slope_vec = self.to_vec(slopes)
@@ -181,7 +181,7 @@ class ModelFit(Exposure):
         return z_vec
 
     def loglike(self, model, return_im=False):
-        slopes = np.diff(self.simulate(model).data, axis=0)
+        slopes = self(model)
 
         # Get the model, data, and variances
         slope_vec = self.to_vec(slopes)
@@ -271,13 +271,6 @@ class ModelFit(Exposure):
         # Else its global
         return param
 
-    def get_spectra(self, model):
-        wavels, filt_weights = model.filters[self.filter]
-        xs = np.linspace(-1, 1, len(wavels), endpoint=True)
-        spectra_slopes = 1 + model.get(self.map_param("spectra")) * xs
-        weights = filt_weights * spectra_slopes  # * wavels
-        return wavels, weights / weights.sum()
-
     def update_optics(self, model):
         optics = model.optics
         if "aberrations" in model.params.keys():
@@ -301,11 +294,18 @@ class ModelFit(Exposure):
 
         return optics
 
-    def model_wfs(self, model):
-        wavels, weights = self.get_spectra(model)
-        optics = self.update_optics(model)
+    def get_spectra(self, model):
+        wavels, filt_weights = model.filters[self.filter]
+        xs = np.linspace(-1, 1, len(wavels), endpoint=True)
+        spectra_slopes = 1 + model.get(self.map_param("spectra")) * xs
+        weights = filt_weights * spectra_slopes  # * wavels
+        return wavels, weights / weights.sum()
 
+    def model_wfs(self, model):
         pos = dlu.arcsec2rad(model.positions[self.key])
+        wavels, weights = self.get_spectra(model)
+
+        optics = self.update_optics(model)
         wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
 
         # Convert Cartesian to Angular wf
@@ -323,30 +323,25 @@ class ModelFit(Exposure):
         psf = eqx.filter_jit(model.detector.apply)(psf)
         return psf.multiply("data", flux)
 
-    def model_ramp(self, illuminance, model, return_bleed=False):
-        illum = illuminance.data
-        ramp_model = model.detector.ramp
+    def model_ramp(self, illuminance, model):
+        # Get the charge (bias)
+        illum_small = dlu.downsample(illuminance.data, 3, mean=False)
 
-        # Get the charge (bias) and paste badpixels with median
-        illum_small = dlu.downsample(illum, 3, mean=False)
-        bias = self.ramp[0] - (illum_small / self.ngroups)
+        # NOTE: This bias estimate is inadequate becuase it doesnt correctly account
+        # for the non-linear component of the gain. This ultimately should be properly
+        # calibrated, WITH the gain term using the ramp rather than slope data.
+        true_bias = model.read.gain * self.ramp[0]
+        bias = true_bias - (illum_small / self.ngroups)
+
+        # bias = self.ramp[0] - (illum_small / self.ngroups)
+        # bias = model.read.gain * bias
+
+        # Paste badpixels with median
         bias = np.where(self.badpix, np.median(bias), bias)
 
-        #
-        if ramp_model is None:
-            illum = dlu.downsample(illum, self.oversample, mean=False)
-            ramp = model_ramp(illum, self.ngroups) + bias
-            bleed = 0.0
-
-        else:
-            # Bias should be added in here
-            ramp, bleed = ramp_model.evolve_ramp(illum, bias, self.ngroups, return_bleed=True)
-
-        # Return the ramp
-        ramp = Ramp(ramp, illuminance.pixel_scale)
-        if return_bleed:
-            return ramp, bleed
-        return ramp
+        # Evolve the illuminance
+        ramp = model.ramp_model.evolve_illuminance(illuminance.data, bias, self.ngroups)
+        return Ramp(ramp, illuminance.pixel_scale)
 
     def model_read(self, ramp, model):
         # Update one on fs if we are fitting for it
@@ -365,39 +360,61 @@ class ModelFit(Exposure):
         non_linearity = lax.stop_gradient(model.non_linearity)
         return model.set(["FF", "non_linearity"], [FF, non_linearity])
 
-    def simulate(self, model, return_bleed=False):
-        #
-        # if not isinstance(model, FlatFit):
+    def simulate(self, model, return_slopes=True):
         model = self.nuke_pixel_grads(model)
-
-        #
         psf = self.model_psf(model)
         illuminance = self.model_illuminance(psf, model)
-        if return_bleed:
-            ramp, latent_path = self.model_ramp(illuminance, model, return_bleed=return_bleed)
-            return self.model_read(ramp, model), latent_path
-        else:
-            ramp = self.model_ramp(illuminance, model)
-            return self.model_read(ramp, model)
+        ramp = self.model_ramp(illuminance, model)
+        ramp = self.model_read(ramp, model)
 
-    def __call__(self, model, return_bleed=False, return_ramp=False):
-        if return_bleed:
-            ramp, bleed = self.simulate(model, return_bleed=return_bleed)
-        else:
-            ramp = self.simulate(model)
+        if return_slopes:
+            return ramp.set("data", np.diff(ramp.data, axis=0))
+        return ramp
 
-        if return_ramp:
-            if return_bleed:
-                return ramp.data, bleed
-            return ramp.data
-
-        if return_bleed:
-            return np.diff(ramp.data, axis=0), bleed
-        return np.diff(self.simulate(model).data, axis=0)
+    def __call__(self, model, return_slopes=True):
+        return self.simulate(model, return_slopes=return_slopes).data
 
 
 class PointFit(ModelFit):
     pass
+
+
+class SplineVisFit(PointFit):
+    joint_fit: bool = eqx.field(static=True)
+
+    def __init__(self, *args, joint_fit=False, **kwargs):
+        self.joint_fit = bool(joint_fit)
+        super().__init__(*args, **kwargs)
+
+    def initialise_params(self, optics, vis_model=None, one_on_fs_order=1):
+        params = super().initialise_params(
+            optics, vis_model=vis_model, one_on_fs_order=one_on_fs_order
+        )
+        if vis_model is None:
+            raise ValueError("vis_model must be provided for SplineVisFit")
+        n = vis_model.n_basis
+        params["amplitudes"] = (self.get_key("amplitudes"), np.zeros(n))
+        params["phases"] = (self.get_key("phases"), np.zeros(n))
+        return params
+
+    def get_key(self, param):
+
+        # Return the per exposure key if not joint fitting
+        if not self.joint_fit:
+            if param in ["amplitudes", "phases", "vis"]:
+                return self.key
+
+        return super().get_key(param)
+
+    def model_vis(self, wfs, model):
+        amps = model.amplitudes[self.get_key("amplitudes")]
+        phases = model.phases[self.get_key("phases")]
+        return model.vis_model.model_vis(wfs, amps, phases, self.filter)
+
+    def model_psf(self, model):
+        wfs = self.model_wfs(model)
+        psf = self.model_vis(wfs, model)
+        return psf
 
 
 class FlatFit(ModelFit):
@@ -506,64 +523,20 @@ class FlatFit(ModelFit):
         # Make the object and return
         return dl.PSF(illuminance, dlu.arcsec2rad(pixel_scale))
 
-    def simulate(self, model, return_bleed=False):
+    def simulate(self, model, return_slopes=False):
         illuminance = self.model_illuminance(model)
-        if return_bleed:
-            ramp, bleed = self.model_ramp(illuminance, model, return_bleed=return_bleed)
-            return self.model_read(ramp, model), bleed
-        else:
-            ramp = self.model_ramp(illuminance, model)
-            return self.model_read(ramp, model)
+        ramp = self.model_ramp(illuminance, model)
+        ramp = self.model_read(ramp, model)
 
-
-class SplineVisFit(PointFit):
-    joint_fit: bool = eqx.field(static=True)
-
-    def __init__(self, *args, joint_fit=True, **kwargs):
-        self.joint_fit = bool(joint_fit)
-        super().__init__(*args, **kwargs)
-
-    def initialise_params(self, optics, vis_model=None, one_on_fs_order=1):
-        params = super().initialise_params(
-            optics, vis_model=vis_model, one_on_fs_order=one_on_fs_order
-        )
-        if vis_model is None:
-            raise ValueError("vis_model must be provided for SplineVisFit")
-        n = vis_model.n_basis
-        params["amplitudes"] = (self.get_key("amplitudes"), np.zeros(n))
-        params["phases"] = (self.get_key("phases"), np.zeros(n))
-        # params["vis"] = (self.get_key("amplitudes"), np.zeros(n))
-        return params
-
-    def get_key(self, param):
-
-        # Return the per exposure key if not joint fitting
-        if not self.joint_fit:
-            if param in ["amplitudes", "phases", "vis"]:
-                return self.key
-
-        return super().get_key(param)
-
-    def model_vis(self, wfs, model):
-        # NOTE: Returns a psf
-
-        # Get the visibilities
-        amps = model.amplitudes[self.get_key("amplitudes")]
-        phases = model.phases[self.get_key("phases")]
-        return model.vis_model.model_vis(wfs, amps, phases, self.filter)
-        # latent_vis = model.vis[self.get_key("vis")]
-        # return model.vis_model.model_vis(wfs, latent_vis, self.filter)
-
-    def model_psf(self, model):
-        wfs = self.model_wfs(model)
-        # wfs = wfs.downsample(2)
-        # fn = eqx.filter_vmap(lambda wf, _: wf.downsample(2))(wfs, wfs.wls)
-
-        psf = self.model_vis(wfs, model)
-        return psf
+        if return_slopes:
+            return ramp.set("data", np.diff(ramp.data, axis=0))
+        return ramp
 
 
 class BinaryFit(ModelFit):
+
+    def __init__(self, *args, **kwargs):
+        raise NotImplementedError("BinaryFit initialisation not yet implemented")
 
     def initialise_params(self, optics, vis_model=None, one_on_fs_order=1):
         params = super().initialise_params(

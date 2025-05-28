@@ -275,7 +275,7 @@ def analyse_vis(
     n_grid=10,  # number of initial grid points
     n_batch=1,  # number of batches to calculate the likelihood
     min_flux=-6,  # minimum log flux range
-    n_sigma=2.0,  # number of sigma for the upper limits
+    n_sigma=3.0,  # number of sigma for the upper limits
     max_steps=512,  # maximum number of steps for the optimizer
     tol=1e-8,  # tolerance for the optimizer
     log=False,  # whether to use log flux (needs testing)
@@ -426,8 +426,8 @@ def generate_photon_data(vis_eig_vals, n_terms, n_phot, cal_vis_dict, key=jr.key
     K_phi_cov = np.dot(K_phi_mat, np.dot(phase_cov, np.linalg.pinv(K_phi_mat)))
 
     # Orthonormalise the visibilities
-    o_vis, o_vis_cov, o_vis_mat, _ = orthogonalise(K_vis, K_vis_cov)
-    o_phi, o_phi_cov, o_phi_mat, _ = orthogonalise(K_phi, K_phi_cov)
+    o_vis, o_vis_cov, o_vis_mat = orthogonalise(K_vis, K_vis_cov, normalise=False)
+    o_phi, o_phi_cov, o_phi_mat = orthogonalise(K_phi, K_phi_cov, normalise=False)
 
     phot_cal_vis_dict = deepcopy(cal_vis_dict)
 

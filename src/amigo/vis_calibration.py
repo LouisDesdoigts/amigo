@@ -109,7 +109,7 @@ def vis_jac_fn(model_params, args):
     # Get the spectrally weighted wavelengths
     wavels, weights = optics.filters[filter]
 
-    if "sectra" in model_params.keys():
+    if "spectra" in model_params.keys():
         xs = np.linspace(-1, 1, len(wavels), endpoint=True)
         spectra_slopes = 1 + model_params.spectra * xs
         weights = weights * spectra_slopes

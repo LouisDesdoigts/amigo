@@ -431,6 +431,7 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
 class AMIOptics(dl.optical_systems.AngularOpticalSystem):
     filters: dict
     defocus_type: str
+    # defocus: np.ndarray
     defocus: np.ndarray
     corners: np.ndarray
     psf_upsample: int
@@ -443,11 +444,10 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         distortion_orders=3,
         coherence_orders=4,
         oversample=3,
-        psf_upsample=5,
+        psf_upsample=3,
         defocus_type="fft",
         #
         pupil_mask=None,
-        opd=None,
         normalise=True,
         psf_npixels=80,
         pixel_scale=0.065524085,
@@ -457,7 +457,6 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         oversize=1.2,
         defocus=0.01,
         polike=False,
-        unique_holes=False,
         static=True,
     ):
         if defocus_type not in ["phase", "fft", None]:
@@ -556,6 +555,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         pixel_scale = dlu.arcsec2rad(true_pixel_scale)
         psf_npixels = self.psf_npixels * self.oversample
 
+        # This should be moved into dLux as a fix
         if self.defocus_type == "phase":
             first, second = dlu.propagation.fresnel_phase_factors(
                 wavelength=wf.wavelength * 1e6,

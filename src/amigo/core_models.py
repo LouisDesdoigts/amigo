@@ -37,18 +37,20 @@ class AmigoModel(BaseModeller):
     optics: None
     vis_model: None
     detector: None
+    ramp_model: None
     read: None
 
-    def __init__(self, exposures, optics, detector, read, state, vis_model=None):
-        optics = optics.set("transmission", state["transmission"])
-        detector = detector.set(
-            ["FF", "jitter.r", "ramp.values"],
-            [state["FF"], state["jitter.r"], state["ramp.values"]],
-        )
-        read = read.set(
-            ["dark_current", "non_linearity"],
-            [state["dark_current"], state["non_linearity"]],
-        )
+    def __init__(self, exposures, optics, detector, ramp_model, read, state=None, vis_model=None):
+        if state is not None:
+            optics = optics.set("transmission", state["transmission"])
+            detector = detector.set("jitter", state["jitter"])
+            ramp_model = ramp_model.set(
+                ["FF", "SRF", "nn_weights"], [state["FF"], state["SRF"], state["nn_weights"]]
+            )
+            read = read.set(
+                ["dark_current", "non_linearity"],
+                [state["dark_current"], state["non_linearity"]],
+            )
 
         params = {}
         for exp in exposures:
@@ -60,9 +62,16 @@ class AmigoModel(BaseModeller):
                 if param not in params.keys():
                     params[param] = {}
                 params[param][key] = value
-        abb = state["aberrations"]
-        params["aberrations"] = jtu.map(lambda x: abb, params["aberrations"])
-        params["defocus"] = state["defocus"]
+
+        if state is not None:
+            params["defocus"] = state["defocus"]
+
+            abb = {}
+            for key in params["aberrations"].keys():
+                prog, filt = key.split("_")
+                abb[key] = state["aberrations"][filt]
+
+            params["aberrations"] = abb  # jtu.map(lambda x: abb, params["aberrations"])
 
         # This seems to fix some recompile issues
         def fn(x):
@@ -75,6 +84,7 @@ class AmigoModel(BaseModeller):
         self.params = jtu.map(lambda x: fn(x), params)
         self.optics = jtu.map(lambda x: fn(x), optics)
         self.detector = jtu.map(lambda x: fn(x), detector)
+        self.ramp_model = jtu.map(lambda x: fn(x), ramp_model)
         self.read = jtu.map(lambda x: fn(x), read)
         self.vis_model = jtu.map(lambda x: fn(x), vis_model)
 
@@ -86,12 +96,15 @@ class AmigoModel(BaseModeller):
                 return getattr(val, key)
         if hasattr(self.optics, key):
             return getattr(self.optics, key)
+        if hasattr(self.vis_model, key):
+            return getattr(self.vis_model, key)
+        if hasattr(self.ramp_model, key):
+            return getattr(self.ramp_model, key)
         if hasattr(self.detector, key):
             return getattr(self.detector, key)
         if hasattr(self.read, key):
             return getattr(self.read, key)
-        if hasattr(self.vis_model, key):
-            return getattr(self.vis_model, key)
+
         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
 
 
@@ -117,6 +130,7 @@ class ModelParams(BaseModeller):
             f"Attribute {key} not found in params of {self.__class__.__name__} object"
         )
 
+    # Remove?
     def replace(self, values):
         # Takes in a super-set class and updates this class with input values
         return self.set("params", dict([(param, getattr(values, param)) for param in self.keys()]))
@@ -141,6 +155,18 @@ class ModelParams(BaseModeller):
     def map(self, fn):
         return jtu.map(lambda x: fn(x), self)
 
+    def ravel(self, return_unvael=False):
+        """Returns the flattened parameters"""
+        X, unravel_fn = ravel_pytree(self)
+        if return_unvael:
+            return X, unravel_fn
+        return X
+
+    @property
+    def X(self):
+        """Returns the flattened parameters"""
+        return self.ravel()
+
     # Re-name this donate, and it counterpart accept, receive?
     def inject(self, other):
         # Injects the values of this class into another class
@@ -159,16 +185,28 @@ class ModelParams(BaseModeller):
         return ModelParams({**self.params, **params2.params})
 
     def jacfwd(self, fn, n_batch=1):
-        X, unravel_fn = ravel_pytree(self)
+        return self.jac(fn, n_batch=n_batch, type="fwd")
+
+    def jacrev(self, fn, n_batch=1):
+        return self.jac(fn, n_batch=n_batch, type="rev")
+
+    def jac(self, fn, n_batch=1, type="fwd"):
+        # X, unravel_fn = ravel_pytree(self)
+        X, unravel_fn = self.ravel(return_unvael=True)
         Xs = np.array_split(X, n_batch)
         rebuild = lambda X_batch, index: X.at[index : index + len(X_batch)].set(X_batch)
         lens = np.cumsum(np.array([len(x) for x in Xs]))[:-1]
         starts = np.concatenate([np.array([0]), lens])
 
-        @eqx.filter_jacfwd
-        def batched_jac_fn(x, index):
+        def batch_fn(x, index):
             model_params = unravel_fn(rebuild(x, index))
             return eqx.filter_jit(fn)(model_params)
+
+        if type == "fwd":
+            batched_jac_fn = eqx.filter_jacfwd(batch_fn)
+
+        elif type == "rev":
+            batched_jac_fn = eqx.filter_jacrev(batch_fn)
 
         return np.concatenate([batched_jac_fn(x, index) for x, index in zip(Xs, starts)], axis=-1)
 
@@ -228,13 +266,22 @@ class EquinoxWrapper(zdx.Base):
         return eqx.combine(jtu.unflatten(self.tree_def, leaves), self.static)
 
 
-class WrapperHolder(zdx.Base):
-    values: np.ndarray
+# class WrapperHolder(zdx.Base):
+class NNWrapper(zdx.Base):
+    nn_weights: np.ndarray
     structure: EquinoxWrapper
+
+    def __init__(self, eqx_model):
+        values, structure = build_wrapper(eqx_model)
+        self.nn_weights = values
+        self.structure = structure
+
+    def __call__(self, *args, **kwargs):
+        return self.build(*args, **kwargs)
 
     @property
     def build(self):
-        return self.structure.inject(self.values)
+        return self.structure.inject(self.nn_weights)
 
     def __getattr__(self, name):
         if hasattr(self.structure, name):

@@ -1,11 +1,12 @@
-import pkg_resources as pkg
+# import pkg_resources as pkg
 import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
 from jax.scipy.stats import multivariate_normal
 from .misc import interp
 import equinox as eqx
-from .ramp_models import RNNRamp
+
+# from .ramp_models import NonLinearRamp
 
 
 class Resample(dl.layers.detector_layers.DetectorLayer):
@@ -64,14 +65,14 @@ class BaseJitter(dl.layers.detector_layers.DetectorLayer):
 class GaussianJitter(BaseJitter):
     """Has units of arcseconds"""
 
-    r: np.ndarray
+    jitter: np.ndarray
 
-    def __init__(self, r=0.02, **kwargs):
+    def __init__(self, jiiter=0.02, **kwargs):
         super().__init__(**kwargs)
-        self.r = np.array(r, float)
+        self.jitter = np.array(jiiter, float)
 
     def generate_kernel(self, pixel_scale):
-        cov = np.square(self.r) * np.eye(2)
+        cov = np.square(self.jitter) * np.eye(2)
         return gaussian_kernel(self.kernel_size, cov, pixel_scale, self.kernel_oversample)
 
 
@@ -117,54 +118,29 @@ class LayeredDetector(dl.detectors.LayeredDetector):
         return psf
 
 
-class SUB80Detector(LayeredDetector):
-    ramp: None
-    # sensitivity: PixelSensitivities
-    oversample: int = eqx.field(static=True)
+class LinearDetector(LayeredDetector):
 
     def __init__(
         self,
-        ramp_model=RNNRamp(),
-        oversample=3,
-        npixels_in=80,
         rot_angle=+0.56126717,
         anisotropy=1.00765,
-        # SRF=0.05,
-        FF=None,
+        jitter=0.0214,
     ):
-        # Ramp model
-        self.ramp = ramp_model
-        self.oversample = int(oversample)
-
-        # Load the FF
-        if FF is None:
-            file_path = pkg.resource_filename(__name__, "data/SUB80_flatfield.npy")
-            FF = np.load(file_path)
-            if npixels_in != 80:
-                pad = (npixels_in - 80) // 2
-                FF = np.pad(FF, pad, constant_values=1)
-
-        # self.sensitivity = PixelSensitivities(FF, SRF, oversample=oversample)
-
         self.layers = dlu.list2dictionary(
             [
-                # ("jitter", AsymmetricJitter(kernel_size=11, kernel_oversample=5)),
-                ("jitter", GaussianJitter(r=0.0214, kernel_size=11, kernel_oversample=5)),
+                ("jitter_model", GaussianJitter(jitter, kernel_size=11, kernel_oversample=5)),
                 ("resampler", Resample(rotation=rot_angle, anisotropy=anisotropy)),
             ],
             ordered=True,
         )
 
     def __getattr__(self, key):
-        if hasattr(self.ramp, key):
-            return getattr(self.ramp, key)
-        # if hasattr(self.sensitivity, key):
-        #     return getattr(self.sensitivity, key)
-        # super().__getattr__(self)
+        # if hasattr(self.ramp_model, key):
+        #     return getattr(self.ramp_model, key)
         if key in self.layers.keys():
             return self.layers[key]
         for layer in list(self.layers.values()):
             if hasattr(layer, key):
                 return getattr(layer, key)
 
-        raise AttributeError(f"SUB80Detector.ODE has no attribute {key}")
+        raise AttributeError(f"LinearDetector has no attribute {key}")

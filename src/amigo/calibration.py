@@ -24,24 +24,24 @@ def log_likelihood(slope, exposure, return_im=False):
     return loglike_vec
 
 
-def prior(model, bleeds, l2_norm=0.0, bleed_norm=0.0):
-    l2_reg = -l2_norm * np.mean(model.ramp.values**2)
-    bleed_reg = -bleed_norm * (np.sum(bleeds, axis=1) ** 2).sum()
-    return l2_reg, bleed_reg
+# def prior(model, bleeds, l2_norm=0.0, bleed_norm=0.0):
+#     l2_reg = -l2_norm * np.mean(model.ramp.values**2)
+#     bleed_reg = -bleed_norm * (np.sum(bleeds, axis=1) ** 2).sum()
+#     return l2_reg, bleed_reg
 
 
-def posterior(model, exposure, l2_norm=0.0, bleed_norm=0.0):
-    slopes, bleed = exposure(model, return_bleed=True)
-    loglike = log_likelihood(slopes, exposure)
-    l2_reg, bleed_reg = prior(model, bleed, l2_norm=l2_norm, bleed_norm=bleed_norm)
-    return loglike + l2_reg + bleed_reg, (loglike, l2_reg, bleed_reg)
+# def posterior(model, exposure, l2_norm=0.0, bleed_norm=0.0):
+#     slopes, bleed = exposure(model, return_bleed=True)
+#     loglike = log_likelihood(slopes, exposure)
+#     l2_reg, bleed_reg = prior(model, bleed, l2_norm=l2_norm, bleed_norm=bleed_norm)
+#     return loglike + l2_reg + bleed_reg, (loglike, l2_reg, bleed_reg)
 
 
-def loss_fn(model, exposure, args={"l2": 0.0, "bleed": 0.0}):
-    loss, (loglike, l2_reg, bleed_reg) = posterior(
-        model, exposure, l2_norm=args["l2"]  # , bleed_norm=args["bleed"]
-    )
-    return -np.nanmean(loss), (-np.nanmean(loglike), l2_reg, bleed_reg)
+# def loss_fn(model, exposure, args={"l2": 0.0, "bleed": 0.0}):
+#     loss, (loglike, l2_reg, bleed_reg) = posterior(
+#         model, exposure, l2_norm=args["l2"]  # , bleed_norm=args["bleed"]
+#     )
+#     return -np.nanmean(loss), (-np.nanmean(loglike), l2_reg, bleed_reg)
 
 
 def args_fn(model, args, epoch):
@@ -124,7 +124,7 @@ def aux_fn(batch_key, aux_dict, aux):
         aux_key = (batch_key, exp_key)
         aux_dict["loglike"][aux_key].append(onp.array(val[0]))
         aux_dict["l2_reg"][aux_key].append(onp.array(-val[1]))
-        aux_dict["bleed_reg"][aux_key].append(onp.array(-val[2]))
+        # aux_dict["bleed_reg"][aux_key].append(onp.array(-val[2]))
     return aux_dict
 
 
@@ -433,13 +433,13 @@ class ValBatchedTrainer(BatchedTrainer):
         aux_dict = {
             "loglike": {},
             "l2_reg": {},
-            "bleed_reg": {},
+            # "bleed_reg": {},
         }
         for batch_key, exposures in batches.items():
             for exp in exposures:
                 aux_dict["loglike"][(batch_key, exp.key)] = []
                 aux_dict["l2_reg"][(batch_key, exp.key)] = []
-                aux_dict["bleed_reg"][(batch_key, exp.key)] = []
+                # aux_dict["bleed_reg"][(batch_key, exp.key)] = []
 
         loop_fn = self.default_looper if self.looper_fn is None else self.looper_fn
 
@@ -460,7 +460,7 @@ class ValBatchedTrainer(BatchedTrainer):
 
             # Create an empty gradient model to append gradients to
             reg_grads = reg_params.map(lambda x: x * 0.0)
-            batch_history = ParamHistory(batch_params)
+            _batch_history = ParamHistory(batch_params)
 
             # Loop over randomised calibration batch
             for i in batch_inds[epoch]:
@@ -501,14 +501,16 @@ class ValBatchedTrainer(BatchedTrainer):
                     )
 
                     # Append to history and update the model parameters
+                    _batch_history = _batch_history.append(batch_params)
                     batch_history = batch_history.append(batch_params)
+
                     model_params = reg_params.combine(batch_params)
 
                 # Check for NaNs and exit if so
                 if np.isnan(loss):
                     print(f"Loss is NaN on epoch {epoch}, exiting fit")
-                    # history = reg_history.combine(batch_history)
-                    history = reg_history
+                    history = reg_history.combine(batch_history)
+                    # history = reg_history
                     return self.finalise(
                         t0,
                         model,
@@ -557,8 +559,8 @@ class ValBatchedTrainer(BatchedTrainer):
                 print(f"Estimated run time: {formatted_time}")
 
         # Print the runtime stats and return Result object
-        # history = reg_history.combine(batch_history)
-        history = reg_history
+        history = reg_history.combine(batch_history)
+        # history = reg_history
 
         return self.finalise(
             t1,
