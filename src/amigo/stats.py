@@ -120,10 +120,18 @@ def svd(jacobian, normalise=True):
     return u, s, vh
 
 
-def decompose(hess, normalise=True):
+def decompose(matrix, hermitian=True, normalise=True):
     # Get the eigenvalues and eigenvectors
-    eigvals, eigvecs = np.linalg.eig(hess)
-    eigvecs, eigvals = eigvecs.real.T, eigvals.real
+    if hermitian:
+        eigvals, eigvecs = np.linalg.eigh(matrix)
+        # eigh returns the eigenvectors in the columns, ie v_i = eigvecs[:, i]
+        # We want the rows to be the eigenvectors, ie v_i = eigvec[i], so we transpose.
+        # It also returns the eigenvalues in ascending order, so we need to reverse
+        # the order of both the eigenvalues and eigenvectors.
+        eigvals, eigvecs = eigvals[::-1], eigvecs.T[::-1]
+    else:
+        eigvals, eigvecs = np.linalg.eig(matrix)
+        eigvecs, eigvals = eigvecs.real.T, eigvals.real
 
     # Normalise
     if normalise:
@@ -131,20 +139,21 @@ def decompose(hess, normalise=True):
     return eigvals, eigvecs
 
 
-# def orthogonalise(x, cov):
-#     eig_vals, eig_vecs = np.linalg.eig(cov)
-#     eig_vals, eig_vecs = eig_vals.real, eig_vecs.real.T
-#     ortho_cov = np.dot(eig_vecs, np.dot(cov, np.linalg.inv(eig_vecs)))
-#     ortho_x = np.dot(eig_vecs, x)
-#     return ortho_x, ortho_cov, eig_vecs, eig_vals
-
-
 def orthogonalise(x, cov):
-    # P = calc_projection(cov=cov, unit=normalise)[0]
+    # Eigen-decompose the covariance matrix
     eig_vals, P = decompose(cov, normalise=False)
+
+    # Invert the order of the eigenvectors so the most informative ones are first
+    eig_vals, P = eig_vals[::-1], P[::-1]
+
+    # Project to the orthogonal basis
     ortho_cov = P @ (cov @ P.T)
     ortho_x = np.dot(P, x)
-    return ortho_x, ortho_cov, P
+    return ortho_x, ortho_cov, P, eig_vals
+
+
+def build_disco(latent_mat, kernel_mat, ortho_mat):
+    return ortho_mat @ (kernel_mat @ latent_mat)
 
 
 def calc_projection(fmat=None, cov=None, unit=True):

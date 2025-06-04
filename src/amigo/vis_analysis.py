@@ -50,19 +50,9 @@ class AmigoOIData(zdx.Base):
         self.d_vis = np.diag(oi_data["O_vis_cov"]) ** 0.5
         self.d_phi = np.diag(oi_data["O_phi_cov"]) ** 0.5
 
-        pix_to_latent = np.linalg.pinv(np.array(oi_data["vis_mat"], dtype=float))
-        latent_to_kernel = np.array(oi_data["K_vis_mat"], dtype=float)
-        kernel_to_ortho = np.array(oi_data["O_vis_mat"], dtype=float)
-        proj_mat = np.dot(pix_to_latent, latent_to_kernel.T)
-        proj_mat = np.dot(kernel_to_ortho, proj_mat.T)
-        self.vis_mat = proj_mat.T
-
-        pix_to_latent = np.linalg.pinv(np.array(oi_data["phi_mat"], dtype=float))
-        latent_to_kernel = np.array(oi_data["K_phi_mat"], dtype=float)
-        kernel_to_ortho = np.array(oi_data["O_phi_mat"], dtype=float)
-        proj_mat = np.dot(pix_to_latent, latent_to_kernel.T)
-        proj_mat = np.dot(kernel_to_ortho, proj_mat.T)
-        self.phi_mat = proj_mat.T
+        # Projection matrices
+        self.vis_mat = np.array(oi_data["disco_vis_mat"], dtype=float)
+        self.phi_mat = np.array(oi_data["disco_phi_mat"], dtype=float)
 
     def flatten_data(self):
         """Flatten closure phases and uncertainties."""
@@ -79,8 +69,8 @@ class AmigoOIData(zdx.Base):
         log_cvis = np.log(cvis)
         log_vis, phi = log_cvis.real, log_cvis.imag
 
-        vis = np.dot(log_vis, self.vis_mat)
-        phi = np.dot(phi, self.phi_mat)
+        vis = np.dot(self.vis_mat, log_vis)
+        phi = np.dot(self.phi_mat, phi)
         return np.concatenate([vis, phi])
 
     def model(self, model_object):
