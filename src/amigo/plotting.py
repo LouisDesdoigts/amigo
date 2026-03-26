@@ -11,7 +11,7 @@ inferno = colormaps["inferno"]
 seismic = colormaps["seismic"]
 
 
-def plot_losses(losses, start, stop=-1, save_path=None,):
+def plot_losses(losses, start, stop=-1, save_path=None):
     plt.figure(figsize=(16, 5))
     plt.subplot(1, 2, 1)
     plt.title("Full Loss")
