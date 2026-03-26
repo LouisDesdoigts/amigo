@@ -1,3 +1,4 @@
+import os
 import jax.numpy as np
 import jax.scipy as jsp
 import dLux.utils as dlu
@@ -28,7 +29,8 @@ def plot_losses(losses, start, stop=-1, save_path=None):
     plt.tight_layout()
 
     if save_path is not None:
-        plt.savefig(save_path + "losses.png")
+        os.makedirs(save_path, exist_ok=True)
+        plt.savefig(os.path.join(save_path, "losses.png"))
         plt.close()
     else:
         plt.show()
@@ -48,6 +50,9 @@ def summarise_fit(
     save_path=None,
     # loglike_fn=None,
 ):
+
+    if save_path is not None:
+        os.makedirs(save_path, exist_ok=True)
 
     inferno = colormaps["inferno"]
     seismic = colormaps["seismic"]
@@ -113,7 +118,7 @@ def summarise_fit(
 
         plt.tight_layout()
         if save_path is not None:
-            plt.savefig(save_path + f"{exposure.key}.png")
+            plt.savefig(os.path.join(save_path, f"{exposure.key}.png"))
             plt.close()
         else:
             plt.show()
@@ -139,7 +144,7 @@ def summarise_fit(
 
             plt.tight_layout()
             if save_path is not None:
-                plt.savefig(save_path + "residuals.png")
+                plt.savefig(os.path.join(save_path, "residuals.png"))
                 plt.close()
             else:
                 plt.show()
@@ -172,7 +177,7 @@ def summarise_fit(
 
             plt.tight_layout()
             if save_path is not None:
-                plt.savefig(save_path + "histograms.png")
+                plt.savefig(os.path.join(save_path, "histograms.png"))
                 plt.close()
             else:
                 plt.show()
@@ -201,7 +206,7 @@ def summarise_fit(
         plt.hist(FF.flatten(), bins=100)
         # plt.xlim(0, 2)
         if save_path is not None:
-            plt.savefig(save_path + "ff.png")
+            plt.savefig(os.path.join(save_path, "ff.png"))
             plt.close()
         else:
             plt.show()
@@ -233,7 +238,7 @@ def summarise_fit(
 
         plt.tight_layout()
         if save_path is not None:
-            plt.savefig(save_path + "full_bias.png")
+            plt.savefig(os.path.join(save_path, "full_bias.png"))
             plt.close()
         else:
             plt.show()
@@ -283,7 +288,7 @@ def summarise_fit(
 
         plt.tight_layout()
         if save_path is not None:
-            plt.savefig(save_path + "aberrations.png")
+            plt.savefig(os.path.join(save_path, "aberrations.png"))
             plt.close()
         else:
             plt.show()
@@ -304,7 +309,7 @@ def summarise_fit(
             plt.imshow(residual[i], cmap=seismic, vmin=-v, vmax=v)
             plt.colorbar()
         if save_path is not None:
-            plt.savefig(save_path + "uptheramp.png")
+            plt.savefig(os.path.join(save_path, "uptheramp.png"))
             plt.close()
         else:
             plt.show()
@@ -325,13 +330,16 @@ def summarise_fit(
             plt.imshow(norm_res_slope[i], cmap=seismic, vmin=-v, vmax=v)
             plt.colorbar()
         if save_path is not None:
-            plt.savefig(save_path + "uptherampnorm.png")
+            plt.savefig(os.path.join(save_path, "uptherampnorm.png"))
             plt.close()
         else:
             plt.show()
 
 
 def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_path=None):
+
+    if save_path is not None:
+        os.makedirs(save_path, exist_ok=True)
 
     params = list(history.params.keys())
     params_in = [param for param in params if param not in ignore]
@@ -348,7 +356,7 @@ def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_
         ax = plt.subplot(1, 2, 2)
         if i + 1 == len(params_in):
             if save_path is not None:
-                plt.savefig(save_path + f"params_{i}.png")
+                plt.savefig(os.path.join(save_path, f"params_{i}.png"))
                 plt.close()
             else:
                 plt.show()
@@ -360,7 +368,7 @@ def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_
 
         plt.tight_layout()
         if save_path is not None:
-            plt.savefig(save_path + f"params_{i}.png")
+            plt.savefig(os.path.join(save_path, f"params_{i}.png"))
             plt.close()
         else:
             plt.show()
