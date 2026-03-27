@@ -87,6 +87,7 @@ class Exposure(zdx.Base):
         params = {}
 
         im = np.where(self.badpix, np.nan, self.slopes[0])
+        # im = np.where(self.badpix, 0., self.slopes[0])
         psf = np.where(np.isnan(im), 0.0, im)
 
         # Position
@@ -360,6 +361,21 @@ class ModelFit(Exposure):
 
         # bias = self.ramp[0] - (illum_small / self.ngroups)
         # bias = model.read.gain * bias
+
+        # import jax
+
+        # jax.debug.print("{x}", x=bias.shape)
+        # jax.debug.print("{x}", x=np.mean(bias))
+        # jax.debug.print("{x}", x=np.std(bias))
+        # jax.debug.print("{x}", x=np.isnan(bias).sum())
+        # jax.debug.print("{x}", x=np.isinf(bias).sum())
+
+        # jax.debug.print("{x}", x=np.nanmedian(bias))
+
+        # import matplotlib.pyplot as plt
+        # plt.imshow(bias)
+        # plt.colorbar()
+        # plt.show()
 
         # Paste badpixels with median
         bias = np.where(self.badpix, np.median(bias), bias)
