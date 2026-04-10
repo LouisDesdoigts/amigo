@@ -530,7 +530,7 @@ class NonLinearRamp(zdx.Base):
                 charges.append(charge)
         else:
             illum = dlu.downsample(illuminance * sensitivity, 3)
-            charges = [illum for _ in range(self.time_steps)]
+            charges = np.cumsum([illum for _ in range(self.time_steps)])
 
         if self.use_charge:
             return np.array(charges)
