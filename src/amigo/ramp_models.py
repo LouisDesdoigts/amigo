@@ -528,13 +528,15 @@ class NonLinearRamp(zdx.Base):
                 kernels = self.kernel_model(charge, sensitivity)
                 charge += apply_kernels_stride(illuminance, kernels)
                 charges.append(charge)
+            charges = np.array(charges)
+
         else:
             illum = dlu.downsample(illuminance * sensitivity, 3)
-            charges = np.cumsum([illum for _ in range(self.time_steps)])
+            charges = np.cumsum(np.array([illum for _ in range(self.time_steps)]))
 
         if self.use_charge:
-            return np.array(charges)
-        return np.array(charges) + charge  # NOTE THIS IS CURRENTLY BROKEN
+            return charges
+        return charges + charge  # NOTE THIS IS CURRENTLY BROKEN
 
     def evolve_illuminance(self, illuminance, charge, ngroups):
         # Normalise the Illuminance and charge
