@@ -1,3 +1,4 @@
+import os
 import jax.numpy as np
 import jax.scipy as jsp
 import dLux.utils as dlu
@@ -10,7 +11,7 @@ inferno = colormaps["inferno"]
 seismic = colormaps["seismic"]
 
 
-def plot_losses(losses, start, stop=-1):
+def plot_losses(losses, start, stop=-1, save_path=None):
     plt.figure(figsize=(16, 5))
     plt.subplot(1, 2, 1)
     plt.title("Full Loss")
@@ -25,7 +26,13 @@ def plot_losses(losses, start, stop=-1):
     plt.plot(np.arange(start, start + n), last_losses)
 
     plt.tight_layout()
-    plt.show()
+
+    if save_path is not None:
+        os.makedirs(save_path, exist_ok=True)
+        plt.savefig(os.path.join(save_path, "losses.png"))
+        plt.close()
+    else:
+        plt.show()
 
 
 def summarise_fit(
@@ -39,8 +46,12 @@ def summarise_fit(
     full_bias=False,
     aberrations=False,
     pow=0.5,
+    save_path=None,
     # loglike_fn=None,
 ):
+
+    if save_path is not None:
+        os.makedirs(save_path, exist_ok=True)
 
     inferno = colormaps["inferno"]
     seismic = colormaps["seismic"]
@@ -105,7 +116,11 @@ def summarise_fit(
         ax2.set_ylim(0)
 
         plt.tight_layout()
-        plt.show()
+        if save_path is not None:
+            plt.savefig(os.path.join(save_path, f"{exposure.key}.png"))
+            plt.close()
+        else:
+            plt.show()
 
         if residuals:
             norm = colors.PowerNorm(gamma=pow, vmin=-vmin, vmax=vmax)
@@ -127,7 +142,11 @@ def summarise_fit(
             plt.colorbar()
 
             plt.tight_layout()
-            plt.show()
+            if save_path is not None:
+                plt.savefig(os.path.join(save_path, "residuals.png"))
+                plt.close()
+            else:
+                plt.show()
 
         if histograms:
 
@@ -156,7 +175,11 @@ def summarise_fit(
             plt.colorbar()
 
             plt.tight_layout()
-            plt.show()
+            if save_path is not None:
+                plt.savefig(os.path.join(save_path, "histograms.png"))
+                plt.close()
+            else:
+                plt.show()
 
     if flat_field:
         plt.figure(figsize=(15, 4))
@@ -181,7 +204,11 @@ def summarise_fit(
         plt.title("Flat Field Histogram")
         plt.hist(FF.flatten(), bins=100)
         # plt.xlim(0, 2)
-        plt.show()
+        if save_path is not None:
+            plt.savefig(os.path.join(save_path, "ff.png"))
+            plt.close()
+        else:
+            plt.show()
 
     if full_bias:
         coeffs = model.one_on_fs[exposure.get_key("one_on_fs")]
@@ -209,7 +236,11 @@ def summarise_fit(
         plt.ylabel("Group")
 
         plt.tight_layout()
-        plt.show()
+        if save_path is not None:
+            plt.savefig(os.path.join(save_path, "full_bias.png"))
+            plt.close()
+        else:
+            plt.show()
 
     if aberrations:
         # Get the AMI mask and applied mask
@@ -255,7 +286,11 @@ def summarise_fit(
         # plt.colorbar(label="OPD (nm)")
 
         plt.tight_layout()
-        plt.show()
+        if save_path is not None:
+            plt.savefig(os.path.join(save_path, "aberrations.png"))
+            plt.close()
+        else:
+            plt.show()
 
     if up_the_ramp:
         ncols = 4
@@ -272,7 +307,11 @@ def summarise_fit(
             v = np.nanmax(np.abs(residual[i]))
             plt.imshow(residual[i], cmap=seismic, vmin=-v, vmax=v)
             plt.colorbar()
-        plt.show()
+        if save_path is not None:
+            plt.savefig(os.path.join(save_path, "uptheramp.png"))
+            plt.close()
+        else:
+            plt.show()
 
     if up_the_ramp_norm:
         ncols = 4
@@ -289,10 +328,17 @@ def summarise_fit(
             v = np.nanmax(np.abs(norm_res_slope[i]))
             plt.imshow(norm_res_slope[i], cmap=seismic, vmin=-v, vmax=v)
             plt.colorbar()
-        plt.show()
+        if save_path is not None:
+            plt.savefig(os.path.join(save_path, "uptherampnorm.png"))
+            plt.close()
+        else:
+            plt.show()
 
 
-def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1):
+def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_path=None):
+
+    if save_path is not None:
+        os.makedirs(save_path, exist_ok=True)
 
     params = list(history.params.keys())
     params_in = [param for param in params if param not in ignore]
@@ -308,8 +354,11 @@ def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1):
 
         ax = plt.subplot(1, 2, 2)
         if i + 1 == len(params_in):
-            plt.tight_layout()
-            plt.show()
+            if save_path is not None:
+                plt.savefig(os.path.join(save_path, f"params_{i}.png"))
+                plt.close()
+            else:
+                plt.show()
             break
 
         param = params_in[i + 1]
@@ -317,7 +366,11 @@ def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1):
         _plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end)
 
         plt.tight_layout()
-        plt.show()
+        if save_path is not None:
+            plt.savefig(os.path.join(save_path, f"params_{i}.png"))
+            plt.close()
+        else:
+            plt.show()
 
 
 def _format_leaf(leaf, per_exp=False, keys=None):
@@ -471,14 +524,14 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.set(ylabel="Jitter Magnitude (mas)")
 
         case "amplitudes":
-            norm_amplitudes = arr
+            norm_amplitudes = arr - arr[0]
             ax.plot(epochs, norm_amplitudes, **kwargs)
-            ax.set(ylabel="Visibility Amplitude")
+            ax.set(ylabel="$\Delta$ Visibility Amplitude")
 
         case "phases":
-            norm_phases = dlu.rad2deg(arr)
+            norm_phases = dlu.rad2deg(arr - arr[0])
             ax.plot(epochs, norm_phases, **kwargs)
-            ax.set(ylabel="Visibility Phase (deg)")
+            ax.set(ylabel="$\Delta$ Visibility Phase (deg)")
 
         case "separations":
             ax.plot(epochs, arr, **kwargs)
@@ -501,6 +554,21 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             norm_weights = arr - arr[0]
             ax.plot(epochs, norm_weights, **kwargs)
             ax.set(ylabel="$\Delta$ Convolutional Output Amplitude")
+
+        case "log_dist":
+
+            # reducing plotting load
+            total = arr.shape[0]
+            maxn = 100
+            if total > maxn:
+                key = jr.PRNGKey(0)  # or pass this in properly
+                idxs = jr.choice(key, total, shape=(maxn,), replace=False)
+                idxs = np.sort(idxs)
+                arr = arr[idxs, :]
+                epochs = epochs[idxs]
+
+            ax.plot(epochs, arr, alpha=0.5, **kwargs)
+            ax.set(ylabel="Log Distribution")
 
         case _:
             # print(f"No formatting function for {param}")
