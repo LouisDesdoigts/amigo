@@ -15,12 +15,20 @@ from jax import config
 import jax.random as jr
 import dLux.utils as dlu
 
+if jax.config.read("jax_enable_x64"):
+    BIG = np.finfo(np.float64).max / 1e1
+else:
+    BIG = np.finfo(np.float32).max / 1e1
+
 
 def scheduler(lr, start, *args):
-    shed_dict = {start: 1e100}
+    sched_dict = {start: BIG}
+
+    # looping over learning rate updates
     for start, mul in args:
-        shed_dict[start] = mul
-    return optax.piecewise_constant_schedule(lr / 1e100, shed_dict)
+        sched_dict[start] = mul
+
+    return optax.piecewise_constant_schedule(lr / BIG, sched_dict)
 
 
 base_sgd = lambda vals: optax.sgd(vals, nesterov=True, momentum=0.6)
