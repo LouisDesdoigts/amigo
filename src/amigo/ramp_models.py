@@ -362,7 +362,7 @@ def kernels_to_array(kernels):
     return permuted.reshape(npix * k_size, npix * k_size)
 
 
-def calc_kernels(coords, sensitivity):
+def calc_kernels(coords):
     # coords shape: (2, k_size, k_size, npix, npix)
     shape = coords.shape
     oversample, npix = shape[1], shape[-1]
@@ -379,11 +379,6 @@ def calc_kernels(coords, sensitivity):
     # TODO: Cache this guy?
     rel_cen = dlu.pixel_coords(3, 3)
 
-    # Sensitivity is a 2D array of shape (npix * ksize, npix * ksize)
-    n_pad = sensitivity.shape[0] + 2 * k_size
-    ones = np.ones((n_pad, n_pad))
-    padded_sens = ones.at[k_size:-k_size, k_size:-k_size].set(sensitivity)
-
     def kern_fn(i, j):
         coords_window = dyn_slice(padded, (0, i, j), (2, n, n))
         coords_kerns = vmap(array_to_kernels, (0, None, None))(coords_window, 3, k_size)
@@ -391,7 +386,7 @@ def calc_kernels(coords, sensitivity):
         box_coords = vmap(kernels_to_array)(box_coord_kerns)
         box_coords_vec = box_coords.reshape(2, -1).T
         fractions = vmap(overlap_fn)(box_coords_vec).reshape(n, n)
-        return fractions * dyn_slice(padded_sens, (i, j), (n, n))
+        return fractions
 
     # Apply the convolution
     indices = k_size * np.indices((npix, npix)).reshape(2, -1)
@@ -465,14 +460,14 @@ class PolyKernelModel(zdx.Base):
         )
         return vmap(distort_fn, -1, -1)(coeffs_vec).reshape(2, 3, 3, *charge.shape)
 
-    def predict_kernels(self, charge, sensitivity):
+    def predict_kernels(self, charge):
         """Predict spatially adaptive transposed convolution kernels."""
         coords = self.predict_coords(charge)
-        kernels = calc_kernels(coords, sensitivity)
+        kernels = calc_kernels(coords)
         return kernels
 
-    def __call__(self, charge, sensitivity):
-        return self.predict_kernels(charge, sensitivity)
+    def __call__(self, charge):
+        return self.predict_kernels(charge)
 
 
 class NonLinearRamp(zdx.Base):
@@ -534,7 +529,7 @@ class NonLinearRamp(zdx.Base):
 
             # TODO: Make this a lax.carry loop!!
             for _ in range(self.time_steps):
-                kernels = self.kernel_model(charge, sensitivity)
+                kernels = self.kernel_model(charge)
                 charge += apply_kernels_stride(illuminance, kernels)
                 charges.append(charge)
             charges = np.array(charges)
@@ -542,6 +537,9 @@ class NonLinearRamp(zdx.Base):
         else:
             illum = dlu.downsample(illuminance * sensitivity, 3)
             charges = np.cumsum(np.array([illum for _ in range(self.time_steps)]), axis=0)
+
+        # Apply pixel sensitivity
+        charges = charges * dlu.downsample(sensitivity, 3)
 
         if self.use_charge:
             return charges
