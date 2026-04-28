@@ -48,15 +48,24 @@ def broadcast_subpixel(pixels, subpixel):
 class PixelSensitivity(zdx.Base):
     FF: jax.Array
     SRF: jax.Array
+    use_SRF: bool
 
-    def __init__(self, FF=np.ones((80, 80)), SRF=0.1):
+    def __init__(self, FF=np.ones((80, 80)), SRF=0.0, use_SRF=False):
         self.FF = np.array(FF, float)
         self.SRF = np.array(SRF, float)
+        """
+        The SRF curve is not real and cant hurt us to <<1%. Throw it in the bin
+        – Louis Desdoigts, Feb 11th 2026
+        """
+        self.use_SRF = use_SRF
 
     @property
     def sensitivity(self):
         """Return the oversampled (240, 240) pixel sensitivities"""
-        return broadcast_subpixel(self.FF, quadratic_SRF(self.SRF, 3))
+        if self.use_SRF:
+            return broadcast_subpixel(self.FF, quadratic_SRF(self.SRF, 3))
+        else:
+            return broadcast_subpixel(self.FF, np.ones((3, 3)))
 
 
 def to_edges(box):
