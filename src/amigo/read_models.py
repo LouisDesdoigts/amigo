@@ -144,8 +144,8 @@ class ReadModel(LayeredDetector):
         else:
             ipc = None
         # layers.append(("pixel_bias", PixelBias(bias=bias)))
-        layers.append(("IPC", ipc))
         layers.append(("pixel_non_linearity", PixelNonLinearity(gain=gain)))
+        layers.append(("IPC", ipc))
         layers.append(("amplifier", Amplifier(one_on_fs)))
         # layers.append(("ADC", ADC(ADC_coeffs)))
         self.layers = dlu.list2dictionary(layers, ordered=True)
