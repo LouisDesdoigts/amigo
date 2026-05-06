@@ -28,7 +28,7 @@ def process_calslope(
     output_dir,
     sigma=3.0,
     correct_ADC=True,
-    flat=False,
+    flat=False,  # includes NIS_LAMP, NIS_DARK
     clean_dir=True,
 ):
     if input_dir[-1] != "/":
@@ -68,8 +68,8 @@ def process_calslope(
             continue
 
         # Check if the file is a NIS_AMI file
-        if file[0].header["EXP_TYPE"] not in ["NIS_LAMP", "NIS_AMI"]:
-            print("Not a NIS_AMI or flat file, skipping...")
+        if file[0].header["EXP_TYPE"] not in ["NIS_LAMP", "NIS_AMI", "NIS_DARK"]:
+            print("Not a NIS_AMI or flat/dark file, skipping...")
             continue
 
         # Skip single group files
@@ -92,9 +92,11 @@ def process_calslope(
         file_root = "_".join(file_name.split("_")[:-2])
 
         # Check if the file is a NIS_AMI file
-        if flat:
+        if file[0].header["EXP_TYPE"] == "NIS_LAMP":
             file_name = f"flat_{filt}_{ngroups}_nis_calslope.fits"
-        else:
+        elif file[0].header["EXP_TYPE"] == "NIS_DARK":
+            file_name = f"dark_{filt}_{ngroups}_nis_calslope.fits"
+        if file[0].header["EXP_TYPE"] == "NIS_AMI":
             file_name = file_root + "_nis_calslope.fits"
         file_calslope = os.path.join(output_dir + file_name)
 
