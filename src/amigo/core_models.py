@@ -192,7 +192,7 @@ class ModelParams(BaseModeller):
 
     def jac(self, fn, n_batch=1, type="fwd"):
         # X, unravel_fn = ravel_pytree(self)
-        X, unravel_fn = self.ravel(return_unvael=True)
+        X, unravel_fn = self.ravel(return_unravel=True)
         Xs = np.array_split(X, n_batch)
         rebuild = lambda X_batch, index: X.at[index : index + len(X_batch)].set(X_batch)
         lens = np.cumsum(np.array([len(x) for x in Xs]))[:-1]
