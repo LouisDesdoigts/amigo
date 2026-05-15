@@ -155,10 +155,10 @@ class ModelParams(BaseModeller):
     def map(self, fn):
         return jtu.map(lambda x: fn(x), self)
 
-    def ravel(self, return_unvael=False):
+    def ravel(self, return_unravel=False):
         """Returns the flattened parameters"""
         X, unravel_fn = ravel_pytree(self)
-        if return_unvael:
+        if return_unravel:
             return X, unravel_fn
         return X
 
