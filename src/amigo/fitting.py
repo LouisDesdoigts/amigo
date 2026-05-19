@@ -7,6 +7,7 @@ import jax.tree as jtu
 from .core_models import ModelParams, ParamHistory
 from .fisher import calc_fishers
 from .stats import covariance_model
+from .misc import BIG
 import optax
 import jax
 import jax.numpy as np
