@@ -6,7 +6,6 @@ from datetime import timedelta
 import jax.tree as jtu
 from .core_models import ModelParams, ParamHistory
 from .fisher import calc_fishers
-from .misc import tqdm, BIG
 from .stats import covariance_model
 import optax
 import jax
@@ -14,6 +13,7 @@ import jax.numpy as np
 from jax import config
 import jax.random as jr
 import dLux.utils as dlu
+from tqdm.auto import tqdm
 
 
 def scheduler(lr, start, *args):

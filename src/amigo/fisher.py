@@ -2,8 +2,8 @@ import os
 import zodiax as zdx
 import jax.numpy as np
 from jax import jit, grad, linearize, lax, vmap
-from .misc import tqdm
 import jax
+from tqdm.auto import tqdm
 
 
 def calc_fisher(

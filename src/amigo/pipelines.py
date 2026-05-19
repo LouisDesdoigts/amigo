@@ -8,7 +8,7 @@ from astropy.stats import sigma_clip
 
 # import pkg_resources as pkg
 from importlib import resources
-from .misc import tqdm
+from tqdm.auto import tqdm
 
 
 def delete_contents(path):

@@ -9,16 +9,7 @@ from importlib import resources
 import interpax as ipx
 import equinox as eqx
 
-# Import tqdm appropriately. Note we need the # noqa to get ruff to allow this syntax
-from IPython import get_ipython
-
-if get_ipython() is not None:
-    # Running in Jupyter Notebook
-    from tqdm.notebook import tqdm  # noqa
-else:
-    # Running in a script or other non-Jupyter environment
-    from tqdm import tqdm  # noqa
-
+# BIG is arbitrarily large number, depends on bit precision
 if jax.config.read("jax_enable_x64"):
     BIG = np.finfo(np.float64).max / 1e1
 else:

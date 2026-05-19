@@ -1,7 +1,24 @@
 import jax.numpy as np
 import jax.random as jr
 from jax import vmap
+import zodiax as zdx
+import jax.tree as jtu
+import numpy as onp
+import time
+from datetime import timedelta
+from tqdm.auto import tqdm
+from .core_models import ModelParams, ParamHistory
 from .misc import BIG
+from .fitting import (
+    get_optimiser,
+    get_val_grad_fn,
+    get_norm_loss_fn,
+    get_update_fn,
+    get_random_batch_order,
+    populate_lr_model,
+    Trainer,
+)
+
 
 
 def mv_zscore(x, mu, cov):
@@ -99,24 +116,6 @@ def grads_fn(model, grads, args):
     grad_params["ramp.values"] = values
     grads = grads.set("params", grad_params)
     return grads, args
-
-
-import zodiax as zdx
-import jax.tree as jtu
-import numpy as onp
-import time
-from datetime import timedelta
-from .core_models import ModelParams, ParamHistory
-from .misc import tqdm
-from .fitting import (
-    get_optimiser,
-    get_val_grad_fn,
-    get_norm_loss_fn,
-    get_update_fn,
-    get_random_batch_order,
-    populate_lr_model,
-    Trainer,
-)
 
 
 def aux_fn(batch_key, aux_dict, aux):
