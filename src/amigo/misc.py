@@ -1,5 +1,5 @@
-import jax.numpy as np
-import jax.scipy as jsp
+import jax
+from jax import numpy as np, scipy as jsp
 import numpy as onp
 from scipy.ndimage import center_of_mass
 from scipy.interpolate import griddata
@@ -19,6 +19,10 @@ else:
     # Running in a script or other non-Jupyter environment
     from tqdm import tqdm  # noqa
 
+if jax.config.read("jax_enable_x64"):
+    BIG = np.finfo(np.float64).max / 1e1
+else:
+    BIG = np.finfo(np.float32).max / 1e1
 
 def calc_laplacian(arr):
     """Laplacian - ie scalar field divergence (I think)"""

@@ -1,6 +1,7 @@
 import jax.numpy as np
 import jax.random as jr
 from jax import vmap
+from .misc import BIG
 
 
 def mv_zscore(x, mu, cov):
@@ -444,7 +445,7 @@ class ValBatchedTrainer(BatchedTrainer):
         loop_fn = self.default_looper if self.looper_fn is None else self.looper_fn
 
         aux = {}
-        best_val = 1e100
+        best_val = BIG
         best_batch = batch_params
         best_state = model_params
 
