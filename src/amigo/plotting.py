@@ -78,6 +78,7 @@ def summarise_fit(
 
     slopes = slopes.at[:, *nan_mask].set(np.nan)
     data = data.at[:, *nan_mask].set(np.nan)
+    residual = residual.at[:, *nan_mask].set(np.nan)
 
     effective_data = data.sum(0)
     effective_psf = slopes.sum(0)
