@@ -1,24 +1,41 @@
 # import pkg_resources as pkg
 from importlib import resources
 import equinox as eqx
+import jax
 import jax.numpy as np
-import dLux as dl
-import dLux.utils as dlu
 from jax import Array, vmap
 from jax.scipy.signal import convolve
-from .detector_models import LayeredDetector
-import jax
+import dLux as dl
+import dLux.utils as dlu
+from dLux.layers.detector_layers import DetectorLayer
+from dLux.detectors import LayeredDetector
 import zodiax as zdx
+from abc import abstractmethod
 
 
-def gen_fourier_signal(single_ramp, coeffs, period=1024):
-    orders = np.arange(len(coeffs)) + 1
-    xs = vmap(lambda order: order * 2 * np.pi * single_ramp / period)(orders)
-    basis = np.vstack([np.sin(xs), np.cos(xs)])
-    return np.dot(coeffs.flatten(), basis)
+class ReadLayer(DetectorLayer):
+
+    @abstractmethod
+    def apply(self, ramp):
+        pass
+
+    def __call__(self, ramp):
+        return self.apply.ramp
 
 
-class IPC(dl.detector_layers.DetectorLayer):
+class DarkCurrent(ReadLayer):
+    dark_current: Array
+
+    def __init__(self, dark_current):
+        self.dark_current = np.array(dark_current, float)
+
+    def apply(self, ramp):
+        dark_current = self.dark_current * (np.arange(len(ramp.data)) + 1)
+        # dark_current = model_dark_current(self.dark_current, len(ramp.data))
+        return ramp.add("data", dark_current[..., None, None])
+
+
+class IPC(ReadLayer):
     ipc: Array
 
     def __init__(self, ipc):
@@ -28,8 +45,37 @@ class IPC(dl.detector_layers.DetectorLayer):
         conv_fn = lambda x: convolve(x, self.ipc, mode="same")
         return ramp.set("data", vmap(conv_fn)(ramp.data))
 
+    def __call__(self, ramp):
+        return self.apply(ramp)
 
-class Amplifier(dl.detector_layers.DetectorLayer):
+
+class PixelNonLinearity(ReadLayer):
+    """Assumes that the bias has already been added to the ramp"""
+
+    non_linearity: jax.Array
+    gain: jax.Array
+
+    def __init__(self, gain=1.61, poly_order=2):
+        self.gain = np.array(gain, float)
+        self.non_linearity = np.zeros((poly_order - 1, 80, 80))
+
+    def apply(self, ramp):
+        # Get the non-linear, per-pixel gain form voltage to counts
+        # Assumes that bias has already been added back into the ramp
+        # the ramp here is actually the _voltage_ in each pixel
+        electrons = ramp.data / 2**16
+        # coeffs = self.non_linearity.at[-1].add(np.ones_like(data[0]))
+
+        shape = (1, *electrons.shape[-2:])
+        coeffs = np.concatenate(
+            [self.non_linearity, np.ones(shape), np.zeros(shape)], axis=0
+        )
+        # coeffs = np.concatenate([coeffs, np.zeros((1, *data.shape[-2:]))], axis=0)
+        counts = np.polyval(coeffs, electrons)
+        return ramp.set("data", (counts * 2**16) / self.gain)
+
+
+class Amplifier(ReadLayer):
     one_on_fs: Array
     axis: int = eqx.field(static=True)
 
@@ -52,37 +98,60 @@ class Amplifier(dl.detector_layers.DetectorLayer):
         return ramp.add("data", vmap(read_fn)(self.one_on_fs))
 
 
-class DarkCurrent(dl.detector_layers.DetectorLayer):
-    dark_current: Array
+class ReadModel(LayeredDetector):
 
-    def __init__(self, dark_current):
-        self.dark_current = np.array(dark_current, float)
+    def __init__(
+        self,
+        dark_current=0.25,
+        ipc=True,
+        one_on_fs=None,
+        gain=1.61,
+    ):
 
-    def apply(self, ramp):
-        dark_current = self.dark_current * (np.arange(len(ramp.data)) + 1)
-        # dark_current = model_dark_current(self.dark_current, len(ramp.data))
-        return ramp.add("data", dark_current[..., None, None])
+        if ipc:
+            # NOTE change this back when actually putting inside amigo package
+            # file_path = resources.files(__package__) / "data" / "SUB80_ipc.npy"
+            file_path = resources.files("amigo") / "data" / "SUB80_ipc.npy"
+            ipc = IPC(np.load(file_path))
+        else:
+            ipc = None
+
+        super().__init__(
+            [
+                ("read", DarkCurrent(dark_current)),
+                ("IPC", ipc),
+                ("pixel_non_linearity", PixelNonLinearity(gain=gain)),
+                ("amplifier", Amplifier(one_on_fs)),
+            ]
+        )
 
 
-class ADC(dl.detector_layers.DetectorLayer):
-    # TODO: Add the fourier basis into this class, rather than re-generate it. Maybe
-    # make it a new class though, so one can descend on the period
-    ADC_coeffs: Array
-    period: int = eqx.field(static=True)
+# def gen_fourier_signal(single_ramp, coeffs, period=1024):
+#     orders = np.arange(len(coeffs)) + 1
+#     xs = vmap(lambda order: order * 2 * np.pi * single_ramp / period)(orders)
+#     basis = np.vstack([np.sin(xs), np.cos(xs)])
+#     return np.dot(coeffs.flatten(), basis)
 
-    def __init__(self, ADC_coeffs=None, period=1024):
-        if ADC_coeffs is None:
-            ADC_coeffs = np.zeros((1, 2))
-        # if ADC_coeffs[0, 0] == 0:
-        #     ADC_coeffs = ADC_coeffs.at[0, 0].set(1.5)
-        self.ADC_coeffs = np.array(ADC_coeffs, float)
-        self.period = int(period)
 
-    def apply(self, ramp):
-        data = ramp.data
-        apply_fn = vmap(lambda x: gen_fourier_signal(x, self.ADC_coeffs, self.period))
-        correction = apply_fn(data.reshape(len(data), -1).T).T.reshape(data.shape)
-        return ramp.add("data", correction)
+# class ADC(dl.detector_layers.DetectorLayer):
+#     # TODO: Add the fourier basis into this class, rather than re-generate it. Maybe
+#     # make it a new class though, so one can descend on the period
+#     ADC_coeffs: Array
+#     period: int = eqx.field(static=True)
+
+#     def __init__(self, ADC_coeffs=None, period=1024):
+#         if ADC_coeffs is None:
+#             ADC_coeffs = np.zeros((1, 2))
+#         # if ADC_coeffs[0, 0] == 0:
+#         #     ADC_coeffs = ADC_coeffs.at[0, 0].set(1.5)
+#         self.ADC_coeffs = np.array(ADC_coeffs, float)
+#         self.period = int(period)
+
+#     def apply(self, ramp):
+#         data = ramp.data
+#         apply_fn = vmap(lambda x: gen_fourier_signal(x, self.ADC_coeffs, self.period))
+#         correction = apply_fn(data.reshape(len(data), -1).T).T.reshape(data.shape)
+#         return ramp.add("data", correction)
 
 
 # class PixelBias(dl.detector_layers.DetectorLayer):
@@ -98,54 +167,4 @@ class ADC(dl.detector_layers.DetectorLayer):
 #         if self.bias is None:
 #             return ramp
 #         return ramp.add("data", self.bias)
-
-
-class PixelNonLinearity(zdx.Base):
-    """Assumes that the bias has already been added to the ramp"""
-
-    non_linearity: jax.Array
-    gain: jax.Array
-
-    def __init__(self, gain=1.61, poly_order=2):
-        self.gain = np.array(gain, float)
-        self.non_linearity = np.zeros((poly_order - 1, 80, 80))
-
-    def apply(self, ramp):
-        # Get the non-linear, per-pixel gain form voltage to counts
-        # Assumes that bias has already been added back into the ramp
-        # the ramp here is actually the _voltage_ in each pixel
-        electrons = ramp.data / 2**16
-        # coeffs = self.non_linearity.at[-1].add(np.ones_like(data[0]))
-
-        shape = (1, *electrons.shape[-2:])
-        coeffs = np.concatenate([self.non_linearity, np.ones(shape), np.zeros(shape)], axis=0)
-        # coeffs = np.concatenate([coeffs, np.zeros((1, *data.shape[-2:]))], axis=0)
-        counts = np.polyval(coeffs, electrons)
-        return ramp.set("data", (counts * 2**16) / self.gain)
-
-
-class ReadModel(LayeredDetector):
-
-    def __init__(
-        self,
-        dark_current=0.25,
-        ipc=True,
-        one_on_fs=None,
-        ADC_coeffs=np.zeros((3, 2)),
-        bias=None,
-        gain=1.61,
-    ):
-        layers = []
-        layers.append(("read", DarkCurrent(dark_current)))
-        if ipc:
-            # file_path = pkg.resource_filename(__name__, "data/SUB80_ipc.npy")
-            file_path = resources.files(__package__) / "data" / "SUB80_ipc.npy"
-            ipc = IPC(np.load(file_path))
-        else:
-            ipc = None
-        # layers.append(("pixel_bias", PixelBias(bias=bias)))
-        layers.append(("pixel_non_linearity", PixelNonLinearity(gain=gain)))
-        layers.append(("IPC", ipc))
-        layers.append(("amplifier", Amplifier(one_on_fs)))
-        # layers.append(("ADC", ADC(ADC_coeffs)))
-        self.layers = dlu.list2dictionary(layers, ordered=True)
+# 

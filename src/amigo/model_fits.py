@@ -331,15 +331,11 @@ class ModelFit(Exposure):
         optics = self.update_optics(model)
         wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
 
-        # Convert Cartesian to Angular wf
-        if wfs.units == "Cartesian":
-            wfs = wfs.multiply("pixel_scale", 1 / optics.focal_length)
-            wfs = wfs.set(["plane", "units"], ["Focal", "Angular"])
         return wfs
 
     def model_psf(self, model):
         wfs = self.model_wfs(model)
-        return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale.mean(0))
+        return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale)
 
     def model_illuminance(self, psf, model):
         flux = self.ngroups * 10 ** model.fluxes[self.get_key("fluxes")]
