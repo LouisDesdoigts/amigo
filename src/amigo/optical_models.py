@@ -286,7 +286,7 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
 
     def __call__(self, wavefront):
         wavefront *= self.calc_transmission()
-        wavefront += self.calc_aberrations()
+        wavefront = wavefront.add_opd(self.calc_aberrations())
         if self.normalise:
             return wavefront.normalise()
         return wavefront
@@ -419,7 +419,7 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
     def __call__(self, wavefront):
         wavefront *= self.calc_transmission(npixels=wavefront.npixels)
         wavefront *= self.calc_mask(wavefront.npixels, wavefront.diameter)
-        wavefront += self.calc_aberrations(npixels=wavefront.npixels)
+        wavefront = wavefront.add_opd(self.calc_aberrations())
         if self.normalise:
             return wavefront.normalise()
         return wavefront
@@ -432,7 +432,6 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
 
 class AMIOptics(dl.AngularOpticalSystem):
     filters: dict
-    defocus_type: str
     defocus: np.ndarray
     corners: np.ndarray
     psf_upsample: int
@@ -446,7 +445,6 @@ class AMIOptics(dl.AngularOpticalSystem):
         coherence_orders=4,
         oversample=3,
         psf_upsample=3,
-        defocus_type="fft",
         pupil_mask=None,
         normalise=True,
         psf_npixels=80,
@@ -498,12 +496,8 @@ class AMIOptics(dl.AngularOpticalSystem):
             oversample,
         )
 
-        if defocus_type not in ["phase", "fft", None]:
-            raise ValueError("defocus_type must be one of 'phase', 'fft', or None")
-        self.filters = filters
         self.psf_upsample = psf_upsample
         self.defocus = np.array(defocus, float)
-        self.defocus_type = defocus_type
         self.filters = dict(
             [(filt, calc_throughput(filt, nwavels=nwavels)) for filt in filters]
         )
