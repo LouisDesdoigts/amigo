@@ -20,7 +20,7 @@ class ReadLayer(DetectorLayer):
         pass
 
     def __call__(self, ramp):
-        return self.apply.ramp
+        return self.apply(ramp)
 
 
 class DarkCurrent(ReadLayer):
@@ -119,8 +119,8 @@ class ReadModel(LayeredDetector):
         super().__init__(
             [
                 ("read", DarkCurrent(dark_current)),
-                ("IPC", ipc),
                 ("pixel_non_linearity", PixelNonLinearity(gain=gain)),
+                ("IPC", ipc),
                 ("amplifier", Amplifier(one_on_fs)),
             ]
         )

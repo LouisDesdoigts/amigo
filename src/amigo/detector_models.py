@@ -17,16 +17,13 @@ class Resample(DetectorLayer):
         self.rotation = np.array(rotation, float)
         self.anisotropy = np.array(anisotropy, float)
 
-    def apply(self, psf):
+    def __call__(self, psf):
         angle = dlu.deg2rad(self.rotation)
         coords = dlu.pixel_coords(psf.data.shape[0], 2)
         rot_coords = dlu.rotate_coords(coords, angle)
         sample_coords = rot_coords * np.array([1.0, self.anisotropy])[:, None, None]
         # TODO: Test different interpolation methods
         return psf.set("data", interp(psf.data, coords, sample_coords, "cubic2"))
-
-    def __call__(self, psf):
-        return self.apply(psf)
 
 
 class LinearDetector(LayeredDetector):

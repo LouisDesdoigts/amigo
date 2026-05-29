@@ -284,7 +284,7 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
             )
         return self.transmission
 
-    def apply(self, wavefront):
+    def __call__(self, wavefront):
         wavefront *= self.calc_transmission()
         wavefront += self.calc_aberrations()
         if self.normalise:
@@ -416,7 +416,7 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
     #     mask = calc_mask(hole_coords, self.f2f, 0.5 * diameter / npix)
     #     return dlu.downsample(mask, oversample, mean=True)
 
-    def apply(self, wavefront):
+    def __call__(self, wavefront):
         wavefront *= self.calc_transmission(npixels=wavefront.npixels)
         wavefront *= self.calc_mask(wavefront.npixels, wavefront.diameter)
         wavefront += self.calc_aberrations(npixels=wavefront.npixels)
@@ -566,17 +566,18 @@ class AMIOptics(dl.AngularOpticalSystem):
 
         wf = to_focal(wf)
 
-        # Upsample and then downsample to get more PSF precision
-        knots = dlu.pixel_coords(psf_npixels, diameter=2)
-        sample_coords = dlu.pixel_coords(psf_npixels * self.psf_upsample, diameter=2)
-        psf = interp(wf.psf, knots, sample_coords, "cubic2")  # Upsampling with interp
-        psf = dlu.downsample(psf, self.psf_upsample, mean=True)
-        psf = np.where(psf < 0, 0.0, psf)  # clipping
+        # # Upsample and then downsample to get more PSF precision
+        # knots = dlu.pixel_coords(psf_npixels, diameter=2)
+        # sample_coords = dlu.pixel_coords(psf_npixels * self.psf_upsample, diameter=2)
+        # psf = interp(wf.psf, knots, sample_coords, "cubic2")  # Upsampling with interp
+        # psf = dlu.downsample(psf, self.psf_upsample, mean=True)
+        # psf = np.where(psf < 0, 0.0, psf)  # clipping
 
-        # resetting amplitude while not affecting phase
-        amplitude = np.sqrt(psf)
-        phase = np.angle(wf.phasor)
-        wf = wf.set("phasor", amplitude * np.exp(1j * phase))
+        # # resetting amplitude while not affecting phase
+        # amplitude = np.sqrt(psf)
+        # phase = np.angle(wf.phasor)
+        # wf = wf.set("phasor", amplitude * np.exp(1j * phase))
+        print("bruh!")
 
         # Return PSF or Wavefront
         if return_wf:
