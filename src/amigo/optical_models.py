@@ -555,29 +555,28 @@ class AMIOptics(dl.AngularOpticalSystem):
         focal_length = pixel_scale_metres / pixel_scale  # derived focal length
 
         # defining the propagator
-        # defocus stored in mm, converted to metres in the propagator
+        # defocus stored in microns, converted to metres in the propagator
         to_focal = dl.MFTPropagator(
             [
                 ("ThinLens", dl.ABCDConjugatePlane(focal_length)),
-                ("FreeSpace", dl.ABCDFreeSpace(-1e-3 * self.defocus)),
+                ("FreeSpace", dl.ABCDFreeSpace(+1e-6 * self.defocus)),
             ],
             dl.CoordSpec(n=psf_npixels, d=pixel_scale_metres),
         )
 
         wf = to_focal(wf)
 
-        # # Upsample and then downsample to get more PSF precision
-        # knots = dlu.pixel_coords(psf_npixels, diameter=2)
-        # sample_coords = dlu.pixel_coords(psf_npixels * self.psf_upsample, diameter=2)
-        # psf = interp(wf.psf, knots, sample_coords, "cubic2")  # Upsampling with interp
-        # psf = dlu.downsample(psf, self.psf_upsample, mean=True)
-        # psf = np.where(psf < 0, 0.0, psf)  # clipping
+        # Upsample and then downsample to get more PSF precision
+        knots = dlu.pixel_coords(psf_npixels, diameter=2)
+        sample_coords = dlu.pixel_coords(psf_npixels * self.psf_upsample, diameter=2)
+        psf = interp(wf.psf, knots, sample_coords, "cubic2")  # Upsampling with interp
+        psf = dlu.downsample(psf, self.psf_upsample, mean=True)
+        psf = np.where(psf < 0, 0.0, psf)  # clipping
 
-        # # resetting amplitude while not affecting phase
-        # amplitude = np.sqrt(psf)
-        # phase = np.angle(wf.phasor)
-        # wf = wf.set("phasor", amplitude * np.exp(1j * phase))
-        print("bruh!")
+        # resetting amplitude while not affecting phase
+        amplitude = np.sqrt(psf)
+        phase = np.angle(wf.phasor)
+        wf = wf.set("phasor", amplitude * np.exp(1j * phase))
 
         # Return PSF or Wavefront
         if return_wf:

@@ -31,13 +31,16 @@ class LinearDetector(LayeredDetector):
         self,
         rot_angle=+0.56126717,
         anisotropy=1.00765,
-        jitter=0.0214,
+        jitter=0.0214,  # in arcseconds
         kernel_size=11,
         kernel_osamp=5,
     ):
+        # NOTE: converting jitter sigma into pixels, assuming an oversample of 3
+        jitter_pixels = jitter / (0.065524085 / 3)  # arcsec / (arcsec/pixel)
+        
         super().__init__(
             [
-                ("jitter_model", dl.ApplyJitter(jitter, kernel_size, kernel_osamp)),
+                ("jitter_model", dl.ApplyJitter(jitter_pixels, kernel_size, kernel_osamp)),
                 ("resampler", Resample(rotation=rot_angle, anisotropy=anisotropy)),
             ]
         )
