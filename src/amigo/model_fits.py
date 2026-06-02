@@ -374,7 +374,7 @@ class ModelFit(Exposure):
             model = model.set("pixel_bias.bias", model.biases[self.get_key("biases")])
 
         # Apply the read effects
-        return eqx.filter_jit(model.read.apply)(ramp)
+        return model.read(ramp, return_psf=True)
 
     def nuke_pixel_grads(self, model):
         FF = lax.stop_gradient(model.FF)

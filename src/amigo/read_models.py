@@ -45,9 +45,6 @@ class IPC(ReadLayer):
         conv_fn = lambda x: convolve(x, self.ipc, mode="same")
         return ramp.set("data", vmap(conv_fn)(ramp.data))
 
-    def __call__(self, ramp):
-        return self.apply(ramp)
-
 
 class PixelNonLinearity(ReadLayer):
     """Assumes that the bias has already been added to the ramp"""
