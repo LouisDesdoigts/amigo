@@ -249,6 +249,17 @@ class BatchedTrainer(Trainer):
                 # Append the mean batch loss to the loss dictionary
                 loss_dict[batch_key].append(loss / len(batch))
 
+                # Nuke pixel grads for FF and non-linearity for calibrator exposures
+                if "cal" in batch_key:
+                    grad_params = grads.params
+                    for param, value in grad_params.items():
+                        if param in ["FF", "non_linearity"]:
+                            if isinstance(value, dict):
+                                grad_params[param] = jtu.map(lambda x: x * 0, value)
+                            else:
+                                grad_params[param] = value * 0
+                    grads = grads.set("params", grad_params)
+
                 # Split the gradients into regular and batched, accumulate gradients
                 batch_grads, new_grads = grads.partition(batch_params)
                 reg_grads += new_grads
@@ -487,6 +498,18 @@ class ValBatchedTrainer(BatchedTrainer):
                             else:
                                 grad_params[param] = value * 0
                     grads = grads.set("params", grad_params)
+
+                # Nuke pixel grads for FF and non-linearity for calibrator exposures
+                if "cal" in batch_key:
+                    grad_params = grads.params
+                    for param, value in grad_params.items():
+                        if param in ["FF", "non_linearity"]:
+                            if isinstance(value, dict):
+                                grad_params[param] = jtu.map(lambda x: x * 0, value)
+                            else:
+                                grad_params[param] = value * 0
+                    grads = grads.set("params", grad_params)
+                    
 
                 # Split the gradients into regular and batched, accumulate gradients
                 batch_grads, new_grads = grads.partition(batch_params)
