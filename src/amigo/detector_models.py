@@ -4,7 +4,7 @@ from jax.scipy.stats import multivariate_normal
 import dLux as dl
 import dLux.utils as dlu
 from dLux.detectors import LayeredDetector
-from dLux.layers.detector_layers import DetectorLayer
+from dLux.layers.detector_layers import DetectorLayer, ApplyJitter
 from .misc import interp
 import equinox as eqx
 
@@ -26,6 +26,26 @@ class Resample(DetectorLayer):
         return psf.set("data", interp(psf.data, coords, sample_coords, "cubic2"))
 
 
+class ApplyJitterJWST(ApplyJitter):
+    """
+    Child of `dLux.detector_layers.ApplyJitter with the JWST pixel scale
+    hardcoded so sigma can be expressed in units of arcseconds.
+    """
+
+    @property
+    def kernel(self):
+        # Converting jitter sigma into pixels, assuming an oversample of 3
+        sigma_pixels = self.sigma / (0.065524085 / 3)  # arcsec / (arcsec/pixel)
+        
+        kernel = dlu.gaussian(
+            mean=np.array([0.0, 0.0]),
+            std=np.array([sigma_pixels, sigma_pixels]),
+            npixels=self.kernel_size * self.oversample,
+        )
+        return dlu.downsample(kernel, self.oversample, mean=False)
+
+
+
 class LinearDetector(LayeredDetector):
     def __init__(
         self,
@@ -35,12 +55,10 @@ class LinearDetector(LayeredDetector):
         kernel_size=11,
         kernel_osamp=5,
     ):
-        # NOTE: converting jitter sigma into pixels, assuming an oversample of 3
-        jitter_pixels = jitter / (0.065524085 / 3)  # arcsec / (arcsec/pixel)
         
         super().__init__(
             [
-                ("jitter_model", dl.ApplyJitter(jitter_pixels, kernel_size, kernel_osamp)),
+                ("jitter_model", ApplyJitterJWST(jitter, kernel_size, kernel_osamp)),
                 ("resampler", Resample(rotation=rot_angle, anisotropy=anisotropy)),
             ]
         )
