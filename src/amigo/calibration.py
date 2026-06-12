@@ -249,6 +249,7 @@ class BatchedTrainer(Trainer):
                 # Append the mean batch loss to the loss dictionary
                 loss_dict[batch_key].append(loss / len(batch))
 
+                # TODO: Fix this properly
                 # Nuke pixel grads for FF and non-linearity for calibrator exposures
                 if "cal" in batch_key:
                     grad_params = grads.params
@@ -499,6 +500,7 @@ class ValBatchedTrainer(BatchedTrainer):
                                 grad_params[param] = value * 0
                     grads = grads.set("params", grad_params)
 
+                # TODO: Fix this properly
                 # Nuke pixel grads for FF and non-linearity for calibrator exposures
                 if "cal" in batch_key:
                     grad_params = grads.params
