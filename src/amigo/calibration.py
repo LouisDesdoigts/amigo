@@ -5,6 +5,7 @@ import zodiax as zdx
 import jax.tree as jtu
 import numpy as onp
 import time
+import os
 from datetime import timedelta
 from tqdm.auto import tqdm
 from .core_models import ModelParams, ParamHistory
@@ -304,6 +305,13 @@ class BatchedTrainer(Trainer):
                 formatted_time = str(timedelta(seconds=int(estimated_time)))
                 print(f"Estimated run time: {formatted_time}")
 
+            if epoch in self.intermediate_prints:
+                history = reg_history.combine(batch_history)
+                intermediate_result = self.finalise(t0, model, loss_dict, model_params, history, lrs, epochs, True)
+                intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
+                self.summarise_fn(intermediate_result, intermediate_save_dir)
+
+
         # Print the runtime stats and return Result object
         history = reg_history.combine(batch_history)
         return self.finalise(t0, model, loss_dict, model_params, history, lrs, epochs, True)
@@ -582,6 +590,13 @@ class ValBatchedTrainer(BatchedTrainer):
                 estimated_time = epochs * (time.time() - t1)
                 formatted_time = str(timedelta(seconds=int(estimated_time)))
                 print(f"Estimated run time: {formatted_time}")
+
+            if epoch in self.intermediate_prints:
+                history = reg_history.combine(batch_history)
+                intermediate_result = self.finalise(t1, model, loss_dict, aux_dict, model_params, history, lrs, epochs, True, best_batch, best_state)
+                intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
+                self.summarise_fn(intermediate_result, intermediate_save_dir)
+
 
         # Print the runtime stats and return Result object
         history = reg_history.combine(batch_history)

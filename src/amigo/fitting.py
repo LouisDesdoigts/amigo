@@ -15,6 +15,7 @@ from jax import config
 import jax.random as jr
 import dLux.utils as dlu
 from tqdm.auto import tqdm
+import os
 
 
 def scheduler(lr, start, *args):
@@ -203,6 +204,9 @@ class Trainer(zdx.Base):
     looper_fn: callable
     aux_fn: callable
     cache: str
+    summarise_fn: callable
+    intermediate_prints: list
+    save_path: str | None
 
     def __init__(
         self,
@@ -213,6 +217,9 @@ class Trainer(zdx.Base):
         looper_fn=None,
         aux_fn=None,
         cache="cache",
+        summarise_fn=None,
+        intermediate_prints=[],
+        save_path=None
     ):
         """
         loss_fn(model, exposure, args): -> loss
@@ -229,6 +236,13 @@ class Trainer(zdx.Base):
         self.aux_fn = aux_fn
         self.fishers = None
         self.cache = cache
+        
+        if summarise_fn is None:
+            def summarise_fn(result, save_path):
+                pass
+        self.summarise_fn = summarise_fn
+        self.intermediate_prints = intermediate_prints
+        self.save_path = save_path
 
     def default_looper(self, looper, loss_dict):
         loss = np.array([v[-1] for v in loss_dict.values()]).mean(0)
@@ -476,9 +490,14 @@ class Trainer(zdx.Base):
                 self.initial_print(loss_dict)
             if epoch == 1:
                 self.second_print(t1, epochs)
+            if epoch in self.intermediate_prints:
+                intermediate_result = self.finalise(t0, model, loss_dict, aux, model_params, history, lrs, epoch, True)
+                intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
+                self.summarise_fn(intermediate_result, intermediate_save_dir)
 
         # Print the runtime stats and return Result object
         return self.finalise(t0, model, loss_dict, aux, model_params, history, lrs, epochs, True)
+        
 
 
 class Result(zdx.Base):
