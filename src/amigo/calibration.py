@@ -191,6 +191,7 @@ class BatchedTrainer(Trainer):
         batched_params: list = None,
         key=jr.PRNGKey(0),
         args={},
+        summarise_kwargs={},
     ):
         # If no batch params, just call the parent class version
         if batched_params is None:
@@ -309,7 +310,9 @@ class BatchedTrainer(Trainer):
                 history = reg_history.combine(batch_history)
                 intermediate_result = self.finalise(t0, model, loss_dict, model_params, history, lrs, epochs, True)
                 intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
-                self.summarise_fn(intermediate_result, intermediate_save_dir)
+                if intermediate_save_dir is not None:
+                    os.mkdir(intermediate_save_dir)
+                self.summarise_fn(intermediate_result, intermediate_save_dir, **summarise_kwargs)
 
 
         # Print the runtime stats and return Result object
@@ -413,6 +416,7 @@ class ValBatchedTrainer(BatchedTrainer):
         validators: dict,
         validator_params: list,
         args={},
+        summarise_kwargs={},
     ):
         # Ensure args key exists and is the right type
         args = self.check_args_key(args)
@@ -595,7 +599,9 @@ class ValBatchedTrainer(BatchedTrainer):
                 history = reg_history.combine(batch_history)
                 intermediate_result = self.finalise(t1, model, loss_dict, aux_dict, model_params, history, lrs, epochs, True, best_batch, best_state)
                 intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
-                self.summarise_fn(intermediate_result, intermediate_save_dir)
+                if intermediate_save_dir is not None:
+                    os.mkdir(intermediate_save_dir)
+                self.summarise_fn(intermediate_result, intermediate_save_dir, **summarise_kwargs)
 
 
         # Print the runtime stats and return Result object

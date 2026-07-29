@@ -408,6 +408,7 @@ class Trainer(zdx.Base):
         epochs,
         batches: dict,
         args={},
+        summarise_kwargs={},
     ):
         # Ensure args key exists and is the right type
         args = self.check_args_key(args)
@@ -493,7 +494,9 @@ class Trainer(zdx.Base):
             if epoch in self.intermediate_prints:
                 intermediate_result = self.finalise(t0, model, loss_dict, aux, model_params, history, lrs, epoch, True)
                 intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
-                self.summarise_fn(intermediate_result, intermediate_save_dir)
+                if intermediate_save_dir is not None:
+                    os.mkdir(intermediate_save_dir)
+                self.summarise_fn(intermediate_result, intermediate_save_dir, **summarise_kwargs)
 
         # Print the runtime stats and return Result object
         return self.finalise(t0, model, loss_dict, aux, model_params, history, lrs, epochs, True)
