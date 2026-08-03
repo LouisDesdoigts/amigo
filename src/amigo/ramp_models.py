@@ -400,7 +400,7 @@ class PolyKernelModel(zdx.Base):
     spatial_encoder: eqx.nn.Conv2d
     bleed_encoder: NNWrapper
 
-    def __init__(self, key=jr.key(0)):
+    def __init__(self, key=jr.key(0), hidden_width=16, n_hidden_layers=3):
         self.knots = dlu.pixel_coords(3, 1)
 
         # Coordinate distortion set up
@@ -428,16 +428,19 @@ class PolyKernelModel(zdx.Base):
         self.spatial_encoder = eqx.nn.Sequential(layers)
 
         # Convolution layers: Feature extraction from charge/bias distribution
-        keys = jr.split(key, 3)
-        layers = [
-            Conv2d(in_channels=16, out_channels=16, key=keys[0]),
-            eqx.nn.Lambda(nn.relu),
-            Conv2d(in_channels=16, out_channels=16, key=keys[1]),
-            eqx.nn.Lambda(nn.relu),
-            Conv2d(in_channels=16, out_channels=16, key=keys[1]),
-            eqx.nn.Lambda(nn.relu),
-            Conv2d(in_channels=16, out_channels=n_features, key=keys[2]),
-        ]
+        # First hidden layer: in=16 (fixed by spatial_encoder) -> hidden_width
+        # Middle hidden layers: hidden_width -> hidden_width, x(n_hidden_layers - 1)
+        # Final layer: hidden_width -> n_features (fixed by distortion polynomial order)
+        keys = jr.split(key, n_hidden_layers + 1)
+
+        layers = [Conv2d(in_channels=16, out_channels=hidden_width, key=keys[0]), eqx.nn.Lambda(nn.relu)]
+        for i in range(1, n_hidden_layers):
+            layers += [
+                Conv2d(in_channels=hidden_width, out_channels=hidden_width, key=keys[i]),
+                eqx.nn.Lambda(nn.relu),
+            ]
+        layers += [Conv2d(in_channels=hidden_width, out_channels=n_features, key=keys[-1])]
+
 
         # Construct the encoder
         self.bleed_encoder = NNWrapper(eqx.nn.Sequential(layers))
@@ -489,12 +492,16 @@ class NonLinearRamp(zdx.Base):
         SRF=0.1,
         use_charge=True,
         bleed=True,
+        hidden_width=16,
+        n_hidden_layers=3,
     ):
         self.norm = norm
         self.bleed = bleed
         self.time_steps = time_steps
         self.use_charge = use_charge
-        self.kernel_model = PolyKernelModel(key=key)
+        self.kernel_model = PolyKernelModel(
+            key=key, hidden_width=hidden_width, n_hidden_layers=n_hidden_layers
+        )
         self.ff_model = PixelSensitivity(SRF=SRF)
 
     def __getattr__(self, key):
