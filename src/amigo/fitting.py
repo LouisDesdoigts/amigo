@@ -375,7 +375,7 @@ class Trainer(zdx.Base):
         # Format the batches and exposures
         if isinstance(batches, list):
             exposures = batches
-            batches = {0: exposures}
+            batches = {"0": exposures}
         else:
             exposures = []
             for batch_key, batch in batches.items():
