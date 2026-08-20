@@ -185,7 +185,7 @@ class ModelFit(Exposure):
             mask |= np.eye(n, k=-1, dtype=bool)
             self.cov = self.cov * mask[..., None, None]
 
-    def mv_zscore(self, model, return_im=False):
+    def mv_zscore(self, model, return_im=False, return_slopes=False):
         slopes = self(model)
 
         # Get the model, data, and variances
@@ -199,7 +199,9 @@ class ModelFit(Exposure):
         # Return image or vector
         if return_im:
             # NOTE: Adds nans to the empty spots
-            return self.from_vec(z_vec)
+            z_vec = self.from_vec(z_vec)
+        if return_slopes:
+            return z_vec, slopes
         return z_vec
 
     def loglike(self, model, return_im=False):
