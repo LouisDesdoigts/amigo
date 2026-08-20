@@ -515,8 +515,9 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.set(ylabel="Dark Current")
 
         case "defocus":
-            ax.plot(epochs, arr, **kwargs)
-            ax.set(ylabel="Defocus")
+            norm_arr = arr - arr[0]
+            ax.plot(epochs, norm_arr, **kwargs)
+            ax.set(ylabel="$\Delta$ Defocus")
 
         case "jitter.r":
             ax.plot(epochs, 1e3 * arr, **kwargs)
