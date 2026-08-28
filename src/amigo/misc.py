@@ -9,6 +9,10 @@ from importlib import resources
 import interpax as ipx
 import equinox as eqx
 
+
+badpix = np.load(resources.files(__package__) / "data" / "badpix.npy")
+
+
 # BIG is arbitrarily large number, depends on bit precision
 if jax.config.read("jax_enable_x64"):
     BIG = np.finfo(np.float64).max / 1e1
@@ -96,6 +100,70 @@ def find_position(psf, pixel_scale=0.065524085, window_size: int = 30):
 
     # Return as (x, y)
     return np.array([x, y])
+
+
+def get_pos(file, box=5, return_centroid=False):
+    """
+    Determine which AMI primary dither position (POS1-POS4) an exposure
+    corresponds to, based on centroiding the source in the image data
+    and matching it to the nearest known POS pixel location.
+
+    (CRPIX1/CRPIX2 don't work for this since they're fixed by APERNAME
+    and don't vary between POS1-4.)
+
+    Parameters
+    ----------
+    file : astropy.io.fits.HDUList
+        An already-opened FITS file, e.g. from fits.open(path).
+    box : int
+        Half-width of the box around the brightest pixel used for
+        the refined centroid.
+
+    Returns
+    -------
+    pos_label : str
+        Closest matching position, e.g. "POS1"
+    dist : float
+        Pixel distance to that position (sanity check - should be small)
+    """
+    
+    # Reference pixel locations for each dither position (from your image)
+    POS_COORDS = {
+        "POS1": (46, 40),
+        "POS2": (31, 54),
+        "POS3": (18, 25),
+        "POS4": (59, 24),
+    }
+    
+    data = np.array(file[1].data)
+    if data.ndim == 3:
+        data = data[-1]  # collapse integrations/frames if needed
+    data = np.where(badpix, 0., np.array(data))
+
+    # crude centroid: brightest pixel, refined with a local window
+    flat_idx = np.nanargmax(data)
+    y0, x0 = np.unravel_index(flat_idx, data.shape)
+
+    y_lo, y_hi = max(0, y0 - box), min(data.shape[0], y0 + box + 1)
+    x_lo, x_hi = max(0, x0 - box), min(data.shape[1], x0 + box + 1)
+    sub = data[y_lo:y_hi, x_lo:x_hi]
+
+    ys, xs = np.mgrid[y_lo:y_hi, x_lo:x_hi]
+    total = np.sum(sub)
+    y_c = np.sum(ys * sub) / total
+    x_c = np.sum(xs * sub) / total
+
+    target = np.array([x_c, y_c])
+    labels = list(POS_COORDS.keys())
+    coords = np.array([POS_COORDS[l] for l in labels])
+
+    dists = np.sqrt(np.sum((coords - target) ** 2, axis=1))
+    best_idx = int(np.argmin(dists))
+
+    if return_centroid:
+        return labels[best_idx], target
+    else:
+        return labels[best_idx]
 
 
 def full_to_SUB80(full_arr, npix_out=80, fill=0.0):

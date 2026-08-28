@@ -8,7 +8,7 @@ from jax import lax, vmap
 
 # import pkg_resources as pkg
 from importlib import resources
-from .misc import find_position, gen_surface
+from .misc import find_position, get_pos, gen_surface
 from .ramp_models import Ramp
 from .optical_models import gen_powers
 from .stats import mv_zscore, loglike
@@ -41,6 +41,7 @@ class Exposure(zdx.Base):
     act_id: str = eqx.field(static=True)
     visit: str = eqx.field(static=True)
     dither: str = eqx.field(static=True)
+    POS: str = eqx.field(static=True)
 
     def __init__(self, file):
         self.slopes = np.array(file["SLOPE"].data, float)
@@ -66,6 +67,7 @@ class Exposure(zdx.Base):
         self.act_id = file[0].header["ACT_ID"]
         self.visit = file[0].header["VISITGRP"]
         self.dither = file[0].header["EXPOSURE"]
+        self.POS = get_pos(file)
         self.calibrator = bool(file[0].header["IS_PSF"])
         self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
 
@@ -450,6 +452,7 @@ class FlatFit(ModelFit):
         self.star = "NIS_LAMP"
         self.observation = "FLAT"
         self.program = "FLAT"
+        self.POS = "N/A"
         self.filename = f"FLAT_{self.filter}"
         self.fit_one_on_fs = fit_one_on_fs
         self.fit_reflectivity = False
