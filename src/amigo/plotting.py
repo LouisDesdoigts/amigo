@@ -144,7 +144,13 @@ def summarise_fit(
             peak = np.nanmax(data_top_group)
             ax[2].axvline(peak, color='k', linestyle='--', label=f"Peak: {peak:.0f}")
             ax[2].legend()
-            plt.show()
+            
+            plt.tight_layout()
+            if save_path is not None:
+                plt.savefig(os.path.join(save_path, f"topgroup_{exposure.key}.png"))
+                plt.close()
+            else:
+                plt.show()
         
         if residuals:
             norm = colors.PowerNorm(gamma=pow, vmin=-vmin, vmax=vmax)
