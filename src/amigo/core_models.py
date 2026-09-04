@@ -43,7 +43,8 @@ class AmigoModel(BaseModeller):
     def __init__(self, exposures, optics, detector, ramp_model, read, state=None, vis_model=None):
         if state is not None:
             optics = optics.set("transmission", state["transmission"])
-            detector = detector.set("jitter", state["jitter"])
+            # TODO sigma is a bad name for jitter
+            detector = detector.set("sigma", state["jitter"])
             ramp_model = ramp_model.set(
                 ["FF", "SRF", "nn_weights"], [state["FF"], state["SRF"], state["nn_weights"]]
             )

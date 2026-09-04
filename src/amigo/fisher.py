@@ -1,9 +1,10 @@
 import os
 import zodiax as zdx
 import jax.numpy as np
-from jax import jit, grad, linearize, lax, vmap
-from .misc import tqdm
+from jax import jit, grad, linearize, lax, vmap, Array
 import jax
+from tqdm.auto import tqdm
+from typing import Any
 
 
 def calc_fisher(
@@ -164,6 +165,13 @@ def hessian(f, x, has_aux=False, batch_size=1):
     return np.concatenate([hvp(batch) for batch in basis])
 
 
+def _to_array(leaf : Any):
+    if not isinstance(leaf, Array):
+        return np.asarray(leaf, dtype=float)
+    else:
+        return leaf
+
+    
 def FIM(
     pytree,
     parameters,
@@ -175,7 +183,8 @@ def FIM(
     **loglike_kwargs,
 ):
     # Build X vec
-    pytree = zdx.tree.set_array(pytree, parameters)
+    # pytree = zdx.tree.set_array(pytree, parameters)  # DEPRECATED
+    pytree = pytree.set(parameters, jax.tree.map(_to_array, pytree.get(parameters)))
 
     if len(parameters) == 1:
         parameters = [parameters]

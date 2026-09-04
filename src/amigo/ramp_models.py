@@ -48,15 +48,24 @@ def broadcast_subpixel(pixels, subpixel):
 class PixelSensitivity(zdx.Base):
     FF: jax.Array
     SRF: jax.Array
+    use_SRF: bool
 
-    def __init__(self, FF=np.ones((80, 80)), SRF=0.1):
+    def __init__(self, FF=np.ones((80, 80)), SRF=0.0, use_SRF=False):
         self.FF = np.array(FF, float)
         self.SRF = np.array(SRF, float)
+        """
+        The SRF curve is not real and cant hurt us to <<1%. Throw it in the bin
+        – Louis Desdoigts, Feb 11th 2026
+        """
+        self.use_SRF = use_SRF
 
     @property
     def sensitivity(self):
         """Return the oversampled (240, 240) pixel sensitivities"""
-        return broadcast_subpixel(self.FF, quadratic_SRF(self.SRF, 3))
+        if self.use_SRF:
+            return broadcast_subpixel(self.FF, quadratic_SRF(self.SRF, 3))
+        else:
+            return broadcast_subpixel(self.FF, np.ones((3, 3)))
 
 
 def to_edges(box):
@@ -353,7 +362,7 @@ def kernels_to_array(kernels):
     return permuted.reshape(npix * k_size, npix * k_size)
 
 
-def calc_kernels(coords, sensitivity):
+def calc_kernels(coords):
     # coords shape: (2, k_size, k_size, npix, npix)
     shape = coords.shape
     oversample, npix = shape[1], shape[-1]
@@ -370,11 +379,6 @@ def calc_kernels(coords, sensitivity):
     # TODO: Cache this guy?
     rel_cen = dlu.pixel_coords(3, 3)
 
-    # Sensitivity is a 2D array of shape (npix * ksize, npix * ksize)
-    n_pad = sensitivity.shape[0] + 2 * k_size
-    ones = np.ones((n_pad, n_pad))
-    padded_sens = ones.at[k_size:-k_size, k_size:-k_size].set(sensitivity)
-
     def kern_fn(i, j):
         coords_window = dyn_slice(padded, (0, i, j), (2, n, n))
         coords_kerns = vmap(array_to_kernels, (0, None, None))(coords_window, 3, k_size)
@@ -382,7 +386,7 @@ def calc_kernels(coords, sensitivity):
         box_coords = vmap(kernels_to_array)(box_coord_kerns)
         box_coords_vec = box_coords.reshape(2, -1).T
         fractions = vmap(overlap_fn)(box_coords_vec).reshape(n, n)
-        return fractions * dyn_slice(padded_sens, (i, j), (n, n))
+        return fractions
 
     # Apply the convolution
     indices = k_size * np.indices((npix, npix)).reshape(2, -1)
@@ -396,7 +400,7 @@ class PolyKernelModel(zdx.Base):
     spatial_encoder: eqx.nn.Conv2d
     bleed_encoder: NNWrapper
 
-    def __init__(self, key=jr.key(0)):
+    def __init__(self, key=jr.key(0), hidden_width=16, n_hidden_layers=3):
         self.knots = dlu.pixel_coords(3, 1)
 
         # Coordinate distortion set up
@@ -424,16 +428,19 @@ class PolyKernelModel(zdx.Base):
         self.spatial_encoder = eqx.nn.Sequential(layers)
 
         # Convolution layers: Feature extraction from charge/bias distribution
-        keys = jr.split(key, 3)
-        layers = [
-            Conv2d(in_channels=16, out_channels=16, key=keys[0]),
-            eqx.nn.Lambda(nn.relu),
-            Conv2d(in_channels=16, out_channels=16, key=keys[1]),
-            eqx.nn.Lambda(nn.relu),
-            Conv2d(in_channels=16, out_channels=16, key=keys[1]),
-            eqx.nn.Lambda(nn.relu),
-            Conv2d(in_channels=16, out_channels=n_features, key=keys[2]),
-        ]
+        # First hidden layer: in=16 (fixed by spatial_encoder) -> hidden_width
+        # Middle hidden layers: hidden_width -> hidden_width, x(n_hidden_layers - 1)
+        # Final layer: hidden_width -> n_features (fixed by distortion polynomial order)
+        keys = jr.split(key, n_hidden_layers + 1)
+
+        layers = [Conv2d(in_channels=16, out_channels=hidden_width, key=keys[0]), eqx.nn.Lambda(nn.relu)]
+        for i in range(1, n_hidden_layers):
+            layers += [
+                Conv2d(in_channels=hidden_width, out_channels=hidden_width, key=keys[i]),
+                eqx.nn.Lambda(nn.relu),
+            ]
+        layers += [Conv2d(in_channels=hidden_width, out_channels=n_features, key=keys[-1])]
+
 
         # Construct the encoder
         self.bleed_encoder = NNWrapper(eqx.nn.Sequential(layers))
@@ -456,14 +463,14 @@ class PolyKernelModel(zdx.Base):
         )
         return vmap(distort_fn, -1, -1)(coeffs_vec).reshape(2, 3, 3, *charge.shape)
 
-    def predict_kernels(self, charge, sensitivity):
+    def predict_kernels(self, charge):
         """Predict spatially adaptive transposed convolution kernels."""
         coords = self.predict_coords(charge)
-        kernels = calc_kernels(coords, sensitivity)
+        kernels = calc_kernels(coords)
         return kernels
 
-    def __call__(self, charge, sensitivity):
-        return self.predict_kernels(charge, sensitivity)
+    def __call__(self, charge):
+        return self.predict_kernels(charge)
 
 
 class NonLinearRamp(zdx.Base):
@@ -485,12 +492,16 @@ class NonLinearRamp(zdx.Base):
         SRF=0.1,
         use_charge=True,
         bleed=True,
+        hidden_width=16,
+        n_hidden_layers=3,
     ):
         self.norm = norm
         self.bleed = bleed
         self.time_steps = time_steps
         self.use_charge = use_charge
-        self.kernel_model = PolyKernelModel(key=key)
+        self.kernel_model = PolyKernelModel(
+            key=key, hidden_width=hidden_width, n_hidden_layers=n_hidden_layers
+        )
         self.ff_model = PixelSensitivity(SRF=SRF)
 
     def __getattr__(self, key):
@@ -525,7 +536,7 @@ class NonLinearRamp(zdx.Base):
 
             # TODO: Make this a lax.carry loop!!
             for _ in range(self.time_steps):
-                kernels = self.kernel_model(charge, sensitivity)
+                kernels = self.kernel_model(charge)
                 charge += apply_kernels_stride(illuminance, kernels)
                 charges.append(charge)
             charges = np.array(charges)
@@ -533,6 +544,9 @@ class NonLinearRamp(zdx.Base):
         else:
             illum = dlu.downsample(illuminance * sensitivity, 3)
             charges = np.cumsum(np.array([illum for _ in range(self.time_steps)]), axis=0)
+
+        # Apply pixel sensitivity
+        charges = charges * dlu.downsample(sensitivity, 3)
 
         if self.use_charge:
             return charges

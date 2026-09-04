@@ -6,19 +6,16 @@ from datetime import timedelta
 import jax.tree as jtu
 from .core_models import ModelParams, ParamHistory
 from .fisher import calc_fishers
-from .misc import tqdm
 from .stats import covariance_model
+from .misc import BIG
 import optax
 import jax
 import jax.numpy as np
 from jax import config
 import jax.random as jr
 import dLux.utils as dlu
-
-if jax.config.read("jax_enable_x64"):
-    BIG = np.finfo(np.float64).max / 1e1
-else:
-    BIG = np.finfo(np.float32).max / 1e1
+from tqdm.auto import tqdm
+import os
 
 
 def scheduler(lr, start, *args):
@@ -207,6 +204,9 @@ class Trainer(zdx.Base):
     looper_fn: callable
     aux_fn: callable
     cache: str
+    summarise_fn: callable
+    intermediate_prints: list
+    save_path: str | None
 
     def __init__(
         self,
@@ -217,6 +217,9 @@ class Trainer(zdx.Base):
         looper_fn=None,
         aux_fn=None,
         cache="cache",
+        summarise_fn=None,
+        intermediate_prints=[],
+        save_path=None
     ):
         """
         loss_fn(model, exposure, args): -> loss
@@ -233,6 +236,13 @@ class Trainer(zdx.Base):
         self.aux_fn = aux_fn
         self.fishers = None
         self.cache = cache
+        
+        if summarise_fn is None:
+            def summarise_fn(result, save_path):
+                pass
+        self.summarise_fn = summarise_fn
+        self.intermediate_prints = intermediate_prints
+        self.save_path = save_path
 
     def default_looper(self, looper, loss_dict):
         loss = np.array([v[-1] for v in loss_dict.values()]).mean(0)
@@ -365,7 +375,7 @@ class Trainer(zdx.Base):
         # Format the batches and exposures
         if isinstance(batches, list):
             exposures = batches
-            batches = {0: exposures}
+            batches = {"0": exposures}
         else:
             exposures = []
             for batch_key, batch in batches.items():
@@ -398,6 +408,7 @@ class Trainer(zdx.Base):
         epochs,
         batches: dict,
         args={},
+        summarise_kwargs={},
     ):
         # Ensure args key exists and is the right type
         args = self.check_args_key(args)
@@ -444,6 +455,18 @@ class Trainer(zdx.Base):
                 # Append the mean batch loss to the loss dictionary and update aux dict
                 loss_dict[batch_key].append(loss / len(batch))
 
+                # TODO: Fix this properly
+                # Nuke pixel grads for FF and non-linearity for calibrator exposures
+                if "cal" in batch_key:
+                    grad_params = grads.params
+                    for param, value in grad_params.items():
+                        if param in ["FF", "non_linearity"]:
+                            if isinstance(value, dict):
+                                grad_params[param] = jtu.map(lambda x: x * 0, value)
+                            else:
+                                grad_params[param] = value * 0
+                    grads = grads.set("params", grad_params)
+
                 #
                 if self.aux_fn is not None:
                     aux_dict = self.aux_fn(aux_dict, aux)
@@ -468,9 +491,16 @@ class Trainer(zdx.Base):
                 self.initial_print(loss_dict)
             if epoch == 1:
                 self.second_print(t1, epochs)
+            if epoch in self.intermediate_prints:
+                intermediate_result = self.finalise(t0, model, loss_dict, aux, model_params, history, lrs, epoch, True)
+                intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
+                if intermediate_save_dir is not None:
+                    os.mkdir(intermediate_save_dir)
+                self.summarise_fn(intermediate_result, intermediate_save_dir, **summarise_kwargs)
 
         # Print the runtime stats and return Result object
         return self.finalise(t0, model, loss_dict, aux, model_params, history, lrs, epochs, True)
+        
 
 
 class Result(zdx.Base):

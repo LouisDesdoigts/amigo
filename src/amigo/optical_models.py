@@ -284,9 +284,9 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
             )
         return self.transmission
 
-    def apply(self, wavefront):
+    def __call__(self, wavefront):
         wavefront *= self.calc_transmission()
-        wavefront += self.calc_aberrations()
+        wavefront = wavefront.add_opd(self.calc_aberrations())
         if self.normalise:
             return wavefront.normalise()
         return wavefront
@@ -416,10 +416,10 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
     #     mask = calc_mask(hole_coords, self.f2f, 0.5 * diameter / npix)
     #     return dlu.downsample(mask, oversample, mean=True)
 
-    def apply(self, wavefront):
+    def __call__(self, wavefront):
         wavefront *= self.calc_transmission(npixels=wavefront.npixels)
         wavefront *= self.calc_mask(wavefront.npixels, wavefront.diameter)
-        wavefront += self.calc_aberrations(npixels=wavefront.npixels)
+        wavefront = wavefront.add_opd(self.calc_aberrations())
         if self.normalise:
             return wavefront.normalise()
         return wavefront
@@ -430,10 +430,8 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
 
 
-class AMIOptics(dl.optical_systems.AngularOpticalSystem):
+class AMIOptics(dl.AngularOpticalSystem):
     filters: dict
-    defocus_type: str
-    # defocus: np.ndarray
     defocus: np.ndarray
     corners: np.ndarray
     psf_upsample: int
@@ -447,12 +445,10 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         coherence_orders=4,
         oversample=3,
         psf_upsample=3,
-        defocus_type="fft",
-        #
         pupil_mask=None,
         normalise=True,
         psf_npixels=80,
-        pixel_scale=0.065524085,
+        psf_pixel_scale=0.065524085,  # mas/pixel?
         diameter=6.603464,
         wf_npixels=1024,
         f2f=0.80,
@@ -461,28 +457,8 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         polike=False,
         static=True,
     ):
-        if defocus_type not in ["phase", "fft", None]:
-            raise ValueError("defocus_type must be one of 'phase', 'fft', or None")
-        self.filters = filters
-        self.wf_npixels = wf_npixels
-        self.diameter = diameter
-        self.psf_npixels = psf_npixels
-        self.oversample = oversample
-        self.psf_upsample = psf_upsample
-        self.psf_pixel_scale = pixel_scale
-        self.defocus = np.array(defocus, float)
-        self.defocus_type = defocus_type
-        self.filters = dict([(filt, calc_throughput(filt, nwavels=nwavels)) for filt in filters])
 
-        layers = []
-
-        # if static_opd:
-        #     layers += [("wfs_opd", dl.AberratedLayer(opd=np.zeros((1024, 1024))))]
-
-        layers += [("InvertY", dl.Flip(0))]
-
-        # layers += [("fresnel_pre", FreeSpace(d_dist=0.1))]
-
+        # Instantiate pupil mask layer
         if pupil_mask is None:
             if not static:
                 pupil_mask = DynamicApertureMask(
@@ -507,11 +483,24 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
                     oversize=oversize,
                     polike=polike,
                 )
-        layers += [("pupil_mask", pupil_mask)]
 
-        # layers += [("fresnel_post", FreeSpace(d_dist=-0.1))]
+        # optical layers
+        layers = [("InvertY", dl.Flip(0)), ("pupil_mask", pupil_mask)]
 
-        self.layers = dlu.list2dictionary(layers, ordered=True)
+        super().__init__(
+            wf_npixels,
+            diameter,
+            layers,
+            psf_npixels,
+            np.array(psf_pixel_scale),
+            oversample,
+        )
+
+        self.psf_upsample = psf_upsample
+        self.defocus = np.array(defocus, float)
+        self.filters = dict(
+            [(filt, calc_throughput(filt, nwavels=nwavels)) for filt in filters]
+        )
 
         # Get the corners of the arrays for sparse propagation
         if not hasattr(self, "holes"):
@@ -544,80 +533,69 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             if `return_wf` is True, returns the Wavefront object.
         """
         # Initialise wavefront
-        # wf = dl.Wavefront(self.wf_npixels, self.diameter, wavelength)
-        wf = Wavefront(self.wf_npixels, self.diameter, wavelength)
-        wf = wf.tilt(offset)
+        wf = self.initialise_wavefront(wavelength, offset)
 
         # Apply layers
         for layer in list(self.layers.values()):
-            wf *= layer
+            wf = layer(wf)
 
-        # Propagate
-        true_pixel_scale = self.psf_pixel_scale / self.oversample
-        pixel_scale = dlu.arcsec2rad(true_pixel_scale)
+        # Get pixel scale in radians
+        pixel_scale = dlu.arcsec2rad(self.psf_pixel_scale / self.oversample)
         psf_npixels = self.psf_npixels * self.oversample
 
-        # This should be moved into dLux as a fix
-        if self.defocus_type == "phase":
-            first, second = dlu.propagation.fresnel_phase_factors(
-                wavelength=wf.wavelength * 1e6,
-                npixels_in=wf.npixels,
-                pixel_scale_in=wf.pixel_scale * 1e6,
-                focal_shift=self.defocus * 1e6,
-                # In theory these do not matter since the second factor only modifies
-                # the phase and so the PSF is unaffected. The 18 (microns) is the
-                # pixel scale but should cancel out.
-                npixels_out=psf_npixels,
-                pixel_scale_out=18 / self.oversample,
-                focal_length=18 / dlu.arcsec2rad(pixel_scale),
-            )
+        # Getting the focal length from the pixel scale and pixel size.
+        # NIRISS Pixel size quoted as 18 micron x 18 micron in JDOX
+        pixel_scale_metres = 18e-6 / self.oversample
+        focal_length = pixel_scale_metres / pixel_scale  # derived focal length
 
-            wf *= first
-            wf = wf.propagate(psf_npixels, pixel_scale)
-            wf *= second
+        # defining the propagator
+        # defocus stored in microns, converted to metres in the propagator
+        to_focal = dl.MFTPropagator(
+            [
+                ("ThinLens", dl.ABCDConjugatePlane(focal_length)),
+                ("FreeSpace", dl.ABCDFreeSpace(+1e-6 * self.defocus)),
+            ],
+            dl.CoordSpec(n=psf_npixels, d=pixel_scale_metres),
+        )
 
-        if self.defocus_type == "fft":
-            # Default to um defocus
-            # wf = wf.propagate(psf_npixels, pixel_scale)
-            wf = propagate_sparse(wf, psf_npixels, pixel_scale, corners=self.corners, size=180)
-            wf = plane_to_plane(wf, 1e-6 * self.defocus, pad=2)
-
-        if self.defocus_type is None:
-            # wf = wf.propagate(psf_npixels, pixel_scale)
-            wf = propagate_sparse(wf, psf_npixels, pixel_scale, corners=self.corners, size=180)
+        wf = to_focal(wf)
 
         # Upsample and then downsample to get more PSF precision
-        knots = dlu.pixel_coords(psf_npixels, 2)
-        sample_coords = dlu.pixel_coords(psf_npixels * self.psf_upsample, 2)
-        psf = interp(wf.psf, knots, sample_coords, "cubic2")
+        knots = dlu.pixel_coords(psf_npixels, diameter=2)
+        sample_coords = dlu.pixel_coords(psf_npixels * self.psf_upsample, diameter=2)
+        psf = interp(wf.psf, knots, sample_coords, "cubic2")  # Upsampling with interp
         psf = dlu.downsample(psf, self.psf_upsample, mean=True)
-        psf = np.where(psf < 0, 0.0, psf)
-        wf = wf.set("amplitude", np.sqrt(psf))
+        psf = np.where(psf < 0, 0.0, psf)  # clipping
+
+        # resetting amplitude while not affecting phase
+        amplitude = np.sqrt(psf)
+        phase = np.angle(wf.phasor)
+        wf = wf.set("phasor", amplitude * np.exp(1j * phase))
 
         # Return PSF or Wavefront
         if return_wf:
             return wf
         return wf.psf
+        
 
+# class Wavefront(dl.Wavefront):
 
-class Wavefront(dl.Wavefront):
+#     def downsample(self, factor=2):
+#         """
+#         Downsample the wavefront by a factor of 2.
+#         """
+#         phasor = self.phasor
+#         real = dlu.downsample(phasor.real, factor, mean=True)
+#         imag = dlu.downsample(phasor.imag, factor, mean=True)
+#         phasor = real + 1j * imag
+#         amplitude = np.abs(phasor)
+#         phase = np.angle(phasor)
 
-    def downsample(self, factor=2):
-        """
-        Downsample the wavefront by a factor of 2.
-        """
-        phasor = self.phasor
-        real = dlu.downsample(phasor.real, factor, mean=True)
-        imag = dlu.downsample(phasor.imag, factor, mean=True)
-        phasor = real + 1j * imag
-        amplitude = np.abs(phasor)
-        phase = np.angle(phasor)
-
-        pixel_scale = self.pixel_scale * factor
-        return self.set(
-            ["pixel_scale", "amplitude", "phase"],
-            [pixel_scale, amplitude, phase],
-        )
+#         pixel_scale = self.pixel_scale * factor
+#         return self.set(
+#             ["pixel_scale", "amplitude", "phase"],
+#             [pixel_scale, amplitude, phase],
+#         )
 
 
 def SparseMFT(

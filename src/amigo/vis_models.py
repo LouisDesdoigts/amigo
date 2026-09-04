@@ -15,7 +15,7 @@ def fft_coords(wl, npix, pscale, pad=2):
 
 def wf_fft_coords(wfs, pad=2):
     wls = wfs.wavelength
-    psf_pscale = wfs.pixel_scale[0]
+    psf_pscale = wfs.pixel_scale
     psf_npix = wfs.npixels
     return vmap(lambda wl: fft_coords(wl, psf_npix, psf_pscale, pad=pad))(wls)
 
@@ -90,7 +90,7 @@ class BaseLogVisModel(zdx.Base):
     def wfs_to_otf(self, wfs, oversample=2):
         # Get the bits for mapping to UV plane
         wls = wfs.wavelength
-        psf_pscale = wfs.pixel_scale[0]
+        psf_pscale = wfs.pixel_scale
         npix = oversample * self.otf_coords.shape[-1]
         pscale = np.diff(self.otf_coords[0, 0]).mean() / oversample
 
@@ -150,7 +150,7 @@ class LogVisModel(BaseLogVisModel):
 
     def model_vis(self, wfs, latent_amps, latent_phases, filter):
         psf = self.latent_to_wf(wfs, latent_amps, latent_phases, filter)
-        return dl.PSF(psf, wfs.pixel_scale.mean(0))
+        return dl.PSF(psf, wfs.pixel_scale)
 
     def wfs_to_latent(self, wfs, filter):
         vis = self.wfs_to_otf(wfs)

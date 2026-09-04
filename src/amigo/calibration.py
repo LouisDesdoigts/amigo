@@ -1,6 +1,25 @@
 import jax.numpy as np
 import jax.random as jr
 from jax import vmap
+import zodiax as zdx
+import jax.tree as jtu
+import numpy as onp
+import time
+import os
+from datetime import timedelta
+from tqdm.auto import tqdm
+from .core_models import ModelParams, ParamHistory
+from .misc import BIG
+from .fitting import (
+    get_optimiser,
+    get_val_grad_fn,
+    get_norm_loss_fn,
+    get_update_fn,
+    get_random_batch_order,
+    populate_lr_model,
+    Trainer,
+)
+
 
 
 def mv_zscore(x, mu, cov):
@@ -100,24 +119,6 @@ def grads_fn(model, grads, args):
     return grads, args
 
 
-import zodiax as zdx
-import jax.tree as jtu
-import numpy as onp
-import time
-from datetime import timedelta
-from .core_models import ModelParams, ParamHistory
-from .misc import tqdm
-from .fitting import (
-    get_optimiser,
-    get_val_grad_fn,
-    get_norm_loss_fn,
-    get_update_fn,
-    get_random_batch_order,
-    populate_lr_model,
-    Trainer,
-)
-
-
 def aux_fn(batch_key, aux_dict, aux):
     # Aux should have exposure keys, with values (loglike, l2_reg, bleed_reg)
     for exp_key, val in aux.items():
@@ -190,6 +191,7 @@ class BatchedTrainer(Trainer):
         batched_params: list = None,
         key=jr.PRNGKey(0),
         args={},
+        summarise_kwargs={},
     ):
         # If no batch params, just call the parent class version
         if batched_params is None:
@@ -249,6 +251,18 @@ class BatchedTrainer(Trainer):
                 # Append the mean batch loss to the loss dictionary
                 loss_dict[batch_key].append(loss / len(batch))
 
+                # TODO: Fix this properly
+                # Nuke pixel grads for FF and non-linearity for calibrator exposures
+                if "cal" in batch_key:
+                    grad_params = grads.params
+                    for param, value in grad_params.items():
+                        if param in ["FF", "non_linearity"]:
+                            if isinstance(value, dict):
+                                grad_params[param] = jtu.map(lambda x: x * 0, value)
+                            else:
+                                grad_params[param] = value * 0
+                    grads = grads.set("params", grad_params)
+
                 # Split the gradients into regular and batched, accumulate gradients
                 batch_grads, new_grads = grads.partition(batch_params)
                 reg_grads += new_grads
@@ -291,6 +305,15 @@ class BatchedTrainer(Trainer):
                 estimated_time = epochs * (time.time() - t1)
                 formatted_time = str(timedelta(seconds=int(estimated_time)))
                 print(f"Estimated run time: {formatted_time}")
+
+            if epoch in self.intermediate_prints:
+                history = reg_history.combine(batch_history)
+                intermediate_result = self.finalise(t0, model, loss_dict, model_params, history, lrs, epochs, True)
+                intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
+                if intermediate_save_dir is not None:
+                    os.mkdir(intermediate_save_dir)
+                self.summarise_fn(intermediate_result, intermediate_save_dir, **summarise_kwargs)
+
 
         # Print the runtime stats and return Result object
         history = reg_history.combine(batch_history)
@@ -393,6 +416,7 @@ class ValBatchedTrainer(BatchedTrainer):
         validators: dict,
         validator_params: list,
         args={},
+        summarise_kwargs={},
     ):
         # Ensure args key exists and is the right type
         args = self.check_args_key(args)
@@ -444,7 +468,7 @@ class ValBatchedTrainer(BatchedTrainer):
         loop_fn = self.default_looper if self.looper_fn is None else self.looper_fn
 
         aux = {}
-        best_val = 1e100
+        best_val = BIG
         best_batch = batch_params
         best_state = model_params
 
@@ -487,6 +511,19 @@ class ValBatchedTrainer(BatchedTrainer):
                             else:
                                 grad_params[param] = value * 0
                     grads = grads.set("params", grad_params)
+
+                # TODO: Fix this properly
+                # Nuke pixel grads for FF and non-linearity for calibrator exposures
+                if "cal" in batch_key:
+                    grad_params = grads.params
+                    for param, value in grad_params.items():
+                        if param in ["FF", "non_linearity"]:
+                            if isinstance(value, dict):
+                                grad_params[param] = jtu.map(lambda x: x * 0, value)
+                            else:
+                                grad_params[param] = value * 0
+                    grads = grads.set("params", grad_params)
+                    
 
                 # Split the gradients into regular and batched, accumulate gradients
                 batch_grads, new_grads = grads.partition(batch_params)
@@ -557,6 +594,15 @@ class ValBatchedTrainer(BatchedTrainer):
                 estimated_time = epochs * (time.time() - t1)
                 formatted_time = str(timedelta(seconds=int(estimated_time)))
                 print(f"Estimated run time: {formatted_time}")
+
+            if epoch in self.intermediate_prints:
+                history = reg_history.combine(batch_history)
+                intermediate_result = self.finalise(t1, model, loss_dict, aux_dict, model_params, history, lrs, epochs, True, best_batch, best_state)
+                intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
+                if intermediate_save_dir is not None:
+                    os.mkdir(intermediate_save_dir)
+                self.summarise_fn(intermediate_result, intermediate_save_dir, **summarise_kwargs)
+
 
         # Print the runtime stats and return Result object
         history = reg_history.combine(batch_history)

@@ -8,7 +8,7 @@ from jax import lax, vmap
 
 # import pkg_resources as pkg
 from importlib import resources
-from .misc import find_position, gen_surface
+from .misc import find_position, get_pos, gen_surface
 from .ramp_models import Ramp
 from .optical_models import gen_powers
 from .stats import mv_zscore, loglike
@@ -41,6 +41,7 @@ class Exposure(zdx.Base):
     act_id: str = eqx.field(static=True)
     visit: str = eqx.field(static=True)
     dither: str = eqx.field(static=True)
+    POS: str = eqx.field(static=True)
 
     def __init__(self, file):
         self.slopes = np.array(file["SLOPE"].data, float)
@@ -66,6 +67,7 @@ class Exposure(zdx.Base):
         self.act_id = file[0].header["ACT_ID"]
         self.visit = file[0].header["VISITGRP"]
         self.dither = file[0].header["EXPOSURE"]
+        self.POS = get_pos(file)
         self.calibrator = bool(file[0].header["IS_PSF"])
         self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
 
@@ -185,7 +187,7 @@ class ModelFit(Exposure):
             mask |= np.eye(n, k=-1, dtype=bool)
             self.cov = self.cov * mask[..., None, None]
 
-    def mv_zscore(self, model, return_im=False):
+    def mv_zscore(self, model, return_im=False, return_slopes=False):
         slopes = self(model)
 
         # Get the model, data, and variances
@@ -199,7 +201,9 @@ class ModelFit(Exposure):
         # Return image or vector
         if return_im:
             # NOTE: Adds nans to the empty spots
-            return self.from_vec(z_vec)
+            z_vec = self.from_vec(z_vec)
+        if return_slopes:
+            return z_vec, slopes
         return z_vec
 
     def loglike(self, model, return_im=False):
@@ -331,15 +335,11 @@ class ModelFit(Exposure):
         optics = self.update_optics(model)
         wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
 
-        # Convert Cartesian to Angular wf
-        if wfs.units == "Cartesian":
-            wfs = wfs.multiply("pixel_scale", 1 / optics.focal_length)
-            wfs = wfs.set(["plane", "units"], ["Focal", "Angular"])
         return wfs
 
     def model_psf(self, model):
         wfs = self.model_wfs(model)
-        return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale.mean(0))
+        return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale)
 
     def model_illuminance(self, psf, model):
         flux = self.ngroups * 10 ** model.fluxes[self.get_key("fluxes")]
@@ -378,7 +378,7 @@ class ModelFit(Exposure):
             model = model.set("pixel_bias.bias", model.biases[self.get_key("biases")])
 
         # Apply the read effects
-        return eqx.filter_jit(model.read.apply)(ramp)
+        return model.read(ramp, return_psf=True)
 
     def nuke_pixel_grads(self, model):
         FF = lax.stop_gradient(model.FF)
@@ -452,6 +452,7 @@ class FlatFit(ModelFit):
         self.star = "NIS_LAMP"
         self.observation = "FLAT"
         self.program = "FLAT"
+        self.POS = "N/A"
         self.filename = f"FLAT_{self.filter}"
         self.fit_one_on_fs = fit_one_on_fs
         self.fit_reflectivity = False

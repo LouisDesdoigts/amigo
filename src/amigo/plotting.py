@@ -38,6 +38,7 @@ def summarise_fit(
     model,
     exposure,
     residuals=False,
+    top_group=False,
     histograms=False,
     flat_field=False,
     up_the_ramp=False,
@@ -55,7 +56,8 @@ def summarise_fit(
     inferno = colormaps["inferno"]
     seismic = colormaps["seismic"]
 
-    slopes = exposure(model)
+    ramp = exposure(model, return_slopes=False)
+    slopes = np.diff(ramp, axis=0)
     data = exposure.slopes
     residual = data - slopes
 
@@ -121,6 +123,35 @@ def summarise_fit(
         else:
             plt.show()
 
+        if top_group:
+            fig, ax = plt.subplots(1, 3, figsize=(12, 2.5))
+            data_top_group = np.where(exposure.badpix, np.nan, exposure.ramp[-1])
+            im = ax[0].imshow(data_top_group, inferno, norm=colors.PowerNorm(pow))
+            ax[0].set(title=f"Top group ({exposure.ngroups}) of data ramp")
+            fig.colorbar(im)
+                              
+            im = ax[1].imshow(ramp[-1], inferno, norm=colors.PowerNorm(pow))
+            ax[1].set(title=f"Top group ({exposure.ngroups}) of model ramp")
+            fig.colorbar(im)
+
+            hist_kwargs = {"bins":100, "log":True}
+            ax[2].hist(data_top_group.ravel(), label="Data", **hist_kwargs)
+            ax[2].hist(ramp[-1].ravel(), label="Model", **hist_kwargs)
+            ax[2].set(
+                title="Top group histograms",
+                xlim=(0, 2**16),
+            )
+            peak = np.nanmax(data_top_group)
+            ax[2].axvline(peak, color='k', linestyle='--', label=f"Peak: {peak:.0f}")
+            ax[2].legend()
+            
+            plt.tight_layout()
+            if save_path is not None:
+                plt.savefig(os.path.join(save_path, f"topgroup_{exposure.key}.png"))
+                plt.close()
+            else:
+                plt.show()
+        
         if residuals:
             norm = colors.PowerNorm(gamma=pow, vmin=-vmin, vmax=vmax)
 
@@ -333,7 +364,6 @@ def summarise_fit(
         else:
             plt.show()
 
-
 def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_path=None):
 
     if save_path is not None:
@@ -515,8 +545,9 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.set(ylabel="Dark Current")
 
         case "defocus":
-            ax.plot(epochs, arr, **kwargs)
-            ax.set(ylabel="Defocus")
+            norm_arr = arr - arr[0]
+            ax.plot(epochs, norm_arr, **kwargs)
+            ax.set(ylabel="$\Delta$ Defocus")
 
         case "jitter.r":
             ax.plot(epochs, 1e3 * arr, **kwargs)
