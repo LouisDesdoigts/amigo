@@ -25,14 +25,25 @@ class ReadLayer(DetectorLayer):
 
 class DarkCurrent(ReadLayer):
     dark_current: Array
+    per_pixel: bool
 
-    def __init__(self, dark_current):
+    def __init__(self, dark_current, per_pixel=False):
         self.dark_current = np.array(dark_current, float)
+        self.per_pixel = per_pixel
 
+        if self.per_pixel:
+            assert self.dark_current.shape == (80, 80)
+        elif not self.per_pixel:
+            assert self.dark_current.shape == ()
+        
     def apply(self, ramp):
-        dark_current = self.dark_current * (np.arange(len(ramp.data)) + 1)
-        # dark_current = model_dark_current(self.dark_current, len(ramp.data))
-        return ramp.add("data", dark_current[..., None, None])
+        group_range = np.arange(len(ramp.data)) + 1
+        if self.per_pixel:
+            dark_current = self.dark_current * group_range[:, None, None]
+            return ramp.add("data", dark_current)
+        else:
+            dark_current = self.dark_current * group_range
+            return ramp.add("data", dark_current[..., None, None])
 
 
 class IPC(ReadLayer):
@@ -103,6 +114,7 @@ class ReadModel(LayeredDetector):
         ipc=True,
         one_on_fs=None,
         gain=1.61,
+        per_pixel_dark=False,
     ):
 
         if ipc:
@@ -115,7 +127,7 @@ class ReadModel(LayeredDetector):
 
         super().__init__(
             [
-                ("read", DarkCurrent(dark_current)),
+                ("read", DarkCurrent(dark_current, per_pixel=per_pixel_dark)),
                 ("pixel_non_linearity", PixelNonLinearity(gain=gain)),
                 ("IPC", ipc),
                 ("amplifier", Amplifier(one_on_fs)),
