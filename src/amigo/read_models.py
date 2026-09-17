@@ -110,7 +110,7 @@ class ReadModel(LayeredDetector):
 
     def __init__(
         self,
-        dark_current=0.25,
+        dark_current=0.44,
         ipc=True,
         one_on_fs=None,
         gain=1.61,
@@ -124,6 +124,9 @@ class ReadModel(LayeredDetector):
             ipc = IPC(np.load(file_path))
         else:
             ipc = None
+
+        if per_pixel_dark and type(dark_current) == float:
+            dark_current = dark_current * np.ones((80, 80))
 
         super().__init__(
             [
