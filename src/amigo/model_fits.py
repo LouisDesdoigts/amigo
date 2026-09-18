@@ -8,7 +8,7 @@ from jax import lax, vmap
 
 # import pkg_resources as pkg
 from importlib import resources
-from .misc import find_position, gen_surface
+from .misc import find_position, get_pos, gen_surface
 from .ramp_models import Ramp
 from .optical_models import gen_powers
 from .stats import mv_zscore, loglike
@@ -41,6 +41,7 @@ class Exposure(zdx.Base):
     act_id: str = eqx.field(static=True)
     visit: str = eqx.field(static=True)
     dither: str = eqx.field(static=True)
+    POS: str = eqx.field(static=True)
 
     def __init__(self, file):
         self.slopes = np.array(file["SLOPE"].data, float)
@@ -66,6 +67,7 @@ class Exposure(zdx.Base):
         self.act_id = file[0].header["ACT_ID"]
         self.visit = file[0].header["VISITGRP"]
         self.dither = file[0].header["EXPOSURE"]
+        self.POS = get_pos(file)
         self.calibrator = bool(file[0].header["IS_PSF"])
         self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
 
@@ -185,7 +187,7 @@ class ModelFit(Exposure):
             mask |= np.eye(n, k=-1, dtype=bool)
             self.cov = self.cov * mask[..., None, None]
 
-    def mv_zscore(self, model, return_im=False):
+    def mv_zscore(self, model, return_im=False, return_slopes=False):
         slopes = self(model)
 
         # Get the model, data, and variances
@@ -199,7 +201,9 @@ class ModelFit(Exposure):
         # Return image or vector
         if return_im:
             # NOTE: Adds nans to the empty spots
-            return self.from_vec(z_vec)
+            z_vec = self.from_vec(z_vec)
+        if return_slopes:
+            return z_vec, slopes
         return z_vec
 
     def loglike(self, model, return_im=False):
@@ -331,15 +335,11 @@ class ModelFit(Exposure):
         optics = self.update_optics(model)
         wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
 
-        # Convert Cartesian to Angular wf
-        if wfs.units == "Cartesian":
-            wfs = wfs.multiply("pixel_scale", 1 / optics.focal_length)
-            wfs = wfs.set(["plane", "units"], ["Focal", "Angular"])
         return wfs
 
     def model_psf(self, model):
         wfs = self.model_wfs(model)
-        return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale.mean(0))
+        return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale)
 
     def model_illuminance(self, psf, model):
         flux = self.ngroups * 10 ** model.fluxes[self.get_key("fluxes")]
@@ -378,15 +378,20 @@ class ModelFit(Exposure):
             model = model.set("pixel_bias.bias", model.biases[self.get_key("biases")])
 
         # Apply the read effects
-        return eqx.filter_jit(model.read.apply)(ramp)
+        return model.read(ramp, return_psf=True)
 
     def nuke_pixel_grads(self, model):
         FF = lax.stop_gradient(model.FF)
         non_linearity = lax.stop_gradient(model.non_linearity)
         return model.set(["FF", "non_linearity"], [FF, non_linearity])
 
+    def nuke_dark_grads(self, model):
+        dark_current = lax.stop_gradient(model.dark_current)
+        return model.set("dark_current", dark_current)
+
     def simulate(self, model, return_slopes=True):
         model = self.nuke_pixel_grads(model)
+        model = self.nuke_dark_grads(model)
         psf = self.model_psf(model)
         illuminance = self.model_illuminance(psf, model)
         ramp = self.model_ramp(illuminance, model)
@@ -452,6 +457,7 @@ class FlatFit(ModelFit):
         self.star = "NIS_LAMP"
         self.observation = "FLAT"
         self.program = "FLAT"
+        self.POS = "N/A"
         self.filename = f"FLAT_{self.filter}"
         self.fit_one_on_fs = fit_one_on_fs
         self.fit_reflectivity = False
@@ -549,6 +555,7 @@ class FlatFit(ModelFit):
         return dl.PSF(illuminance, dlu.arcsec2rad(pixel_scale))
 
     def simulate(self, model, return_slopes=False):
+        model = self.nuke_dark_grads(model)
         illuminance = self.model_illuminance(model)
         ramp = self.model_ramp(illuminance, model)
         ramp = self.model_read(ramp, model)
@@ -558,50 +565,195 @@ class FlatFit(ModelFit):
         return ramp
 
 
-class BinaryFit(ModelFit):
+class DarkFit(ModelFit):
 
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError("BinaryFit initialisation not yet implemented")
+    def __init__(self, file, fit_one_on_fs=False, **kwargs):
+        file[0].header["IS_PSF"] = False
+
+        super().__init__(file, **kwargs)
+        self.star = "NIS_DARK"
+        self.observation = "DARK"
+        self.program = "DARK"
+        self.fit_one_on_fs = fit_one_on_fs
+        self.fit_reflectivity = False
+        self.fit_bias = False
+        self.validator = False
+
+    def print_summary(self):
+        print(
+            f"File {self.key}\n"
+            f"Star {self.star}\n"
+            f"nints {self.nints}\n"
+            f"ngroups {len(self.slopes)+1}\n"
+        )
 
     def initialise_params(self, optics, vis_model=None, one_on_fs_order=1):
-        params = super().initialise_params(
-            optics, vis_model=vis_model, one_on_fs_order=one_on_fs_order
-        )
-        # Binary parameters
-        raise NotImplementedError("BinaryFit initialisation not yet implemented")
-        params["separation"] = (self.get_key("separation"), 0.15)
-        params["contrast"] = (self.get_key("contrast"), 2.0)
-        params["position_angle"] = (self.get_key("position_angle"), 0.0)
+        params = {}
         return params
 
-    # Maybe overwrite this to get the binary spectra
-    def get_spectra(self, model, exposure):
-        return super().get_spectra(model, exposure)
+    @property
+    def key(self):
+        return "_".join(["dark", str(self.ngroups)])
 
-    def model_wfs(self, model, exposure):
-        wavels, weights = self.get_spectra(model, exposure)
+    # def get_key(self, param):
+    #     if param in ["dark_A"]:
+    #         return self.key
+    #     return super().get_key(param)
 
-        # Update the weights for each binary component
-        contrast = 10 ** model.contrasts[self.get_key(exposure, "contrasts")]
-        flux_weights = np.array([contrast * 1, 1]) / (1 + contrast)
-        weights = flux_weights[:, None] * weights[None, :]
+    def model_illuminance(self, model):
+        """
+        There is no illuminance! Haha!
+        """
+        # Get the pixel scale (arcseconds)
+        pixel_scale = model.optics.psf_pixel_scale / model.optics.oversample
+        npix = model.optics.psf_npixels * model.optics.oversample
 
-        # Get the binary positions
-        position = dlu.arcsec2rad(model.positions[self.get_key(exposure, "positions")])
-        pos_angle = dlu.deg2rad(model.position_angles[self.get_key(exposure, "position_angles")])
-        r = dlu.arcsec2rad(model.separations[self.get_key(exposure, "separations")] / 2)
-        sep_vec = np.array([r * np.sin(pos_angle), r * np.cos(pos_angle)])
-        positions = np.array([position + sep_vec, position - sep_vec])
-        # positions = vmap(dlu.arcsec2rad)(positions)
+        # illuminance is just zeros
+        illuminance = np.zeros((npix, npix))
 
-        # Model the optics - unit weights to apply each flux
-        optics = self.update_optics(model, exposure)
-        prop_fn = lambda pos: optics.propagate(wavels, pos, return_wf=True)
-        wfs = eqx.filter_jit(eqx.filter_vmap(prop_fn))(positions)
+        # Make the object and return
+        return dl.PSF(illuminance, dlu.arcsec2rad(pixel_scale))
 
-        # Return the correctly weighted wfs - needs sqrt because its amplitude not psf
-        return wfs * np.sqrt(weights)[..., None, None]
+    def model_ramp(self, illuminance, model):
+        # Get the charge (bias)
+        illum_small = dlu.downsample(illuminance.data, 3, mean=False)
 
-    def model_psf(self, model, exposure):
-        wfs = self.model_wfs(model, exposure)
-        return dl.PSF(wfs.psf.sum((0, 1)), wfs.pixel_scale.mean((0, 1)))
+        # NOTE: This bias estimate is inadequate becuase it doesnt correctly account
+        # for the non-linear component of the gain. This ultimately should be properly
+        # calibrated, WITH the gain term using the ramp rather than slope data.
+        #
+        # TODO: Use quadratic formula to get correct non-linear inversion
+        true_bias = model.read.gain * self.ramp[0]
+        bias = true_bias - (illum_small / self.ngroups)
+
+        # bias = self.ramp[0] - (illum_small / self.ngroups)
+        # bias = model.read.gain * bias
+
+        # Paste badpixels with median
+        bias = np.where(self.badpix, np.median(bias), bias)
+
+        # Evolve the illuminance
+        # Don't need to bother with modelling charge bleeding here
+        no_bleed = model.ramp_model.set("bleed", False)
+        ramp = no_bleed.evolve_illuminance(illuminance.data, bias, self.ngroups)
+        return Ramp(ramp, illuminance.pixel_scale)
+
+    def simulate(self, model, return_slopes=False):
+        model = self.nuke_pixel_grads(model)
+        illuminance = self.model_illuminance(model)
+        ramp = self.model_ramp(illuminance, model)
+        ramp = self.model_read(ramp, model)
+
+        if return_slopes:
+            return ramp.set("data", np.diff(ramp.data, axis=0))
+        return ramp
+
+class BinaryFit(PointFit):
+
+    sub_exps: dict
+    unique_params: list
+
+    def __init__(self, file, unique_params=None, calibrator=True):
+
+        super().__init__(file)
+
+        # OVERIDE self.calbrator
+        self.calibrator = calibrator
+
+        self.sub_exps = {
+            "A": PointFit(file),
+            "B": PointFit(file),
+        }
+
+        if unique_params is None:
+            unique_params = [
+                "spectra",
+            ]
+        self.unique_params = unique_params
+
+    def initialise_params(self, optics, one_on_fs_order=1):
+        params = super().initialise_params(optics, one_on_fs_order)
+        params["pas"] = (self.get_key("pas"), np.array(0.0))  # degrees
+        params["separations"] = (self.get_key("separations"), np.array(0.1))
+        params["contrasts"] = (self.get_key("contrasts"), np.array(0.5))
+        for param, (key, value) in params.items():
+            if param in self.unique_params:
+                params[param] = key, np.array(2 * [value])  # one for each source
+
+        return params
+
+    def get_key(self, param):
+        if param in ["pas"]:
+            return self.star
+        if param in ["separations"]:
+            return self.star
+        if param in ["contrasts"]:
+            return "_".join([self.star, self.filter])
+        return super().get_key(param)
+
+    def map_param(self, param):
+        if param in ["pas", "separations", "contrasts"]:
+            return f"{param}.{self.get_key(param)}"
+        return super().map_param(param)
+
+    def model_interferogram(self, model):
+
+        mean_pos = model.positions[self.get_key("positions")]
+        total_flux = 10 ** model.fluxes[self.get_key("fluxes")]
+
+        pa = model.pas[self.get_key("pas")]  # in degrees, measured from N toward E
+        
+        separation = model.separations[self.get_key("separations")]
+        contrast = model.contrasts[self.get_key("contrasts")]
+
+        # Converting position angle from deg to radians
+        # and offsetting by JWST Parallactic Angle (ROLL_REF)
+        phi = dlu.deg2rad((90 + pa) - self.parang)      
+    
+        # separation vector d in radians
+        # I believe it's negative cos for x co-ordinate because
+        # of the YAxis Flip in the optical model. 
+        # TODO Check this
+        # d = separation * np.array([-np.cos(phi), np.sin(phi)])  # in radians
+        d = separation * np.array([np.cos(phi), np.sin(phi)])  # in radians
+
+        posA = mean_pos - d / 2  # brighter source
+        posB = mean_pos + d / 2  # dimmer source
+
+        logfluxA = np.log10(contrast * total_flux)
+        logfluxB = np.log10((1 - contrast) * total_flux)
+
+        modelA = model.set(self.map_param("positions"), posA).set(
+            self.map_param("fluxes"), logfluxA
+        )
+        modelB = model.set(self.map_param("positions"), posB).set(
+            self.map_param("fluxes"), logfluxB
+        )
+
+        # unpacking the unique parameters for each source
+        for param in self.unique_params:
+            pA, pB = model.get(self.map_param(param))
+            modelA = modelA.set(self.map_param(param), pA)
+            modelB = modelB.set(self.map_param(param), pB)
+
+        # TODO Vectorise this?
+        illuminances = []
+        for m in [modelA, modelB]:
+            psf = self.model_psf(m)
+            illuminance = self.model_illuminance(psf, m)
+            illuminances.append(illuminance.data)
+
+        illuminance = dl.PSF(np.array(illuminances).sum(axis=0), psf.pixel_scale)
+
+        return illuminance
+
+
+    def simulate(self, model, return_slopes: bool = True):
+        model = self.nuke_pixel_grads(model)
+        illuminance = self.model_interferogram(model)
+        ramp = self.model_ramp(illuminance, model)
+        ramp = self.model_read(ramp, model)
+        if return_slopes:
+            return ramp.set("data", np.diff(ramp.data, axis=0))
+        return ramp
+

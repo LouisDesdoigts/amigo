@@ -14,7 +14,7 @@ dependencies = [
   "jax", 
   "jaxlib", 
   "zodiax>=0.4.1",
-  "dLux",
+  "dLux>=0.15.1",
   "tqdm",
   "interpax",
   "IPython",
