@@ -8,7 +8,7 @@ import jax.tree as jtu
 import dLux as dl
 import dLux.utils as dlu
 from jax import vmap
-from jax.lax import dynamic_slice as dyn_slice
+from jax.lax import dynamic_slice as dyn_slice, scan
 from .optical_models import gen_powers, distort_coords
 from .core_models import NNWrapper
 from .misc import interp_ramp
@@ -531,15 +531,15 @@ class NonLinearRamp(zdx.Base):
             charge = np.zeros_like(charge)
 
         # Evolve the charge
-        charges = [charge]
         if self.bleed:
 
-            # TODO: Make this a lax.carry loop!!
-            for _ in range(self.time_steps):
+            def step(charge, _):
                 kernels = self.kernel_model(charge)
-                charge += apply_kernels_stride(illuminance, kernels)
-                charges.append(charge)
-            charges = np.array(charges)
+                new_charge = charge + apply_kernels_stride(illuminance, kernels)
+                return new_charge, new_charge
+
+            _, steps = scan(step, charge, xs=None, length=self.time_steps)
+            charges = np.concatenate([charge[None], steps], axis=0)
 
         else:
             illum = dlu.downsample(illuminance * sensitivity, 3)
