@@ -517,7 +517,7 @@ class ValBatchedTrainer(BatchedTrainer):
                 if "cal" in batch_key:
                     grad_params = grads.params
                     for param, value in grad_params.items():
-                        if param in ["FF", "non_linearity"]:
+                        if param in ["FF", "non_linearity", "dark_current"]:
                             if isinstance(value, dict):
                                 grad_params[param] = jtu.map(lambda x: x * 0, value)
                             else:

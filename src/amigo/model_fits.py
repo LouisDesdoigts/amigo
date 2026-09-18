@@ -385,8 +385,13 @@ class ModelFit(Exposure):
         non_linearity = lax.stop_gradient(model.non_linearity)
         return model.set(["FF", "non_linearity"], [FF, non_linearity])
 
+    def nuke_dark_grads(self, model):
+        dark_current = lax.stop_gradient(model.dark_current)
+        return model.set("dark_current", dark_current)
+
     def simulate(self, model, return_slopes=True):
         model = self.nuke_pixel_grads(model)
+        model = self.nuke_dark_grads(model)
         psf = self.model_psf(model)
         illuminance = self.model_illuminance(psf, model)
         ramp = self.model_ramp(illuminance, model)
@@ -550,6 +555,7 @@ class FlatFit(ModelFit):
         return dl.PSF(illuminance, dlu.arcsec2rad(pixel_scale))
 
     def simulate(self, model, return_slopes=False):
+        model = self.nuke_dark_grads(model)
         illuminance = self.model_illuminance(model)
         ramp = self.model_ramp(illuminance, model)
         ramp = self.model_read(ramp, model)
@@ -558,6 +564,89 @@ class FlatFit(ModelFit):
             return ramp.set("data", np.diff(ramp.data, axis=0))
         return ramp
 
+
+class DarkFit(ModelFit):
+
+    def __init__(self, file, fit_one_on_fs=False, **kwargs):
+        file[0].header["IS_PSF"] = False
+
+        super().__init__(file, **kwargs)
+        self.star = "NIS_DARK"
+        self.observation = "DARK"
+        self.program = "DARK"
+        self.fit_one_on_fs = fit_one_on_fs
+        self.fit_reflectivity = False
+        self.fit_bias = False
+        self.validator = False
+
+    def print_summary(self):
+        print(
+            f"File {self.key}\n"
+            f"Star {self.star}\n"
+            f"nints {self.nints}\n"
+            f"ngroups {len(self.slopes)+1}\n"
+        )
+
+    def initialise_params(self, optics, vis_model=None, one_on_fs_order=1):
+        params = {}
+        return params
+
+    @property
+    def key(self):
+        return "_".join(["dark", str(self.ngroups)])
+
+    # def get_key(self, param):
+    #     if param in ["dark_A"]:
+    #         return self.key
+    #     return super().get_key(param)
+
+    def model_illuminance(self, model):
+        """
+        There is no illuminance! Haha!
+        """
+        # Get the pixel scale (arcseconds)
+        pixel_scale = model.optics.psf_pixel_scale / model.optics.oversample
+        npix = model.optics.psf_npixels * model.optics.oversample
+
+        # illuminance is just zeros
+        illuminance = np.zeros((npix, npix))
+
+        # Make the object and return
+        return dl.PSF(illuminance, dlu.arcsec2rad(pixel_scale))
+
+    def model_ramp(self, illuminance, model):
+        # Get the charge (bias)
+        illum_small = dlu.downsample(illuminance.data, 3, mean=False)
+
+        # NOTE: This bias estimate is inadequate becuase it doesnt correctly account
+        # for the non-linear component of the gain. This ultimately should be properly
+        # calibrated, WITH the gain term using the ramp rather than slope data.
+        #
+        # TODO: Use quadratic formula to get correct non-linear inversion
+        true_bias = model.read.gain * self.ramp[0]
+        bias = true_bias - (illum_small / self.ngroups)
+
+        # bias = self.ramp[0] - (illum_small / self.ngroups)
+        # bias = model.read.gain * bias
+
+        # Paste badpixels with median
+        bias = np.where(self.badpix, np.median(bias), bias)
+
+        # Evolve the illuminance
+        # Don't need to bother with modelling charge bleeding here
+        no_bleed = model.ramp_model.set("bleed", False)
+        ramp = no_bleed.evolve_illuminance(illuminance.data, bias, self.ngroups)
+        return Ramp(ramp, illuminance.pixel_scale)
+
+    def simulate(self, model, return_slopes=False):
+        model = self.nuke_pixel_grads(model)
+        illuminance = self.model_illuminance(model)
+        ramp = self.model_ramp(illuminance, model)
+        ramp = self.model_read(ramp, model)
+
+        if return_slopes:
+            return ramp.set("data", np.diff(ramp.data, axis=0))
+        return ramp
 
 class BinaryFit(ModelFit):
 
