@@ -7,8 +7,7 @@ import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
 from .misc import calc_throughput, interp
-from jax.lax import dynamic_update_slice, dynamic_slice
-from dLux.utils.propagation import transfer_matrix, calc_nfringes
+from jax.lax import dynamic_update_slice
 
 
 def gen_powers(degree):
@@ -598,95 +597,3 @@ class AMIOptics(dl.AngularOpticalSystem):
 #         )
 
 
-def SparseMFT(
-    phasor,
-    wavelength: float,
-    pixel_scale_in: float,
-    npixels_out: int,
-    pixel_scale_out: float,
-    focal_length: float = None,
-    shift=np.zeros(2),
-    pixel: bool = True,
-    inverse: bool = False,
-    corner=None,
-    size=None,
-):
-    # Get parameters
-    npixels_in = phasor.shape[-1]
-    if not pixel:
-        shift /= pixel_scale_out
-
-    # Alias the transfer matrix function
-    get_tf_mat = lambda s: transfer_matrix(
-        wavelength,
-        npixels_in,
-        pixel_scale_in,
-        npixels_out,
-        pixel_scale_out,
-        s,
-        focal_length,
-        0.0,
-        inverse,
-    )
-
-    # Get transfer matrices and propagate
-    x_mat, y_mat = vmap(get_tf_mat)(shift)
-
-    # Cut the bits out
-    if corner is not None:
-        x, y = corner
-        x_mat = dynamic_slice(x_mat, (x, 0), (size, x_mat.shape[1]))
-        y_mat = dynamic_slice(y_mat, (y, 0), (size, y_mat.shape[1]))
-        phasor = dynamic_slice(phasor, (y, x), (size, size))
-
-    # Propagate
-    phasor = (y_mat.T @ phasor) @ x_mat
-
-    # Normalise
-    nfringes = calc_nfringes(
-        wavelength,
-        npixels_in,
-        pixel_scale_in,
-        npixels_out,
-        pixel_scale_out,
-        focal_length,
-    )
-    phasor *= np.exp(np.log(nfringes) - (np.log(npixels_in) + np.log(npixels_out)))
-
-    return phasor
-
-
-def propagate_sparse(
-    wavefront,
-    npixels: int,
-    pixel_scale: float,
-    focal_length: float = None,
-    shift: Array = np.zeros(2),
-    pixel: bool = True,
-    corners=None,
-    size=None,
-):
-
-    inverse, plane, units = wavefront._prep_prop(focal_length)
-
-    # Enforce array so output can be vectorised by vmap
-    pixel_scale = np.asarray(pixel_scale, float)
-
-    # Calculate
-    phasor = SparseMFT(
-        wavefront.phasor,
-        wavefront.wavelength,
-        wavefront.pixel_scale,
-        npixels,
-        pixel_scale,
-        focal_length,
-        shift,
-        pixel,
-        inverse,
-    )
-
-    # Update
-    return wavefront.set(
-        ["amplitude", "phase", "pixel_scale", "plane", "units"],
-        [np.abs(phasor), np.angle(phasor), pixel_scale, plane, units],
-    )
