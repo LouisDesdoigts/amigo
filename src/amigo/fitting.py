@@ -469,13 +469,13 @@ class Trainer(zdx.Base):
 
                 #
                 if self.aux_fn is not None:
-                    aux_dict = self.aux_fn(aux_dict, aux)
+                    aux_dict = self.aux_fn(batch_key, aux_dict, aux)
 
                 # Check for NaNs and exit if so
                 if np.isnan(loss):
                     print(f"Loss is NaN on epoch {epoch}, exiting fit")
                     return self.finalise(
-                        t0, model, loss_dict, aux, model_params, history, lrs, epochs, False
+                        t0, model, loss_dict, aux_dict, model_params, history, lrs, epochs, False
                     )
 
             # Update the regular parameters and append to history
@@ -492,14 +492,14 @@ class Trainer(zdx.Base):
             if epoch == 1:
                 self.second_print(t1, epochs)
             if epoch in self.intermediate_prints:
-                intermediate_result = self.finalise(t0, model, loss_dict, aux, model_params, history, lrs, epoch, True)
+                intermediate_result = self.finalise(t0, model, loss_dict, aux_dict, model_params, history, lrs, epoch, True)
                 intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
                 if intermediate_save_dir is not None:
                     os.mkdir(intermediate_save_dir)
                 self.summarise_fn(intermediate_result, intermediate_save_dir, **summarise_kwargs)
 
         # Print the runtime stats and return Result object
-        return self.finalise(t0, model, loss_dict, aux, model_params, history, lrs, epochs, True)
+        return self.finalise(t0, model, loss_dict, aux_dict, model_params, history, lrs, epochs, True)
         
 
 
@@ -511,8 +511,21 @@ class Result(zdx.Base):
     history: ParamHistory
     aux: dict
     meta_data: dict
+    best_batch: None
+    best_state: None
 
-    def __init__(self, losses, model, aux, state, history, lr_model, meta_data=None):
+    def __init__(
+        self,
+        losses,
+        model,
+        aux,
+        state,
+        history,
+        lr_model,
+        meta_data=None,
+        best_batch=None,
+        best_state=None,
+    ):
         self.losses = losses
         self.model = model
         self.state = state
@@ -520,3 +533,5 @@ class Result(zdx.Base):
         self.lr_model = lr_model
         self.meta_data = meta_data
         self.aux = aux
+        self.best_batch = best_batch
+        self.best_state = best_state

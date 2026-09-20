@@ -1,7 +1,6 @@
 import jax.numpy as np
 import jax.random as jr
 from jax import vmap
-import zodiax as zdx
 import jax.tree as jtu
 import numpy as onp
 import time
@@ -18,6 +17,7 @@ from .fitting import (
     get_random_batch_order,
     populate_lr_model,
     Trainer,
+    Result,
 )
 
 
@@ -180,181 +180,7 @@ def looper_fn(loss_dict, aux_dict):
     return print_str
 
 
-class BatchedTrainer(Trainer):
-
-    def train(
-        self,
-        model,
-        optimisers,
-        epochs,
-        batches: dict,
-        batched_params: list = None,
-        key=jr.PRNGKey(0),
-        args={},
-        summarise_kwargs={},
-    ):
-        # If no batch params, just call the parent class version
-        if batched_params is None:
-            return super().train(model, optimisers, epochs, batches)
-
-        # Get the batches and raw exposures
-        batches, exposures = self.unwrap_batches(batches)
-
-        # Get the model parameters
-        model_params = ModelParams({p: model.get(p) for p in optimisers.keys()})
-        batch_params, reg_params = model_params.partition(batched_params)
-        lrs = populate_lr_model(self.fishers, exposures, model_params)
-
-        # Get the optax optimiser bits
-        reg_optim, reg_state = get_optimiser(reg_params, optimisers)
-        batch_optim, batch_state = get_optimiser(batch_params, optimisers)
-
-        # Make the history objects
-        reg_history = ParamHistory(reg_params)
-        batch_history = ParamHistory(batch_params)
-
-        # Get the loss and update functions
-        val_grad_fn = get_val_grad_fn(self.loss_fn)
-        loss_fn = get_norm_loss_fn(val_grad_fn, self.grad_fn)
-        reg_update_fn = get_update_fn(reg_optim, self.norm_fn)
-        batch_update_fn = get_update_fn(batch_optim, self.norm_fn)
-
-        # Randomise batch inputs
-        batch_keys = list(batches.keys())
-        batch_inds, key = get_random_batch_order(batches, epochs, key)
-
-        # Make the loss dictionary
-        loss_dict = dict([(key, []) for key in batches.keys()])
-
-        # Epoch loop
-        t0 = time.time()
-        looper = tqdm(range(0, epochs))
-        for epoch in looper:
-            if epoch == 1:
-                t1 = time.time()
-
-            model, args, key = self.args_fn(model, args, key, epoch)
-
-            # Create an empty gradient model to append gradients to
-            reg_grads = reg_params.map(lambda x: x * 0.0)
-
-            # Loop over randomised batch order
-            for i in batch_inds[epoch]:
-
-                # Get the batch key and batch
-                batch_key = batch_keys[i]
-                batch = batches[batch_key]
-
-                # Calculate the loss and gradients
-                loss, grads, key = loss_fn(model_params, lrs, model, batch, args, key)
-
-                # Append the mean batch loss to the loss dictionary
-                loss_dict[batch_key].append(loss / len(batch))
-
-                # TODO: Fix this properly
-                # Nuke pixel grads for FF and non-linearity for calibrator exposures
-                if "cal" in batch_key:
-                    grad_params = grads.params
-                    for param, value in grad_params.items():
-                        if param in ["FF", "non_linearity"]:
-                            if isinstance(value, dict):
-                                grad_params[param] = jtu.map(lambda x: x * 0, value)
-                            else:
-                                grad_params[param] = value * 0
-                    grads = grads.set("params", grad_params)
-
-                # Split the gradients into regular and batched, accumulate gradients
-                batch_grads, new_grads = grads.partition(batch_params)
-                reg_grads += new_grads
-
-                # Update the batched parameters
-                batch_params, batch_state, key = batch_update_fn(
-                    batch_grads, batch_params, batch_state, args, key
-                )
-
-                # Append to history and update the model parameters
-                batch_history = batch_history.append(batch_params)
-                model_params = reg_params.combine(batch_params)
-
-                # Check for NaNs and exit if so
-                if np.isnan(loss):
-                    print(f"Loss is NaN on epoch {epoch}, exiting fit")
-                    history = reg_history.combine(batch_history)
-                    return self.finalise(
-                        t0, model, loss_dict, model_params, history, lrs, epochs, False
-                    )
-
-            # Update the regular parameters and append to history
-            reg_params, reg_state, key = reg_update_fn(reg_grads, reg_params, reg_state, args, key)
-            reg_history = reg_history.append(reg_params)
-
-            # Paste together the batch and regular params
-            model_params = reg_params.combine(batch_params)
-
-            # Update the looper
-            loop_fn = self.default_looper if self.looper_fn is None else self.looper_fn
-            loop_fn(looper, loss_dict)
-
-            # Print estimated run time
-            if epoch == 0:
-                # Get the final loss
-                initial_loss = np.array([losses[-1] for losses in loss_dict.values()]).mean()
-                print(f"\nInitial_loss Loss: {initial_loss:,.2f}")
-
-            if epoch == 1:
-                estimated_time = epochs * (time.time() - t1)
-                formatted_time = str(timedelta(seconds=int(estimated_time)))
-                print(f"Estimated run time: {formatted_time}")
-
-            if epoch in self.intermediate_prints:
-                history = reg_history.combine(batch_history)
-                intermediate_result = self.finalise(t0, model, loss_dict, model_params, history, lrs, epochs, True)
-                intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
-                if intermediate_save_dir is not None:
-                    os.mkdir(intermediate_save_dir)
-                self.summarise_fn(intermediate_result, intermediate_save_dir, **summarise_kwargs)
-
-
-        # Print the runtime stats and return Result object
-        history = reg_history.combine(batch_history)
-        return self.finalise(t0, model, loss_dict, model_params, history, lrs, epochs, True)
-
-
-class Result(zdx.Base):
-    losses: dict
-    model: zdx.Base
-    state: ModelParams
-    lr_model: ModelParams
-    history: ParamHistory
-    aux: dict
-    meta_data: dict
-    best_batch: None
-    best_state: None
-
-    def __init__(
-        self,
-        losses,
-        model,
-        aux,
-        state,
-        history,
-        lr_model,
-        meta_data=None,
-        best_batch=None,
-        best_state=None,
-    ):
-        self.losses = losses
-        self.model = model
-        self.state = state
-        self.history = history
-        self.lr_model = lr_model
-        self.meta_data = meta_data
-        self.aux = aux
-        self.best_batch = best_batch
-        self.best_state = best_state
-
-
-class ValBatchedTrainer(BatchedTrainer):
+class ValBatchedTrainer(Trainer):
 
     def unwrap_batches(self, batches, validators):
         # Format the batches and exposures
@@ -428,12 +254,29 @@ class ValBatchedTrainer(BatchedTrainer):
         model_params = ModelParams({p: model.get(p) for p in optimisers.keys()})
         batch_params, reg_params = model_params.partition(batched_params)
 
+        if len(batched_params) > 0:
+            print(
+                f"Batched params {batched_params} update every batch "
+                f"({len(batches)} batches/epoch) -- any `start`/schedule step "
+                f"passed to their optimiser is in units of batches, not epochs."
+            )
+
         # Get the learning rate normalisation
         reg_lrs = populate_lr_model(self.fishers, exposures, reg_params)
         batch_lrs = jtu.map(lambda x: np.ones_like(x), batch_params)
         lrs = model_params.set("params", {**reg_lrs.params, **batch_lrs.params})
 
         # Get the optax optimiser bits
+        #
+        # NOTE: `reg_optim`'s update_fn is called once per EPOCH (below), so an
+        # `sgd(lr, start)`/`adam(lr, start)` schedule for a regular parameter
+        # activates at epoch `start`. `batch_optim`'s update_fn is instead
+        # called once per BATCH (there are `len(batches)` batches per epoch),
+        # so `start` for any parameter in `batched_params` is in units of
+        # *batches*, not epochs -- e.g. `start=5` fires after 5 batches, which
+        # is a fraction of one epoch, not epoch 5. If a batched parameter ever
+        # needs a nonzero warm-up start, multiply it by the number of batches
+        # per epoch when constructing its optimiser.
         reg_optim, reg_state = get_optimiser(reg_params, optimisers)
         batch_optim, batch_state = get_optimiser(batch_params, optimisers)
 
@@ -569,7 +412,7 @@ class ValBatchedTrainer(BatchedTrainer):
 
             if val < best_val:
                 best_val = val
-                best_batch = batch_history
+                best_batch = batch_params
                 best_state = model_params
 
             # Update the regular parameters and append to history

@@ -346,7 +346,7 @@ class ModelFit(Exposure):
         psf = eqx.filter_jit(model.detector.apply)(psf)
         return psf.multiply("data", flux)
 
-    def model_ramp(self, illuminance, model):
+    def calc_bias(self, illuminance, model):
         # Get the charge (bias)
         illum_small = dlu.downsample(illuminance.data, 3, mean=False)
 
@@ -362,7 +362,10 @@ class ModelFit(Exposure):
         # bias = model.read.gain * bias
 
         # Paste badpixels with median
-        bias = np.where(self.badpix, np.median(bias), bias)
+        return np.where(self.badpix, np.median(bias), bias)
+
+    def model_ramp(self, illuminance, model):
+        bias = self.calc_bias(illuminance, model)
 
         # Evolve the illuminance
         ramp = model.ramp_model.evolve_illuminance(illuminance.data, bias, self.ngroups)
@@ -615,22 +618,7 @@ class DarkFit(ModelFit):
         return dl.PSF(illuminance, dlu.arcsec2rad(pixel_scale))
 
     def model_ramp(self, illuminance, model):
-        # Get the charge (bias)
-        illum_small = dlu.downsample(illuminance.data, 3, mean=False)
-
-        # NOTE: This bias estimate is inadequate becuase it doesnt correctly account
-        # for the non-linear component of the gain. This ultimately should be properly
-        # calibrated, WITH the gain term using the ramp rather than slope data.
-        #
-        # TODO: Use quadratic formula to get correct non-linear inversion
-        true_bias = model.read.gain * self.ramp[0]
-        bias = true_bias - (illum_small / self.ngroups)
-
-        # bias = self.ramp[0] - (illum_small / self.ngroups)
-        # bias = model.read.gain * bias
-
-        # Paste badpixels with median
-        bias = np.where(self.badpix, np.median(bias), bias)
+        bias = self.calc_bias(illuminance, model)
 
         # Evolve the illuminance
         # Don't need to bother with modelling charge bleeding here
@@ -730,26 +718,40 @@ class BinaryFit(PointFit):
             self.map_param("fluxes"), logfluxB
         )
 
-        # unpacking the unique parameters for each source
+        # Stack the per-source parameters and vmap the A/B sources through the
+        # model instead of looping (positions/fluxes/unique_params are the
+        # only things that differ between sources; everything else in
+        # `model` -- optics, detector, ramp_model, other exposures' params --
+        # stays shared/un-vmapped, matching what the loop version did).
+        pos_key = self.map_param("positions")
+        flux_key = self.map_param("fluxes")
+        positions_AB = np.stack([posA, posB])
+        fluxes_AB = np.stack([logfluxA, logfluxB])
+
+        unique_AB = {}
         for param in self.unique_params:
             pA, pB = model.get(self.map_param(param))
-            modelA = modelA.set(self.map_param(param), pA)
-            modelB = modelB.set(self.map_param(param), pB)
+            unique_AB[param] = np.stack([pA, pB])
 
-        # TODO Vectorise this?
-        illuminances = []
-        for m in [modelA, modelB]:
+        def single_source(pos, flux, uniques):
+            m = model.set(pos_key, pos).set(flux_key, flux)
+            for param, val in uniques.items():
+                m = m.set(self.map_param(param), val)
             psf = self.model_psf(m)
-            illuminance = self.model_illuminance(psf, m)
-            illuminances.append(illuminance.data)
+            return self.model_illuminance(psf, m).data, psf.pixel_scale
 
-        illuminance = dl.PSF(np.array(illuminances).sum(axis=0), psf.pixel_scale)
+        illuminances, pixel_scales = vmap(single_source, in_axes=(0, 0, {k: 0 for k in unique_AB}))(
+            positions_AB, fluxes_AB, unique_AB
+        )
+
+        illuminance = dl.PSF(illuminances.sum(axis=0), pixel_scales[0])
 
         return illuminance
 
 
     def simulate(self, model, return_slopes: bool = True):
         model = self.nuke_pixel_grads(model)
+        model = self.nuke_dark_grads(model)
         illuminance = self.model_interferogram(model)
         ramp = self.model_ramp(illuminance, model)
         ramp = self.model_read(ramp, model)
