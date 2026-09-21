@@ -355,17 +355,6 @@ class ValBatchedTrainer(Trainer):
                                 grad_params[param] = value * 0
                     grads = grads.set("params", grad_params)
 
-                # TODO: Fix this properly
-                # Nuke pixel grads for FF and non-linearity for calibrator exposures
-                if "cal" in batch_key:
-                    grad_params = grads.params
-                    for param, value in grad_params.items():
-                        if param in ["FF", "non_linearity", "dark_current"]:
-                            if isinstance(value, dict):
-                                grad_params[param] = jtu.map(lambda x: x * 0, value)
-                            else:
-                                grad_params[param] = value * 0
-                    grads = grads.set("params", grad_params)
                     
 
                 # Split the gradients into regular and batched, accumulate gradients

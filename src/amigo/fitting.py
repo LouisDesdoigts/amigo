@@ -461,17 +461,6 @@ class Trainer(zdx.Base):
                 # Append the mean batch loss to the loss dictionary and update aux dict
                 loss_dict[batch_key].append(loss / len(batch))
 
-                # TODO: Fix this properly
-                # Nuke pixel grads for FF and non-linearity for calibrator exposures
-                if "cal" in batch_key:
-                    grad_params = grads.params
-                    for param, value in grad_params.items():
-                        if param in ["FF", "non_linearity", "dark_current"]:
-                            if isinstance(value, dict):
-                                grad_params[param] = jtu.map(lambda x: x * 0, value)
-                            else:
-                                grad_params[param] = value * 0
-                    grads = grads.set("params", grad_params)
 
                 #
                 if self.aux_fn is not None:
