@@ -135,7 +135,7 @@ def get_pos(file, box=5, return_centroid=False):
         "POS4": (59, 24),
     }
     
-    data = np.array(file[1].data)
+    data = np.array(file["SLOPE"].data)
     if data.ndim == 3:
         data = data[-1]  # collapse integrations/frames if needed
     data = np.where(badpix, 0., np.array(data))

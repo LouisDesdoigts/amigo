@@ -1,3 +1,4 @@
+import warnings
 import jax
 import zodiax as zdx
 import equinox as eqx
@@ -45,9 +46,18 @@ class AmigoModel(BaseModeller):
             optics = optics.set("transmission", state["transmission"])
             # TODO sigma is a bad name for jitter
             detector = detector.set("sigma", state["jitter"])
-            ramp_model = ramp_model.set(
-                ["FF", "SRF", "nn_weights"], [state["FF"], state["SRF"], state["nn_weights"]]
-            )
+            ramp_model = ramp_model.set(["FF", "nn_weights"], [state["FF"], state["nn_weights"]])
+
+            # NOTE: SRF is no longer part of the state. Older states that still
+            # carry it are applied for backwards compatibility.
+            if "SRF" in state:
+                warnings.warn(
+                    "'SRF' in the state is deprecated and will be ignored in future "
+                    "versions; new states should not include it.",
+                    FutureWarning,
+                    stacklevel=2,
+                )
+                ramp_model = ramp_model.set("SRF", state["SRF"])
             read = read.set(
                 ["dark_current", "non_linearity"],
                 [state["dark_current"], state["non_linearity"]],
