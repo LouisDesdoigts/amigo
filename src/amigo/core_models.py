@@ -43,9 +43,18 @@ class AmigoModel(BaseModeller):
 
     def __init__(self, exposures, optics, detector, ramp_model, read, state=None, vis_model=None):
         if state is not None:
-            optics = optics.set("transmission", state["transmission"])
-            # TODO sigma is a bad name for jitter
-            detector = detector.set("sigma", state["jitter"])
+            # NOTE: a dynamic (non-static) AMIOptics pupil mask has no
+            # "transmission" leaf, so calibration states built against it
+            # won't have this key either.
+            if "transmission" in state and hasattr(optics.pupil_mask, "transmission"):
+                optics = optics.set("transmission", state["transmission"])
+
+            # NOTE: newer amigo detector models expose the jitter as "sigma";
+            # older calibration.npy files may still store it under "jitter".
+            jitter = state["sigma"] if "sigma" in state else state.get("jitter")
+            if jitter is not None:
+                detector = detector.set("sigma", jitter)
+
             ramp_model = ramp_model.set(["FF", "nn_weights"], [state["FF"], state["nn_weights"]])
 
             # NOTE: SRF is no longer part of the state. Older states that still
