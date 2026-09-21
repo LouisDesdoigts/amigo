@@ -254,6 +254,12 @@ class Trainer(zdx.Base):
             flux_ratio = exp.nints * (exp.ngroups - 1) / exp.ngroups
             flux = flux_ratio * 10 ** model.get(exp.map_param("fluxes"))
             for param in parameters:
+                # NOTE: Aberrations are shared across exposures, but non-calibrator
+                # exposures stop their gradients (see ModelFit.update_optics), so
+                # their Fisher must not contribute to the aberration learning rates.
+                if param == "aberrations" and not exp.calibrator:
+                    continue
+
                 try:
                     hess = hessians[param][exp.filter]
                     hess *= -flux / 80**2
