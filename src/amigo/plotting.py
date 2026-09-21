@@ -541,8 +541,9 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.set(ylabel="$\Delta$ Hole position (cm)")
 
         case "dark_current":
-            ax.plot(epochs, arr, **kwargs)
-            ax.set(ylabel="Dark Current")
+            norm_arr = arr - arr[0]
+            ax.plot(epochs, norm_arr, **kwargs)
+            ax.set(ylabel="$\Delta$ Dark Current")
 
         case "defocus":
             norm_arr = arr - arr[0]
