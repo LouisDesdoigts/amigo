@@ -23,6 +23,19 @@ from .stats import mv_zscore, loglike
 # default, since most programs (e.g. 04481) only ever have one POS anyway.
 SPLIT_ABERRATIONS_BY_POS = False
 
+# Opt-in: when True, point-source exposures (calibrators, binaries -- anything
+# going through ModelFit.simulate or BinaryFit.simulate) stop blocking their
+# likelihood gradient to FF/non_linearity (normally done via nuke_pixel_grads, so
+# those only ever get real gradients from flats). Off by default -- zero effect on
+# every existing caller. DarkFit's own nuke_pixel_grads call is untouched either
+# way: darks have essentially no illumination, so this isn't the interesting case.
+# Diagnostic for whether letting FF/non_linearity respond to PSF data actually
+# improves the fit, or just lets them absorb optical-model residuals (e.g. the
+# core speckle pattern) that should really be attributed to aberrations/nn_weights
+# instead -- worth checking the resulting FF/non_linearity maps for PSF-shaped
+# structure, not just whether the loss goes down.
+ALLOW_CAL_PIXEL_GRADS = False
+
 
 class Exposure(zdx.Base):
     """
@@ -420,7 +433,8 @@ class ModelFit(Exposure):
         return model.set("dark_current", dark_current)
 
     def simulate(self, model, return_slopes=True):
-        model = self.nuke_pixel_grads(model)
+        if not ALLOW_CAL_PIXEL_GRADS:
+            model = self.nuke_pixel_grads(model)
         model = self.nuke_dark_grads(model)
         psf = self.model_psf(model)
         illuminance = self.model_illuminance(psf, model)
@@ -777,7 +791,8 @@ class BinaryFit(PointFit):
 
 
     def simulate(self, model, return_slopes: bool = True):
-        model = self.nuke_pixel_grads(model)
+        if not ALLOW_CAL_PIXEL_GRADS:
+            model = self.nuke_pixel_grads(model)
         model = self.nuke_dark_grads(model)
         illuminance = self.model_interferogram(model)
         ramp = self.model_ramp(illuminance, model)
