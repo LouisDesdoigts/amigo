@@ -197,6 +197,17 @@ def loss_fn(model, exposure, args=None):
     return -np.nanmean(exposure.mv_zscore(model)), ()
 
 
+def device_put_pytree(pytree, device):
+    """jax.device_put on a pytree that may have non-array leaves (e.g. `model`
+    carries plain callables, not just arrays) -- device_put chokes on those
+    directly ("Cannot interpret value of type <class 'function'> as an
+    abstract array"). Same partition/combine idiom set_array already uses
+    above for a similar reason."""
+    arrays, static = eqx.partition(pytree, eqx.is_array)
+    arrays = jax.device_put(arrays, device)
+    return eqx.combine(arrays, static)
+
+
 def estimate_batch_cost(batch):
     """Rough per-batch compute cost proxy for splitting batches across devices.
 
@@ -547,10 +558,10 @@ class Trainer(zdx.Base):
                 keys_here = [k for k, dd in device_map.items() if dd == d]
                 print(f"  {d}: {keys_here} (total cost {device_load[d]:,.0f})")
 
-            model_by_device = {d: jax.device_put(model, d) for d in self.devices}
-            lrs_by_device = {d: jax.device_put(lrs, d) for d in self.devices}
+            model_by_device = {d: device_put_pytree(model, d) for d in self.devices}
+            lrs_by_device = {d: device_put_pytree(lrs, d) for d in self.devices}
             batches_by_device = {
-                key: jax.device_put(batch, device_map[key]) for key, batch in batches.items()
+                key: device_put_pytree(batch, device_map[key]) for key, batch in batches.items()
             }
 
         # Looping things
@@ -574,7 +585,7 @@ class Trainer(zdx.Base):
             if multi_device:
                 # Replicate this epoch's params to every device that has a batch.
                 params_by_device = {
-                    d: jax.device_put(model_params, d) for d in set(device_map.values())
+                    d: device_put_pytree(model_params, d) for d in set(device_map.values())
                 }
 
                 # self.grad_fn (e.g. retrain_fns.grads_fn) mutates args["t"] and
@@ -603,7 +614,7 @@ class Trainer(zdx.Base):
                     dispatched.append((batch_key, d, result))
 
                 for batch_key, d, (loss, new_grads, _returned_args, aux) in dispatched:
-                    grads += jax.device_put(new_grads, self.devices[0])
+                    grads += device_put_pytree(new_grads, self.devices[0])
 
                     loss_dict[batch_key].append(loss / len(batches[batch_key]))
 
