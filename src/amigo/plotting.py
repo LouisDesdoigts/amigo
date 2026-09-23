@@ -74,7 +74,19 @@ def summarise_fit(
     norm_res_vec = norm_res_vec[~np.isnan(norm_res_vec)]
     norm_res_vec = norm_res_vec[~np.isinf(norm_res_vec)]
 
-    x = np.nanmax(np.abs(norm_res_vec))
+    # norm_res_vec can come back empty (nanmax then errors on a zero-size array,
+    # not just returning nan): seen with use_cov=True, where loglike_im -- unlike
+    # mv_zscore, still always uses the full covariance matrix regardless of
+    # use_cov -- came back NaN for every pixel of a flat exposure, most likely a
+    # near-singular/non-positive-definite SLOPE_COV for that exposure rather than
+    # anything use_cov=True itself does wrong. This is a diagnostic plot, not the
+    # training loss, so fall back to a fixed range rather than crashing the run
+    # over one exposure's plot; the empty-residuals case is still visible in the
+    # printed "sigma" text below reading as nan.
+    if norm_res_vec.size == 0:
+        x = 5.0
+    else:
+        x = np.nanmax(np.abs(norm_res_vec))
     xs = np.linspace(-x, x, 200)
     ys = jsp.stats.norm.pdf(xs)
 
