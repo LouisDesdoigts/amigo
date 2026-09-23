@@ -203,10 +203,22 @@ class ModelFit(Exposure):
         # Get the model, data, and variances
         slope_vec = self.to_vec(slopes)
         data_vec = self.to_vec(self.slopes)
-        cov_vec = self.to_vec(self.cov)
 
-        # Calculate per-pixel z-scores
-        z_vec = vmap(mv_zscore)(slope_vec, data_vec, cov_vec)
+        if self.use_cov:
+            cov_vec = self.to_vec(self.cov)
+            # Calculate per-pixel z-scores
+            z_vec = vmap(mv_zscore)(slope_vec, data_vec, cov_vec)
+        else:
+            # use_cov=False already zeroes self.cov's off-diagonal entries in
+            # __init__, so the "multivariate" z-score above is mathematically just
+            # a per-group sum-of-squared-residuals-over-variance -- but it still
+            # pays for a full (ngroups-1)x(ngroups-1) np.linalg.inv per pixel
+            # (vmapped, so once per valid pixel per exposure) to get there, an
+            # O(ngroups^3) cost for a result that only ever used the diagonal.
+            # Skip straight to the diagonal case: identical numbers, O(ngroups)
+            # per pixel instead.
+            var_vec = vmap(np.diag)(self.to_vec(self.cov))
+            z_vec = -np.sum((slope_vec - data_vec) ** 2 / var_vec, axis=-1)
 
         # Return image or vector
         if return_im:
@@ -656,16 +668,16 @@ class BinaryFit(PointFit):
     sub_exps: dict
     unique_params: list
 
-    def __init__(self, file, unique_params=None, calibrator=True):
+    def __init__(self, file, unique_params=None, calibrator=True, **kwargs):
 
-        super().__init__(file)
+        super().__init__(file, **kwargs)
 
         # OVERIDE self.calbrator
         self.calibrator = calibrator
 
         self.sub_exps = {
-            "A": PointFit(file),
-            "B": PointFit(file),
+            "A": PointFit(file, **kwargs),
+            "B": PointFit(file, **kwargs),
         }
 
         if unique_params is None:
