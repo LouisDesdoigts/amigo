@@ -369,9 +369,13 @@ class ValBatchedTrainer(Trainer):
                         batch_grads, batch_params, batch_state, args
                     )
 
-                    # Append to history and update the model parameters
+                    # Append to history and update the model parameters. _batch_history
+                    # is reset every epoch (bounded naturally, at most n_batch entries
+                    # at a time) so doesn't need capping; batch_history accumulates for
+                    # the whole run and is exactly what OOM-killed a long run -- see
+                    # batch_history_max_len's docstring on Trainer.__init__.
                     _batch_history = _batch_history.append(batch_params)
-                    batch_history = batch_history.append(batch_params)
+                    batch_history = batch_history.append(batch_params, max_len=self.batch_history_max_len)
 
                     model_params = reg_params.combine(batch_params)
 

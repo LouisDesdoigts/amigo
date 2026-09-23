@@ -240,7 +240,7 @@ class ParamHistory(ModelParams):
         self.params = jtu.map(lambda x: [onp.array(x)], model_params.params)
         # self.params = jtu.map(lambda x: [x], model_params.params)
 
-    def append(self, model_params):
+    def append(self, model_params, max_len=None):
         # Wrap the leaves in a list to ensure the same tree structure as self.params
         updates_list = jtu.map(lambda x: [onp.array(x)], model_params.params)
         # updates_list = jtu.map(lambda x: [x], model_params.params)
@@ -249,10 +249,25 @@ class ParamHistory(ModelParams):
         # map make it recognise lists as leaves
         is_leaf = lambda leaf: isinstance(leaf, list)
 
+        # max_len bounds memory (and the cost of this call, since `a + b` on plain
+        # python lists copies the whole of `a` every time -- an unbounded O(n) list
+        # growing over O(epochs) calls is O(epochs^2) over a run, same issue
+        # history_stride addresses for reg_history, just via capping length here
+        # instead of skipping calls, since ValBatchedTrainer's batch_history is
+        # appended once per BATCH not per epoch (this is what OOM-killed a
+        # 5000-epoch val_flag=True run at epoch 3000: nn_weights alone, appended
+        # 16x/epoch, unbounded, reached ~3.3GB and climbing). Keep enough tail for
+        # both retrain_fns.py's `[-n_batch:]` final-state averaging and a
+        # reasonably long trajectory plot; default None keeps every existing
+        # caller's behaviour (full, unbounded history) unchanged.
+        def combine(a, b):
+            merged = a + b
+            return merged[-max_len:] if max_len is not None else merged
+
         # Append the new values to the history dictionary
         return self.set(
             "params",
-            jtu.map(lambda a, b: a + b, self.params, updates_list, is_leaf=is_leaf),
+            jtu.map(combine, self.params, updates_list, is_leaf=is_leaf),
         )
 
 

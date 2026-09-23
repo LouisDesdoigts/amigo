@@ -211,6 +211,7 @@ class Trainer(zdx.Base):
     save_path: str | None
     history_stride: int
     history_full_res_keys: tuple
+    batch_history_max_len: int | None
 
     def __init__(
         self,
@@ -226,6 +227,7 @@ class Trainer(zdx.Base):
         save_path=None,
         history_stride=1,
         history_full_res_keys=("nn_weights",),
+        batch_history_max_len=None,
     ):
         """
         loss_fn(model, exposure, args): -> loss
@@ -245,6 +247,19 @@ class Trainer(zdx.Base):
             nn_weights history to smooth injected-noise steps into the saved final
             state -- striding that would silently widen/change that averaging
             window. Everything else striding touches is diagnostic-plot-only.
+
+        batch_history_max_len: only used by ValBatchedTrainer's batch_history
+            (params in `batched_params`, e.g. nn_weights -- appended once per
+            BATCH, not per epoch, so it grows ~16x faster than history_stride
+            above addresses). Passed straight through to ParamHistory.append's
+            max_len: caps the list to its last N entries rather than skipping
+            appends, since batched params need to stay at full per-batch
+            resolution for retrain_fns.py's `[-n_batch:]` averaging -- just
+            bounded in length, not full history back to epoch 0. Default None
+            (unbounded) keeps existing behaviour; this OOM-killed a 5000-epoch
+            val_flag=True run at epoch 3000 (nn_weights alone reached ~3.3GB and
+            climbing), so retrain.py sets a real default for its own use even
+            though this class keeps None as the conservative default.
         """
         self.loss_fn = loss_fn
         self.args_fn = args_fn
@@ -263,6 +278,7 @@ class Trainer(zdx.Base):
         self.save_path = save_path
         self.history_stride = history_stride
         self.history_full_res_keys = tuple(history_full_res_keys)
+        self.batch_history_max_len = batch_history_max_len
 
     def default_looper(self, looper, loss_dict):
         loss = np.array([v[-1] for v in loss_dict.values()]).mean(0)
