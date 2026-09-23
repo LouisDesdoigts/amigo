@@ -15,7 +15,9 @@ def fft_coords(wl, npix, pscale, pad=2):
 
 def wf_fft_coords(wfs, pad=2):
     wls = wfs.wavelength
-    psf_pscale = wfs.pixel_scale
+    # dLux 0.15 returns pixel_scale as a per-wavelength vector, but it is
+    # constant across wavelengths for a given wavefront.
+    psf_pscale = wfs.pixel_scale[0]
     psf_npix = wfs.npixels
     return vmap(lambda wl: fft_coords(wl, psf_npix, psf_pscale, pad=pad))(wls)
 
