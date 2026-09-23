@@ -46,7 +46,12 @@ def inject_vis(wfs, log_amps, phases, otf_coords):
 
     # Apply the visibility maps
     splodges = to_uv(wfs.psf) * np.exp(log_amps + 1j * phases)
-    return np.abs(from_uv(splodges)).sum(0)
+    # Hermitian visibility maps produce a real image up to roundoff. Taking a
+    # modulus folds any negative real prediction positive, changing both the
+    # fitted Fourier coefficients and total flux. The visibility coordinates
+    # are deliberately unconstrained calibration terms, so retain the signed,
+    # smooth real inverse transform.
+    return np.real(from_uv(splodges)).sum(0)
 
 
 class BaseLogVisModel(zdx.Base):
@@ -85,7 +90,10 @@ class BaseLogVisModel(zdx.Base):
         to_uv = vmap(lambda x: np.fft.fftshift(np.fft.fft2(pad_fn(x))))
         from_uv = vmap(lambda x: crop_fn(np.fft.ifft2(np.fft.ifftshift(x))))
         vis_splodges = to_uv(wfs.psf) * cplx_vis
-        return np.abs(from_uv(vis_splodges)).sum(0)
+        # Preserve the signed real inverse transform. ``abs`` is not merely an
+        # imaginary-roundoff guard: it folds negative model pixels and changes
+        # the forward model, while ``real`` is smooth under autodiff.
+        return np.real(from_uv(vis_splodges)).sum(0)
 
     def wfs_to_otf(self, wfs, oversample=2):
         # Get the bits for mapping to UV plane
@@ -96,7 +104,7 @@ class BaseLogVisModel(zdx.Base):
 
         # Project to otf_coords (oversampled)
         to_uv = vmap(lambda arr, wl: dlu.MFT(arr, wl, psf_pscale, npix, pscale))
-        downsample = vmap(lambda arr: dlu.downsample(arr, 2, mean=True))
+        downsample = vmap(lambda arr: dlu.downsample(arr, oversample, mean=True))
         vis = downsample(to_uv(wfs.psf, wls))
         return np.mean(vis, axis=0)
 
@@ -176,13 +184,19 @@ def vis_jac_fn(model_params, args):
     weights = filt_weights * spectra_slopes
     weights /= weights.sum()
 
-    # Apply flux if in there
-    if "flux" in model_params.keys():
+    # AMIGO fitted models use the plural ``fluxes`` name. Retain the legacy
+    # singular alias, but never silently accept both.
+    has_flux = "flux" in model_params.keys()
+    has_fluxes = "fluxes" in model_params.keys()
+    if has_flux and has_fluxes:
+        raise ValueError("Specify only one of 'flux' and 'fluxes'")
+    if has_fluxes:
+        weights *= 10**model_params.fluxes
+    elif has_flux:
         weights *= 10**model_params.flux
 
     # Propagate the wavefront and project to the latent space
     if "positions" in model_params.keys():
-        wavels, weights = optics.filters[filter]
         offset = dlu.arcsec2rad(model_params.positions)
         wfs = optics.propagate(wavels, offset, weights, return_wf=True)
     else:

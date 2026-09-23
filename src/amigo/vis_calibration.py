@@ -47,6 +47,8 @@ def calibrate_vis(vis_outputs, filt, kernel=True):
 
 
 def average_vis_fits(fit_list):
+    if len(fit_list) == 0:
+        raise ValueError("fit_list must contain at least one independent fit")
     #
     amps = np.array([fit["amplitudes"] for fit in fit_list])
     phases = np.array([fit["phases"] for fit in fit_list])
@@ -69,10 +71,13 @@ def average_vis_fits(fit_list):
     K_amps = np.array(K_amps).mean(0)
     K_phases = np.array(K_phases).mean(0)
 
-    amp_covs = np.array(amp_covs).mean(0)
-    K_amp_covs = np.array(K_amp_covs).mean(0)
-    phase_covs = np.array(phase_covs).mean(0)
-    K_phase_covs = np.array(K_phase_covs).mean(0)
+    # For an arithmetic mean of N independent estimates, covariance weights
+    # enter squared: Cov(mean) = sum(C_i) / N**2.
+    n_fits_sq = float(len(fit_list) ** 2)
+    amp_covs = np.array(amp_covs).sum(0) / n_fits_sq
+    K_amp_covs = np.array(K_amp_covs).sum(0) / n_fits_sq
+    phase_covs = np.array(phase_covs).sum(0) / n_fits_sq
+    K_phase_covs = np.array(K_phase_covs).sum(0) / n_fits_sq
 
     # Put it all together
     return {
@@ -115,8 +120,15 @@ def vis_jac_fn(model_params, args):
         weights = weights * spectra_slopes
         weights /= weights.sum()
 
-    # Apply flux if in there
-    if "flux" in model_params.keys():
+    # AMIGO fitted models use the plural ``fluxes`` name. Retain the legacy
+    # singular alias, but never silently accept both.
+    has_flux = "flux" in model_params.keys()
+    has_fluxes = "fluxes" in model_params.keys()
+    if has_flux and has_fluxes:
+        raise ValueError("Specify only one of 'flux' and 'fluxes'")
+    if has_fluxes:
+        weights *= 10**model_params.fluxes
+    elif has_flux:
         weights *= 10**model_params.flux
 
     # Propagate the wavefront and project to the latent space

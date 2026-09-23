@@ -288,13 +288,39 @@ def calc_mean_and_cov(data):  # , read_std):
 
 
 def nancov(X, eps=1e-6):
-    """Compute covariance while ignoring NaNs."""
-    mask = np.isnan(X)
-    valid_counts = np.sum(~mask, axis=1, keepdims=True)
-    mean = np.nansum(X, axis=1, keepdims=True) / valid_counts
-    X_centered = np.where(mask, 0, X - mean)
-    cov_matrix = (X_centered @ X_centered.T) / (valid_counts @ valid_counts.T - 1)
-    return cov_matrix + eps * np.eye(cov_matrix.shape[0])
+    """Estimate the covariance of row means with pairwise missing samples.
+
+    Each column is one independent integration. For rows ``i`` and ``j``,
+    only overlapping integrations contribute covariance, giving
+    ``n_ij * s_ij / (n_i * n_j)``. Here ``s_ij`` is the unbiased
+    pairwise-complete sample covariance. For complete data this reduces to
+    ``sum((x-mean)(y-mean)) / (N * (N - 1))``.
+    """
+
+    valid = ~np.isnan(X)
+    counts = np.sum(valid, axis=1)
+    overlap = valid[:, None, :] & valid[None, :, :]
+    overlap_counts = np.sum(overlap, axis=-1)
+    safe_overlap = np.maximum(overlap_counts, 1)
+
+    left = X[:, None, :]
+    right = X[None, :, :]
+    left_mean = np.sum(np.where(overlap, left, 0.0), axis=-1) / safe_overlap
+    right_mean = np.sum(np.where(overlap, right, 0.0), axis=-1) / safe_overlap
+    products = np.where(
+        overlap,
+        (left - left_mean[..., None]) * (right - right_mean[..., None]),
+        0.0,
+    )
+    scatter = np.sum(products, axis=-1)
+    denominator = (
+        np.maximum(overlap_counts - 1, 1)
+        * counts[:, None]
+        * counts[None, :]
+    )
+    covariance = scatter * overlap_counts / denominator
+    covariance = np.where(overlap_counts > 1, covariance, np.nan)
+    return covariance + eps * np.eye(covariance.shape[0])
 
 
 def make_psd(A, eps=1e-6):
