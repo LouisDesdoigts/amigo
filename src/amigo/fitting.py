@@ -28,10 +28,12 @@ def scheduler(lr, start, *args):
     return optax.piecewise_constant_schedule(lr / BIG, sched_dict)
 
 
-base_sgd = lambda vals: optax.sgd(vals, nesterov=True, momentum=0.6)
+base_sgd = lambda vals, momentum=0.6: optax.sgd(vals, nesterov=True, momentum=momentum)
 base_adam = lambda vals: optax.adam(vals)
 
-sgd = lambda lr, start, *schedule: base_sgd(scheduler(lr, start, *schedule))
+sgd = lambda lr, start, *schedule, momentum=0.6: base_sgd(
+    scheduler(lr, start, *schedule), momentum=momentum
+)
 adam = lambda lr, start, *schedule: base_adam(scheduler(lr, start, *schedule))
 
 
@@ -207,6 +209,8 @@ class Trainer(zdx.Base):
     summarise_fn: callable
     intermediate_prints: list
     save_path: str | None
+    history_stride: int
+    history_full_res_keys: tuple
 
     def __init__(
         self,
@@ -219,7 +223,9 @@ class Trainer(zdx.Base):
         cache="cache",
         summarise_fn=None,
         intermediate_prints=[],
-        save_path=None
+        save_path=None,
+        history_stride=1,
+        history_full_res_keys=("nn_weights",),
     ):
         """
         loss_fn(model, exposure, args): -> loss
@@ -227,6 +233,18 @@ class Trainer(zdx.Base):
         grad_fn(model, grads, args, key): -> (grads, key)
         norm_fn(model_params, args, key): -> model_params, key
         looper_fn(looper, loss_dict): -> ()
+
+        history_stride: record `model_params` into the returned `Result.history`
+            every `history_stride` epochs instead of every epoch (default 1 = old
+            behaviour, unchanged for every existing caller). `ParamHistory.append`
+            pulls every leaf back to host and rebuilds a growing python list each
+            call, so on long runs this is both a real per-epoch sync cost and an
+            O(epochs^2) cost over the whole run. Keys in `history_full_res_keys`
+            (default just nn_weights) are still recorded every epoch regardless of
+            stride, since e.g. retrain_fns.py averages the last few *epochs* of
+            nn_weights history to smooth injected-noise steps into the saved final
+            state -- striding that would silently widen/change that averaging
+            window. Everything else striding touches is diagnostic-plot-only.
         """
         self.loss_fn = loss_fn
         self.args_fn = args_fn
@@ -236,13 +254,15 @@ class Trainer(zdx.Base):
         self.aux_fn = aux_fn
         self.fishers = None
         self.cache = cache
-        
+
         if summarise_fn is None:
             def summarise_fn(result, save_path):
                 pass
         self.summarise_fn = summarise_fn
         self.intermediate_prints = intermediate_prints
         self.save_path = save_path
+        self.history_stride = history_stride
+        self.history_full_res_keys = tuple(history_full_res_keys)
 
     def default_looper(self, looper, loss_dict):
         loss = np.array([v[-1] for v in loss_dict.values()]).mean(0)
@@ -428,7 +448,21 @@ class Trainer(zdx.Base):
 
         # Get the optax optimiser and history bits
         optim, state = get_optimiser(model_params, optimisers)
-        history = ParamHistory(model_params)
+
+        # Split off any full-resolution keys (default nn_weights) so they can be
+        # recorded every epoch while everything else is recorded every
+        # `history_stride` epochs -- see the docstring on `history_stride`.
+        hi_res_keys = [k for k in self.history_full_res_keys if k in model_params.keys()]
+        if hi_res_keys and self.history_stride > 1:
+            hi_params, lo_params = model_params.partition(hi_res_keys)
+            history = ParamHistory(lo_params)
+            hi_history = ParamHistory(hi_params)
+        else:
+            history = ParamHistory(model_params)
+            hi_history = None
+
+        def combined_history():
+            return history.combine(hi_history) if hi_history is not None else history
 
         # Get the loss and update functions
         val_grad_fn = get_val_grad_fn(self.loss_fn)
@@ -470,12 +504,18 @@ class Trainer(zdx.Base):
                 if np.isnan(loss):
                     print(f"Loss is NaN on epoch {epoch}, exiting fit")
                     return self.finalise(
-                        t0, model, loss_dict, aux_dict, model_params, history, lrs, epochs, False
+                        t0, model, loss_dict, aux_dict, model_params, combined_history(), lrs, epochs, False
                     )
 
             # Update the regular parameters and append to history
             model_params, state, args = update_fn(grads, model_params, state, args)
-            history = history.append(model_params)
+            if hi_history is not None:
+                hi_params, lo_params = model_params.partition(hi_res_keys)
+                hi_history = hi_history.append(hi_params)
+                if epoch % self.history_stride == 0:
+                    history = history.append(lo_params)
+            else:
+                history = history.append(model_params)
 
             # Update the looper
             loop_fn = self.default_looper if self.looper_fn is None else self.looper_fn
@@ -487,14 +527,14 @@ class Trainer(zdx.Base):
             if epoch == 1:
                 self.second_print(t1, epochs)
             if epoch in self.intermediate_prints:
-                intermediate_result = self.finalise(t0, model, loss_dict, aux_dict, model_params, history, lrs, epoch, True)
+                intermediate_result = self.finalise(t0, model, loss_dict, aux_dict, model_params, combined_history(), lrs, epoch, True)
                 intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
                 if intermediate_save_dir is not None:
                     os.mkdir(intermediate_save_dir)
                 self.summarise_fn(intermediate_result, intermediate_save_dir, **summarise_kwargs)
 
         # Print the runtime stats and return Result object
-        return self.finalise(t0, model, loss_dict, aux_dict, model_params, history, lrs, epochs, True)
+        return self.finalise(t0, model, loss_dict, aux_dict, model_params, combined_history(), lrs, epochs, True)
         
 
 

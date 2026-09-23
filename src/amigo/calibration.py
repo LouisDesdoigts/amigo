@@ -406,7 +406,14 @@ class ValBatchedTrainer(Trainer):
 
             # Update the regular parameters and append to history
             reg_params, reg_state, args = reg_update_fn(reg_grads, reg_params, reg_state, args)
-            reg_history = reg_history.append(reg_params)
+            # Same per-epoch device sync + O(epochs^2) list growth as plain Trainer
+            # (see its history_stride docstring), so stride it the same way. No
+            # hi-res exemption needed here: unlike plain Trainer, nn_weights lives in
+            # batch_params/batch_history under this trainer (appended every batch,
+            # already full resolution, untouched by this), not in reg_params -- so
+            # reg_history holds nothing that retrain_fns.py needs at full resolution.
+            if epoch % self.history_stride == 0:
+                reg_history = reg_history.append(reg_params)
 
             # Paste together the batch and regular params
             model_params = reg_params.combine(batch_params)

@@ -13,6 +13,16 @@ from .ramp_models import Ramp
 from .optical_models import gen_powers
 from .stats import mv_zscore, loglike
 
+# Opt-in: when True, Exposure.get_key("aberrations") includes POS in the key, so
+# exposures at different AMI dither positions get their own aberration coefficients
+# instead of sharing one vector per program+filter. Off by default -- zero effect on
+# every existing caller. Set from a script (e.g. retrain.py, before building any
+# exposures/model) via `amigo.model_fits.SPLIT_ABERRATIONS_BY_POS = True`, gated by an
+# env var there -- a diagnostic for whether the shared key is actually limiting the
+# fit (see the POS1/POS2 discussion for the 08330 binary data), not a permanent
+# default, since most programs (e.g. 04481) only ever have one POS anyway.
+SPLIT_ABERRATIONS_BY_POS = False
+
 
 class Exposure(zdx.Base):
     """
@@ -242,6 +252,11 @@ class ModelFit(Exposure):
         # if param in ["aberrations", "reflectivity"]:
         #     return "_".join([self.program, self.filter])
         if param == "aberrations":
+            if SPLIT_ABERRATIONS_BY_POS and getattr(self, "POS", "N/A") not in (
+                None,
+                "N/A",
+            ):
+                return "_".join([self.program, self.filter, self.POS])
             return "_".join([self.program, self.filter])
 
         # if param in ["reflectivity", "beam_coeffs", "defocus"]:
