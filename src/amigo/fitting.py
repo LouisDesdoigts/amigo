@@ -197,6 +197,38 @@ def loss_fn(model, exposure, args=None):
     return -np.nanmean(exposure.mv_zscore(model)), ()
 
 
+def estimate_batch_cost(batch):
+    """Rough per-batch compute cost proxy for splitting batches across devices.
+
+    mv_zscore is vmapped over ~every valid pixel, and does one
+    (ngroups-1)x(ngroups-1) matrix operation per pixel (an inverse when
+    use_cov=True; O(ngroups) when False, see ModelFit.mv_zscore) -- either way the
+    per-exposure cost is dominated by ngroups, and the matrix-op scales roughly
+    cubically with it. nints does NOT belong here: it's a header scalar used only
+    for flux normalisation elsewhere, and never sets an array shape the forward
+    pass touches.
+    """
+    return float(sum(float(exp.ngroups) ** 3 for exp in batch))
+
+
+def assign_batches_to_devices(batches, devices):
+    """Split `batches` across `devices` so each device's total estimated cost is
+    as even as possible: a greedy longest-processing-time-first bin pack (sort
+    batches by decreasing cost, assign each to the currently least-loaded
+    device). Batch membership/cost don't change during a run, so this is computed
+    once, not per epoch. Returns (assignment: {batch_key: device}, load:
+    {device: total_cost})."""
+    costs = {key: estimate_batch_cost(batch) for key, batch in batches.items()}
+    order = sorted(batches.keys(), key=lambda k: costs[k], reverse=True)
+    load = {d: 0.0 for d in devices}
+    assignment = {}
+    for key in order:
+        d = min(load, key=load.get)
+        assignment[key] = d
+        load[d] += costs[key]
+    return assignment, load
+
+
 class Trainer(zdx.Base):
     fishers: dict
     loss_fn: callable
@@ -212,6 +244,7 @@ class Trainer(zdx.Base):
     history_stride: int
     history_full_res_keys: tuple
     batch_history_max_len: int | None
+    devices: list | None
 
     def __init__(
         self,
@@ -228,6 +261,7 @@ class Trainer(zdx.Base):
         history_stride=1,
         history_full_res_keys=("nn_weights",),
         batch_history_max_len=None,
+        devices=None,
     ):
         """
         loss_fn(model, exposure, args): -> loss
@@ -235,6 +269,19 @@ class Trainer(zdx.Base):
         grad_fn(model, grads, args, key): -> (grads, key)
         norm_fn(model_params, args, key): -> model_params, key
         looper_fn(looper, loss_dict): -> ()
+
+        devices: a list of >=2 jax devices (e.g. jax.local_devices()) to split each
+            epoch's batches across, data-parallel style: each batch's forward+
+            backward pass runs independently on its assigned device (assigned once,
+            up front, by estimated cost -- see assign_batches_to_devices -- not
+            round-robin, since batches are far from equal cost), gradients are
+            summed on `devices[0]`, then there's a single, ordinary optimiser
+            update, same as the single-device path. Default None = current
+            behaviour (everything sequential on one device), unchanged for every
+            existing caller. Only implemented for this class, not
+            ValBatchedTrainer, and only self.grad_fn implementations that solely
+            use args["t"]/args["key"] (like the one in retrain_fns.py) are
+            guaranteed equivalent to the sequential path -- see the note in train().
 
         history_stride: record `model_params` into the returned `Result.history`
             every `history_stride` epochs instead of every epoch (default 1 = old
@@ -279,6 +326,7 @@ class Trainer(zdx.Base):
         self.history_stride = history_stride
         self.history_full_res_keys = tuple(history_full_res_keys)
         self.batch_history_max_len = batch_history_max_len
+        self.devices = list(devices) if devices is not None else None
 
     def default_looper(self, looper, loss_dict):
         loss = np.array([v[-1] for v in loss_dict.values()]).mean(0)
@@ -485,6 +533,26 @@ class Trainer(zdx.Base):
         loss_fn = get_norm_loss_fn(val_grad_fn, self.grad_fn)
         update_fn = get_update_fn(optim, self.norm_fn)
 
+        # Multi-device setup: split batches across self.devices by estimated cost,
+        # once (membership/cost don't change during a run). `model` and `lrs` are
+        # static over the whole run, so they're replicated to every device once
+        # here too; each batch's own (large) exposure data is device_put once to
+        # its assigned device. Only model_params changes per epoch, so that's the
+        # one thing re-replicated every epoch, below.
+        multi_device = self.devices is not None and len(self.devices) > 1
+        if multi_device:
+            device_map, device_load = assign_batches_to_devices(batches, self.devices)
+            print(f"Splitting {len(batches)} batches across {len(self.devices)} devices by estimated cost:")
+            for d in self.devices:
+                keys_here = [k for k, dd in device_map.items() if dd == d]
+                print(f"  {d}: {keys_here} (total cost {device_load[d]:,.0f})")
+
+            model_by_device = {d: jax.device_put(model, d) for d in self.devices}
+            lrs_by_device = {d: jax.device_put(lrs, d) for d in self.devices}
+            batches_by_device = {
+                key: jax.device_put(batch, device_map[key]) for key, batch in batches.items()
+            }
+
         # Looping things
         t0 = time.time()
         looper = tqdm(range(0, epochs))
@@ -501,27 +569,77 @@ class Trainer(zdx.Base):
 
             # Create an empty gradient model to append gradients to
             grads = model_params.map(lambda x: x * 0.0)
+            nan_hit = False
 
-            # Loop over randomised batch order
-            for batch_key, batch in batches.items():
-                # Calculate the loss and gradients
-                loss, new_grads, args, aux = loss_fn(model_params, lrs, model, batch, args)
-                grads += new_grads
+            if multi_device:
+                # Replicate this epoch's params to every device that has a batch.
+                params_by_device = {
+                    d: jax.device_put(model_params, d) for d in set(device_map.values())
+                }
 
-                # Append the mean batch loss to the loss dictionary and update aux dict
-                loss_dict[batch_key].append(loss / len(batch))
-
-
-                #
-                if self.aux_fn is not None:
-                    aux_dict = self.aux_fn(batch_key, aux_dict, aux)
-
-                # Check for NaNs and exit if so
-                if np.isnan(loss):
-                    print(f"Loss is NaN on epoch {epoch}, exiting fit")
-                    return self.finalise(
-                        t0, model, loss_dict, aux_dict, model_params, combined_history(), lrs, epochs, False
+                # self.grad_fn (e.g. retrain_fns.grads_fn) mutates args["t"] and
+                # args["key"] once per batch call, threaded sequentially in the
+                # single-device path. To get the exact same result regardless of
+                # how the batches are actually dispatched, precompute what each
+                # batch's args would have been at its position in that sequential
+                # order -- same t/key values, just handed out up front instead of
+                # threaded. Everything else in args is untouched by grad_fn (true
+                # for the one in retrain_fns.py; a different grad_fn that mutates
+                # more of args would not be equivalent here).
+                n_b = len(batches)
+                epoch_keys = jr.split(args["key"], n_b + 1)
+                dispatched = []
+                for i, (batch_key, batch) in enumerate(batches.items()):
+                    d = device_map[batch_key]
+                    batch_args = dict(args)
+                    batch_args["t"] = args["t"] + i / args["n_batch"]
+                    batch_args["key"] = epoch_keys[i + 1]
+                    # Calls to different devices dispatch async and overlap; nothing
+                    # here blocks until a result is actually read below.
+                    result = loss_fn(
+                        params_by_device[d], lrs_by_device[d], model_by_device[d],
+                        batches_by_device[batch_key], batch_args,
                     )
+                    dispatched.append((batch_key, d, result))
+
+                for batch_key, d, (loss, new_grads, _returned_args, aux) in dispatched:
+                    grads += jax.device_put(new_grads, self.devices[0])
+
+                    loss_dict[batch_key].append(loss / len(batches[batch_key]))
+
+                    if self.aux_fn is not None:
+                        aux_dict = self.aux_fn(batch_key, aux_dict, aux)
+
+                    if np.isnan(loss):
+                        nan_hit = True
+
+                # Advance by the same total amount the sequential path would have
+                # (n_b steps of 1/n_batch each); the per-batch snapshots above are
+                # not threaded forward.
+                args["t"] += 1.0
+                args["key"] = epoch_keys[0]
+            else:
+                # Loop over randomised batch order
+                for batch_key, batch in batches.items():
+                    # Calculate the loss and gradients
+                    loss, new_grads, args, aux = loss_fn(model_params, lrs, model, batch, args)
+                    grads += new_grads
+
+                    # Append the mean batch loss to the loss dictionary and update aux dict
+                    loss_dict[batch_key].append(loss / len(batch))
+
+                    if self.aux_fn is not None:
+                        aux_dict = self.aux_fn(batch_key, aux_dict, aux)
+
+                    if np.isnan(loss):
+                        nan_hit = True
+                        break
+
+            if nan_hit:
+                print(f"Loss is NaN on epoch {epoch}, exiting fit")
+                return self.finalise(
+                    t0, model, loss_dict, aux_dict, model_params, combined_history(), lrs, epochs, False
+                )
 
             # Update the regular parameters and append to history
             model_params, state, args = update_fn(grads, model_params, state, args)
