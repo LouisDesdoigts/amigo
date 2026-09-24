@@ -605,6 +605,7 @@ class Trainer(zdx.Base):
                     batch_args = dict(args)
                     batch_args["t"] = args["t"] + i / args["n_batch"]
                     batch_args["key"] = epoch_keys[i + 1]
+                    batch_args = device_put_pytree(batch_args, d)
                     # Calls to different devices dispatch async and overlap; nothing
                     # here blocks until a result is actually read below.
                     result = loss_fn(
