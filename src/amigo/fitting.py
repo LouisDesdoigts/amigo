@@ -616,6 +616,14 @@ class Trainer(zdx.Base):
                 for batch_key, d, (loss, new_grads, _returned_args, aux) in dispatched:
                     grads += device_put_pytree(new_grads, self.devices[0])
 
+                    # loss (unlike new_grads above) was never explicitly moved off its
+                    # batch's assigned device -- fine as long as every downstream use
+                    # only touches one batch_key's entries at a time, but initial_print
+                    # and looper_fn both concatenate across all of loss_dict's keys,
+                    # which JAX refuses across devices ("incompatible devices for
+                    # jitted computation") the moment two batches land on different
+                    # devices.
+                    loss = device_put_pytree(loss, self.devices[0])
                     loss_dict[batch_key].append(loss / len(batches[batch_key]))
 
                     if self.aux_fn is not None:
