@@ -300,8 +300,9 @@ class Trainer(zdx.Base):
                     hess = hessians[param][exp.filter]
                     hess *= -flux / 80**2
 
-                    # Match the piston gradient nuking for aberrations
-                    if param == "aberrations":
+                    # Match the piston gradient nuking for aberrations (per-hole
+                    # bases only, see ModelFit.update_optics)
+                    if param == "aberrations" and model.get(exp.map_param(param)).ndim == 2:
                         hess = hess.at[:, 0].set(0)
                         hess = hess.at[0, :].set(0)
 

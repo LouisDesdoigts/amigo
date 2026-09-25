@@ -261,6 +261,12 @@ def reduce_basis(basis, coords, holes, size=180):
 
 
 def eval_small_basis(small_basis, coeffs):
+    # A pupil-wide basis (e.g. the eigenbasis, see load_eigen_basis) has one
+    # coefficient vector shared by every hole: each hole's window holds its own
+    # piece of every mode, so broadcasting the coefficients to every hole gives
+    # exactly the pupil-wide OPD.
+    if coeffs.ndim == 1:
+        coeffs = np.broadcast_to(coeffs, small_basis.shape[:2])
     return vmap(dlu.eval_basis)(small_basis, coeffs)
 
 
@@ -281,6 +287,97 @@ def crop_windows(arr, corners, size):
         return dynamic_slice(arr, (i, j), (size, size))
 
     return vmap(crop_one)(corners)
+
+
+def eigen_support(coords, holes, hole_coords, f2f, size):
+    """
+    Per-hole windows of the eigenbasis support, (n_holes, size, size) bool, and
+    the window corners. The support is each hole's (already oversized, `f2f`)
+    hexagon at its nominal position, soft edge included (> 0) -- the region the
+    eigenbasis is defined on. The oversized hexagons don't overlap, so a
+    pupil-wide mode cut into these windows loses nothing and counts nothing twice.
+    """
+    corners = calc_hole_corners(coords, holes, size)
+    small = crop_hole_coords(hole_coords, corners, size)
+    pixel_scale = coords[0, 0, 1] - coords[0, 0, 0]
+    hex_fn = lambda c: dlu.soft_reg_polygon(c, f2f / np.sqrt(3), 6, pixel_scale)
+    return vmap(hex_fn)(small) > 0, corners
+
+
+def crop_eigen_windows(full, corners, support):
+    """
+    Cut a full-pupil eigenbasis, (n_modes, npix, npix) with NaN outside its
+    support, into per-hole windows, (n_holes, n_modes, size, size), zero outside
+    each hole's own support. Plain numpy, one mode at a time, so a memory-mapped
+    `full` is never loaded all at once.
+    """
+    import numpy as onp
+
+    size = support.shape[-1]
+    support = onp.asarray(support)
+    windows = onp.zeros((len(corners), full.shape[0], size, size))
+    for k in range(full.shape[0]):
+        mode = onp.nan_to_num(onp.asarray(full[k]))
+        for h, (j, i) in enumerate(onp.asarray(corners)):
+            windows[h, k] = mode[i : i + size, j : j + size] * support[h]
+    return windows
+
+
+def save_eigen_windows(full_path, out_path, diameter=6.603464, npixels=1024, f2f=0.80, oversize=1.2, size=180):
+    """
+    One-off conversion of a full-pupil eigenbasis file into the per-hole
+    windows file load_eigen_basis reads fast: (n_holes, n_modes, size, size),
+    in the original (unit sum-of-squares) normalisation.
+    """
+    import numpy as onp
+
+    coords = dlu.pixel_coords(npixels, diameter)
+    holes = get_initial_holes(diameter, npixels)
+    hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, holes)
+    support, corners = eigen_support(coords, holes, hole_coords, f2f * oversize, size)
+    full = onp.load(full_path, mmap_mode="r")
+    support_full = onp.asarray(fill(support.astype(float), corners, npixels)) > 0
+    if not (onp.isfinite(full[0]) == support_full).all():
+        raise ValueError("eigenbasis support doesn't match the oversized hexagons")
+    windows = crop_eigen_windows(full, corners, support)
+    total = onp.array([(onp.nan_to_num(onp.asarray(full[k])) ** 2).sum() for k in range(full.shape[0])])
+    if not onp.allclose((windows**2).sum((0, 2, 3)), total, rtol=1e-10, atol=0):
+        raise ValueError("windows lost or double-counted part of the eigenbasis")
+    onp.save(out_path, windows)
+    return windows
+
+
+def load_eigen_basis(eigen_basis, coords, holes, hole_coords, f2f, size, n_eigen=None):
+    """
+    A pupil-wide eigenbasis as per-hole windows, (n_holes, n_eigen, size, size),
+    rescaled to RMS 1 over its support like the other aberration bases (the
+    caller applies the 1e-9, so coefficients are in nm), and the window corners.
+
+    Each eigenmode spans every hole at once, so a model using it has a single
+    coefficient vector (n_eigen,) shared by all holes -- see eval_small_basis.
+
+    `eigen_basis` is a windows file from save_eigen_windows (fast), a
+    full-pupil file (n_modes, npix, npix) with NaN outside the support, or an
+    array in either layout. `f2f` is the already-oversized flat-to-flat.
+    """
+    import numpy as onp
+
+    support, corners = eigen_support(coords, holes, hole_coords, f2f, size)
+    raw = onp.load(eigen_basis, mmap_mode="r") if isinstance(eigen_basis, str) else onp.asarray(eigen_basis)
+
+    # The basis must live on exactly this model's oversized hexagons (e.g. the
+    # eigenbasis_v1 file is built for oversize=1.2), otherwise cutting it to
+    # them would silently drop or pad part of every mode.
+    if raw.ndim == 4:
+        matches = ((onp.asarray(raw[:, :3]) != 0).any(1) == onp.asarray(support)).all()
+        windows = onp.asarray(raw[:, :n_eigen]) * onp.asarray(support)[:, None]
+    else:
+        npix = raw.shape[-1]
+        matches = (onp.isfinite(raw[0]) == (onp.asarray(fill(support.astype(float), corners, npix)) > 0)).all()
+        windows = crop_eigen_windows(raw[:n_eigen], corners, support)
+    if not matches:
+        raise ValueError("eigenbasis support doesn't match this model's oversized hexagons (check oversize / f2f)")
+    return np.asarray(windows * onp.sqrt(onp.asarray(support).sum())), corners
 
 
 # Fill in the full array
@@ -314,7 +411,11 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
         n_modes_keep=28,
         n_modes=13,
         small_npix=180,
+        eigen_basis=None,
+        n_eigen=None,
     ):
+        if eigen_basis is not None and (fourier or polike):
+            raise ValueError("eigen_basis replaces the aberration basis, don't combine it with fourier/polike")
 
         # The fourier basis is built by SVD-orthogonalising a dictionary over
         # every pixel of each hole's window -- cheap at the small (post-crop)
@@ -330,8 +431,16 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
             hole_corners = calc_hole_corners(coords, holes, small_npix)
             small_hole_coords = crop_hole_coords(hole_coords, hole_corners, small_npix)
 
-        # Calculate the aberration basis functions
-        if aberration_orders is not None:
+        # Calculate the aberration basis functions. A pupil-wide eigenbasis has
+        # one coefficient vector shared by all holes, (n_eigen,), rather than
+        # one per hole, (n_holes, n_modes) -- see eval_small_basis.
+        if eigen_basis is not None:
+            abb_basis, corners = load_eigen_basis(
+                eigen_basis, coords, holes, hole_coords, f2f, small_npix, n_eigen
+            )
+            self.abb_basis = 1e-9 * abb_basis
+            self.abb_coeffs = np.zeros(self.abb_basis.shape[1])
+        elif aberration_orders is not None:
             if fourier:
                 abb_basis = 1e-9 * calc_fourier_basis(small_hole_coords, f2f, n_modes_keep, n_modes)
                 corners = hole_corners
@@ -395,6 +504,8 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
         n_modes_keep=28,
         n_modes=13,
         small_npix=180,
+        eigen_basis=None,
+        n_eigen=None,
     ):
         # Get distorted coordinates
         coords = dlu.pixel_coords(npixels, diameter)
@@ -423,6 +534,8 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
             n_modes_keep=n_modes_keep,
             n_modes=n_modes,
             small_npix=small_npix,
+            eigen_basis=eigen_basis,
+            n_eigen=n_eigen,
         )
 
     def calc_transmission(self):
@@ -529,6 +642,8 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         n_modes_keep=28,
         n_modes=13,
         size=180,
+        eigen_basis=None,
+        n_eigen=None,
     ):
         if holes is None:
             holes = get_initial_holes(diameter, npixels)
@@ -559,6 +674,8 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
             fourier=fourier,
             n_modes_keep=n_modes_keep,
             n_modes=n_modes,
+            eigen_basis=eigen_basis,
+            n_eigen=n_eigen,
         )
 
     def calc_mask(self, npixels, diameter, oversample=3):
@@ -710,6 +827,8 @@ class AMIOptics(dl.AngularOpticalSystem):
         fourier=False,
         n_modes_keep=28,
         n_modes=13,
+        eigen_basis=None,
+        n_eigen=None,
         static=True,
         sparse=False,
     ):
@@ -731,6 +850,8 @@ class AMIOptics(dl.AngularOpticalSystem):
                     fourier=fourier,
                     n_modes_keep=n_modes_keep,
                     n_modes=n_modes,
+                    eigen_basis=eigen_basis,
+                    n_eigen=n_eigen,
                 )
             else:
                 pupil_mask = StaticApertureMask(
@@ -745,6 +866,8 @@ class AMIOptics(dl.AngularOpticalSystem):
                     fourier=fourier,
                     n_modes_keep=n_modes_keep,
                     n_modes=n_modes,
+                    eigen_basis=eigen_basis,
+                    n_eigen=n_eigen,
                 )
 
         # optical layers

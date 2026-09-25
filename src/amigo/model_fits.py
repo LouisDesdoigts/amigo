@@ -342,9 +342,12 @@ class ModelFit(Exposure):
         if "aberrations" in model.params.keys():
             coefficients = model.aberrations[self.get_key("aberrations")]
 
-            # Nuke the piston gradient to prevent degeneracy
-            fixed_piston = lax.stop_gradient(coefficients[0, 0])
-            coefficients = coefficients.at[0, 0].set(fixed_piston)
+            # Nuke the piston gradient to prevent degeneracy. Only for per-hole
+            # bases, (n_holes, n_modes), where [0, 0] is hole 0's piston; a
+            # pupil-wide eigenbasis, (n_eigen,), has no global piston to fix.
+            if coefficients.ndim == 2:
+                fixed_piston = lax.stop_gradient(coefficients[0, 0])
+                coefficients = coefficients.at[0, 0].set(fixed_piston)
 
             # Stop gradient for science targets
             if not self.calibrator:

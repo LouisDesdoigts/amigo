@@ -89,6 +89,11 @@ class AmigoModel(BaseModeller):
             abb = {}
             for key in params["aberrations"].keys():
                 prog, filt = key.split("_")
+                # Keep the model's own initial coefficients if the state's were
+                # fitted with a different basis (e.g. Zernike vs eigenbasis)
+                if np.shape(state["aberrations"][filt]) != np.shape(params["aberrations"][key]):
+                    abb[key] = params["aberrations"][key]
+                    continue
                 abb[key] = state["aberrations"][filt]
 
             params["aberrations"] = abb  # jtu.map(lambda x: abb, params["aberrations"])
