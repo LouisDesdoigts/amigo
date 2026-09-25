@@ -16,6 +16,7 @@ import jax.random as jr
 import dLux.utils as dlu
 from tqdm.auto import tqdm
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 
 def scheduler(lr, start, *args):
@@ -563,6 +564,14 @@ class Trainer(zdx.Base):
             batches_by_device = {
                 key: device_put_pytree(batch, device_map[key]) for key, batch in batches.items()
             }
+            # equinox's filter_jit calls block_until_ready() on every call, so calls
+            # issued from one thread run strictly one after another even on
+            # different devices. One single-worker pool per device: a device's
+            # batches stay sequential, but the devices overlap (JAX releases the GIL
+            # while blocked).
+            pool_by_device = {
+                d: ThreadPoolExecutor(max_workers=1) for d in set(device_map.values())
+            }
 
         # Looping things
         t0 = time.time()
@@ -606,13 +615,13 @@ class Trainer(zdx.Base):
                     batch_args["t"] = args["t"] + i / args["n_batch"]
                     batch_args["key"] = epoch_keys[i + 1]
                     batch_args = device_put_pytree(batch_args, d)
-                    # Calls to different devices dispatch async and overlap; nothing
-                    # here blocks until a result is actually read below.
-                    result = loss_fn(
+                    future = pool_by_device[d].submit(
+                        loss_fn,
                         params_by_device[d], lrs_by_device[d], model_by_device[d],
                         batches_by_device[batch_key], batch_args,
                     )
-                    dispatched.append((batch_key, d, result))
+                    dispatched.append((batch_key, d, future))
+                dispatched = [(k, d, f.result()) for k, d, f in dispatched]
 
                 for batch_key, d, (loss, new_grads, _returned_args, aux) in dispatched:
                     grads += device_put_pytree(new_grads, self.devices[0])
