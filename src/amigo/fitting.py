@@ -6,19 +6,16 @@ from datetime import timedelta
 import jax.tree as jtu
 from .core_models import ModelParams, ParamHistory
 from .fisher import calc_fishers
-from .misc import tqdm
 from .stats import covariance_model
+from .misc import BIG
 import optax
 import jax
 import jax.numpy as np
 from jax import config
 import jax.random as jr
 import dLux.utils as dlu
-
-if jax.config.read("jax_enable_x64"):
-    BIG = np.finfo(np.float64).max / 1e1
-else:
-    BIG = np.finfo(np.float32).max / 1e1
+from tqdm.auto import tqdm
+import os
 
 
 def scheduler(lr, start, *args):
@@ -31,10 +28,12 @@ def scheduler(lr, start, *args):
     return optax.piecewise_constant_schedule(lr / BIG, sched_dict)
 
 
-base_sgd = lambda vals: optax.sgd(vals, nesterov=True, momentum=0.6)
+base_sgd = lambda vals, momentum=0.6: optax.sgd(vals, nesterov=True, momentum=momentum)
 base_adam = lambda vals: optax.adam(vals)
 
-sgd = lambda lr, start, *schedule: base_sgd(scheduler(lr, start, *schedule))
+sgd = lambda lr, start, *schedule, momentum=0.6: base_sgd(
+    scheduler(lr, start, *schedule), momentum=momentum
+)
 adam = lambda lr, start, *schedule: base_adam(scheduler(lr, start, *schedule))
 
 
@@ -207,6 +206,12 @@ class Trainer(zdx.Base):
     looper_fn: callable
     aux_fn: callable
     cache: str
+    summarise_fn: callable
+    intermediate_prints: list
+    save_path: str | None
+    history_stride: int
+    history_full_res_keys: tuple
+    batch_history_max_len: int | None
 
     def __init__(
         self,
@@ -217,6 +222,12 @@ class Trainer(zdx.Base):
         looper_fn=None,
         aux_fn=None,
         cache="cache",
+        summarise_fn=None,
+        intermediate_prints=[],
+        save_path=None,
+        history_stride=1,
+        history_full_res_keys=("nn_weights",),
+        batch_history_max_len=None,
     ):
         """
         loss_fn(model, exposure, args): -> loss
@@ -224,6 +235,31 @@ class Trainer(zdx.Base):
         grad_fn(model, grads, args, key): -> (grads, key)
         norm_fn(model_params, args, key): -> model_params, key
         looper_fn(looper, loss_dict): -> ()
+
+        history_stride: record `model_params` into the returned `Result.history`
+            every `history_stride` epochs instead of every epoch (default 1 = old
+            behaviour, unchanged for every existing caller). `ParamHistory.append`
+            pulls every leaf back to host and rebuilds a growing python list each
+            call, so on long runs this is both a real per-epoch sync cost and an
+            O(epochs^2) cost over the whole run. Keys in `history_full_res_keys`
+            (default just nn_weights) are still recorded every epoch regardless of
+            stride, since e.g. retrain_fns.py averages the last few *epochs* of
+            nn_weights history to smooth injected-noise steps into the saved final
+            state -- striding that would silently widen/change that averaging
+            window. Everything else striding touches is diagnostic-plot-only.
+
+        batch_history_max_len: only used by ValBatchedTrainer's batch_history
+            (params in `batched_params`, e.g. nn_weights -- appended once per
+            BATCH, not per epoch, so it grows ~16x faster than history_stride
+            above addresses). Passed straight through to ParamHistory.append's
+            max_len: caps the list to its last N entries rather than skipping
+            appends, since batched params need to stay at full per-batch
+            resolution for retrain_fns.py's `[-n_batch:]` averaging -- just
+            bounded in length, not full history back to epoch 0. Default None
+            (unbounded) keeps existing behaviour; this OOM-killed a 5000-epoch
+            val_flag=True run at epoch 3000 (nn_weights alone reached ~3.3GB and
+            climbing), so retrain.py sets a real default for its own use even
+            though this class keeps None as the conservative default.
         """
         self.loss_fn = loss_fn
         self.args_fn = args_fn
@@ -233,6 +269,16 @@ class Trainer(zdx.Base):
         self.aux_fn = aux_fn
         self.fishers = None
         self.cache = cache
+
+        if summarise_fn is None:
+            def summarise_fn(result, save_path):
+                pass
+        self.summarise_fn = summarise_fn
+        self.intermediate_prints = intermediate_prints
+        self.save_path = save_path
+        self.history_stride = history_stride
+        self.history_full_res_keys = tuple(history_full_res_keys)
+        self.batch_history_max_len = batch_history_max_len
 
     def default_looper(self, looper, loss_dict):
         loss = np.array([v[-1] for v in loss_dict.values()]).mean(0)
@@ -244,6 +290,12 @@ class Trainer(zdx.Base):
             flux_ratio = exp.nints * (exp.ngroups - 1) / exp.ngroups
             flux = flux_ratio * 10 ** model.get(exp.map_param("fluxes"))
             for param in parameters:
+                # NOTE: Aberrations are shared across exposures, but non-calibrator
+                # exposures stop their gradients (see ModelFit.update_optics), so
+                # their Fisher must not contribute to the aberration learning rates.
+                if param == "aberrations" and not exp.calibrator:
+                    continue
+
                 try:
                     hess = hessians[param][exp.filter]
                     hess *= -flux / 80**2
@@ -365,7 +417,7 @@ class Trainer(zdx.Base):
         # Format the batches and exposures
         if isinstance(batches, list):
             exposures = batches
-            batches = {0: exposures}
+            batches = {"0": exposures}
         else:
             exposures = []
             for batch_key, batch in batches.items():
@@ -398,6 +450,7 @@ class Trainer(zdx.Base):
         epochs,
         batches: dict,
         args={},
+        summarise_kwargs={},
     ):
         # Ensure args key exists and is the right type
         args = self.check_args_key(args)
@@ -411,7 +464,21 @@ class Trainer(zdx.Base):
 
         # Get the optax optimiser and history bits
         optim, state = get_optimiser(model_params, optimisers)
-        history = ParamHistory(model_params)
+
+        # Split off any full-resolution keys (default nn_weights) so they can be
+        # recorded every epoch while everything else is recorded every
+        # `history_stride` epochs -- see the docstring on `history_stride`.
+        hi_res_keys = [k for k in self.history_full_res_keys if k in model_params.keys()]
+        if hi_res_keys and self.history_stride > 1:
+            hi_params, lo_params = model_params.partition(hi_res_keys)
+            history = ParamHistory(lo_params)
+            hi_history = ParamHistory(hi_params)
+        else:
+            history = ParamHistory(model_params)
+            hi_history = None
+
+        def combined_history():
+            return history.combine(hi_history) if hi_history is not None else history
 
         # Get the loss and update functions
         val_grad_fn = get_val_grad_fn(self.loss_fn)
@@ -444,20 +511,27 @@ class Trainer(zdx.Base):
                 # Append the mean batch loss to the loss dictionary and update aux dict
                 loss_dict[batch_key].append(loss / len(batch))
 
+
                 #
                 if self.aux_fn is not None:
-                    aux_dict = self.aux_fn(aux_dict, aux)
+                    aux_dict = self.aux_fn(batch_key, aux_dict, aux)
 
                 # Check for NaNs and exit if so
                 if np.isnan(loss):
                     print(f"Loss is NaN on epoch {epoch}, exiting fit")
                     return self.finalise(
-                        t0, model, loss_dict, aux, model_params, history, lrs, epochs, False
+                        t0, model, loss_dict, aux_dict, model_params, combined_history(), lrs, epochs, False
                     )
 
             # Update the regular parameters and append to history
             model_params, state, args = update_fn(grads, model_params, state, args)
-            history = history.append(model_params)
+            if hi_history is not None:
+                hi_params, lo_params = model_params.partition(hi_res_keys)
+                hi_history = hi_history.append(hi_params)
+                if epoch % self.history_stride == 0:
+                    history = history.append(lo_params)
+            else:
+                history = history.append(model_params)
 
             # Update the looper
             loop_fn = self.default_looper if self.looper_fn is None else self.looper_fn
@@ -468,9 +542,16 @@ class Trainer(zdx.Base):
                 self.initial_print(loss_dict)
             if epoch == 1:
                 self.second_print(t1, epochs)
+            if epoch in self.intermediate_prints:
+                intermediate_result = self.finalise(t0, model, loss_dict, aux_dict, model_params, combined_history(), lrs, epoch, True)
+                intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
+                if intermediate_save_dir is not None:
+                    os.mkdir(intermediate_save_dir)
+                self.summarise_fn(intermediate_result, intermediate_save_dir, **summarise_kwargs)
 
         # Print the runtime stats and return Result object
-        return self.finalise(t0, model, loss_dict, aux, model_params, history, lrs, epochs, True)
+        return self.finalise(t0, model, loss_dict, aux_dict, model_params, combined_history(), lrs, epochs, True)
+        
 
 
 class Result(zdx.Base):
@@ -481,8 +562,21 @@ class Result(zdx.Base):
     history: ParamHistory
     aux: dict
     meta_data: dict
+    best_batch: None
+    best_state: None
 
-    def __init__(self, losses, model, aux, state, history, lr_model, meta_data=None):
+    def __init__(
+        self,
+        losses,
+        model,
+        aux,
+        state,
+        history,
+        lr_model,
+        meta_data=None,
+        best_batch=None,
+        best_state=None,
+    ):
         self.losses = losses
         self.model = model
         self.state = state
@@ -490,3 +584,5 @@ class Result(zdx.Base):
         self.lr_model = lr_model
         self.meta_data = meta_data
         self.aux = aux
+        self.best_batch = best_batch
+        self.best_state = best_state

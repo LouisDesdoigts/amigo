@@ -1,3 +1,4 @@
+import warnings
 import jax
 import zodiax as zdx
 import equinox as eqx
@@ -42,11 +43,30 @@ class AmigoModel(BaseModeller):
 
     def __init__(self, exposures, optics, detector, ramp_model, read, state=None, vis_model=None):
         if state is not None:
-            optics = optics.set("transmission", state["transmission"])
-            detector = detector.set("jitter", state["jitter"])
-            ramp_model = ramp_model.set(
-                ["FF", "SRF", "nn_weights"], [state["FF"], state["SRF"], state["nn_weights"]]
-            )
+            # NOTE: a dynamic (non-static) AMIOptics pupil mask has no
+            # "transmission" leaf, so calibration states built against it
+            # won't have this key either.
+            if "transmission" in state and hasattr(optics.pupil_mask, "transmission"):
+                optics = optics.set("transmission", state["transmission"])
+
+            # NOTE: newer amigo detector models expose the jitter as "sigma";
+            # older calibration.npy files may still store it under "jitter".
+            jitter = state["sigma"] if "sigma" in state else state.get("jitter")
+            if jitter is not None:
+                detector = detector.set("sigma", jitter)
+
+            ramp_model = ramp_model.set(["FF", "nn_weights"], [state["FF"], state["nn_weights"]])
+
+            # NOTE: SRF is no longer part of the state. Older states that still
+            # carry it are applied for backwards compatibility.
+            if "SRF" in state:
+                warnings.warn(
+                    "'SRF' in the state is deprecated and will be ignored in future "
+                    "versions; new states should not include it.",
+                    FutureWarning,
+                    stacklevel=2,
+                )
+                ramp_model = ramp_model.set("SRF", state["SRF"])
             read = read.set(
                 ["dark_current", "non_linearity"],
                 [state["dark_current"], state["non_linearity"]],
@@ -220,7 +240,7 @@ class ParamHistory(ModelParams):
         self.params = jtu.map(lambda x: [onp.array(x)], model_params.params)
         # self.params = jtu.map(lambda x: [x], model_params.params)
 
-    def append(self, model_params):
+    def append(self, model_params, max_len=None):
         # Wrap the leaves in a list to ensure the same tree structure as self.params
         updates_list = jtu.map(lambda x: [onp.array(x)], model_params.params)
         # updates_list = jtu.map(lambda x: [x], model_params.params)
@@ -229,10 +249,25 @@ class ParamHistory(ModelParams):
         # map make it recognise lists as leaves
         is_leaf = lambda leaf: isinstance(leaf, list)
 
+        # max_len bounds memory (and the cost of this call, since `a + b` on plain
+        # python lists copies the whole of `a` every time -- an unbounded O(n) list
+        # growing over O(epochs) calls is O(epochs^2) over a run, same issue
+        # history_stride addresses for reg_history, just via capping length here
+        # instead of skipping calls, since ValBatchedTrainer's batch_history is
+        # appended once per BATCH not per epoch (this is what OOM-killed a
+        # 5000-epoch val_flag=True run at epoch 3000: nn_weights alone, appended
+        # 16x/epoch, unbounded, reached ~3.3GB and climbing). Keep enough tail for
+        # both retrain_fns.py's `[-n_batch:]` final-state averaging and a
+        # reasonably long trajectory plot; default None keeps every existing
+        # caller's behaviour (full, unbounded history) unchanged.
+        def combine(a, b):
+            merged = a + b
+            return merged[-max_len:] if max_len is not None else merged
+
         # Append the new values to the history dictionary
         return self.set(
             "params",
-            jtu.map(lambda a, b: a + b, self.params, updates_list, is_leaf=is_leaf),
+            jtu.map(combine, self.params, updates_list, is_leaf=is_leaf),
         )
 
 

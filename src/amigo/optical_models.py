@@ -6,9 +6,9 @@ from jax import Array, vmap
 import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
+from abcdLux import lct
 from .misc import calc_throughput, interp
 from jax.lax import dynamic_update_slice, dynamic_slice
-from dLux.utils.propagation import transfer_matrix, calc_nfringes
 
 
 def gen_powers(degree):
@@ -121,7 +121,77 @@ def calc_mask(coords, f2f, pixel_scale):
     return vmap(hex_fn)(coords).sum(0)
 
 
-def calc_basis(coords, f2f, radial_orders, polike=False):
+def calc_fourier_dict(coords, f2f, n_modes):
+    """
+    Raw (unmasked) separable Fourier dictionary for one hole -- n_modes**2
+    modes ([DC, cos1, sin1, cos2, ...] per axis, per dlu.fourier_kernels).
+    Reuses dLux's own kernel machinery (the same one dLux.parametric.FourierBasis
+    evaluates with), which is orthogonal over a full square pixel grid but has
+    no notion of the hexagonal aperture -- that's handled by
+    `orthogonalise_fourier_basis` below, not here.
+    """
+    npix = coords.shape[-1]
+    Kx, Ky = dlu.fourier_kernels(n_modes, npix, scale=f2f)
+    return np.einsum("xi,yj->ijxy", Kx, Ky).reshape(n_modes * n_modes, npix, npix)
+
+
+def orthogonalise_fourier_basis(coords, f2f, n_modes, n_modes_keep):
+    """
+    SVD-orthogonalise the Fourier dictionary over the hexagonal aperture, for
+    one hole. Plain Zernikes/polike are only analytically orthogonal over a
+    circle or hexagon respectively; restricted to AMI's hexagonal holes, plain
+    Zernikes cross-talk (a "zeroed" high-order coefficient can still visibly
+    show up as e.g. tip/tilt). This instead orthogonalises numerically via SVD,
+    so it's exact for whatever aperture shape `dlu.soft_reg_polygon` actually
+    describes, at the cost of the resulting modes no longer being simple named
+    aberrations (they're arbitrary combinations of Fourier modes instead).
+
+    n_modes_keep must be static (fixed ahead of time -- e.g. to match the
+    current Zernike/polike aberration_orders' mode count for a fair
+    comparison) rather than picked via a rank cutoff: the raw dictionary is
+    close to full rank at practical mode counts (smooth singular-value decay,
+    no natural truncation point), so truncating is a real approximation, not
+    free cleanup of redundant modes.
+    """
+    npix = coords.shape[-1]
+    pixel_scale = coords[0, 0, 1] - coords[0, 0, 0]
+    dictionary = calc_fourier_dict(coords, f2f, n_modes)
+    mask = dlu.soft_reg_polygon(coords, f2f / np.sqrt(3), 6, pixel_scale)
+    F = (dictionary * mask[None]).reshape(dictionary.shape[0], -1).T
+    U, s, Vt = np.linalg.svd(F, full_matrices=False)
+    U = U[:, :n_modes_keep]
+
+    # U's columns are orthonormal as sum_pixels(U_i * U_j) = delta_ij over the
+    # WHOLE npix*npix grid, so each mode's RMS within the aperture is
+    # ~1/sqrt(n_valid_pixels) -- ~0.007 here, vs dlu.zernike_basis/polike_basis's
+    # RMS~1-within-the-aperture convention. Left unscaled, that's a ~100x+
+    # mismatch: the same aberration learning rate (tuned for Zernike-scale
+    # coefficients) would move these modes ~100x too slowly, which would look
+    # like "the basis doesn't converge" for a boring normalisation reason, not a
+    # real result about the basis. Rescale to match Zernike/polike's RMS~1
+    # convention instead (giving up exact sum-of-squares=1 orthonormality, which
+    # Zernike/polike don't have either -- they're only orthogonal, not
+    # orthonormal in this L2 sense, and not even exactly orthogonal here, which
+    # is the whole point of this basis). n_valid uses the same >0.5 threshold as
+    # a hard aperture cut, not the soft mask's fractional edge values.
+    n_valid = np.sum(mask > 0.5)
+    U = U * np.sqrt(n_valid)
+
+    return U.T.reshape(-1, npix, npix)
+
+
+def calc_fourier_basis(coords, f2f, n_modes_keep, n_modes=13):
+    """vmaps orthogonalise_fourier_basis over holes, matching calc_basis's
+    zernike/polike branches' contract: coords (n_holes, 2, npix, npix) ->
+    (n_holes, n_modes_keep, npix, npix)."""
+    basis_fn = lambda c: orthogonalise_fourier_basis(c, f2f, n_modes, n_modes_keep)
+    return vmap(basis_fn)(coords)
+
+
+def calc_basis(coords, f2f, radial_orders, polike=False, fourier=False, n_modes_keep=28, n_modes=13):
+    if fourier:
+        return calc_fourier_basis(coords, f2f, n_modes_keep, n_modes)
+
     noll_inds = get_noll_indices(np.arange(radial_orders))
 
     if polike:
@@ -138,25 +208,47 @@ def get_initial_holes(diameter=6.603464, npixels=1024, x_shift=21, y_shift=-13):
     return np.load(file_path) + shift[None, :]
 
 
-def reduce_basis(basis, coords, holes, size=180):
+def calc_hole_corners(coords, holes, size):
+    """The corner-position half of reduce_basis, split out so it can be reused
+    without needing an already-computed (and possibly expensive-to-compute)
+    full-resolution basis array -- see crop_hole_coords."""
     xs = coords[0, 0]
     npixels = len(xs)
     pixel_scale = np.diff(xs, axis=0).mean()
-
-    # # Re-scale the coordinates to pixel units
-    # arr_coords = coords / pixel_scale
 
     # Shift the coordinates to be centred at the corner (ie array indexed)
     cen_pix = npixels / 2
     if npixels % 2 == 0:
         cen_pix -= 0.5
-    # arr_coords = arr_coords + (npixels / 2)
 
     # Get the holes positions in units of pixels
     holes_pix = np.rint((holes / pixel_scale) + cen_pix).astype(int)
 
     # Get the corners of the hole cut outs
-    hole_corners = holes_pix - size // 2
+    return holes_pix - size // 2
+
+
+def crop_hole_coords(hole_coords, hole_corners, size):
+    """Crop each hole's own (2, npix, npix) coordinate array down to
+    (2, size, size) at its corresponding corner. The hole_coords analog of
+    crop_windows: there, one shared dense array gets cropped at many corners;
+    here both the array *and* the corner vary per hole together, since
+    hole_coords is already translated per-hole. Used to build a basis directly
+    at the small (post-crop) resolution instead of computing it at full
+    resolution and cropping afterward (see calc_fourier_basis's caller in
+    BaseApertureMask) -- cheap here since coordinates are just 2 channels, not
+    the K-channel basis dictionary reduce_basis is built to crop.
+    """
+
+    def crop_one(coords_i, corner):
+        j, i = corner
+        return dynamic_slice(coords_i, (0, i, j), (2, size, size))
+
+    return vmap(crop_one)(hole_coords, hole_corners)
+
+
+def reduce_basis(basis, coords, holes, size=180):
+    hole_corners = calc_hole_corners(coords, holes, size)
 
     # Cut out the sections
     small_basis = np.zeros((*basis.shape[:2], size, size))
@@ -170,6 +262,25 @@ def reduce_basis(basis, coords, holes, size=180):
 
 def eval_small_basis(small_basis, coeffs):
     return vmap(dlu.eval_basis)(small_basis, coeffs)
+
+
+def crop_windows(arr, corners, size):
+    """
+    Crops a single dense 2d array into per-hole (size, size) windows at the
+    given corners -- the single-array equivalent of `reduce_basis`'s crop,
+    used to pull per-hole content back out of an already-computed dense
+    array (e.g. StaticApertureMask.transmission) for sparse propagation.
+
+    Uses `dynamic_slice` (rather than plain array slicing) since `corners`
+    is a regular (non-static) pytree leaf and so may be a traced value under
+    jit/grad.
+    """
+
+    def crop_one(corner):
+        j, i = corner
+        return dynamic_slice(arr, (i, j), (size, size))
+
+    return vmap(crop_one)(corners)
 
 
 # Fill in the full array
@@ -199,13 +310,35 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
         aberration_orders=None,
         amplitude_orders=None,
         polike=False,
+        fourier=False,
+        n_modes_keep=28,
+        n_modes=13,
         small_npix=180,
     ):
 
+        # The fourier basis is built by SVD-orthogonalising a dictionary over
+        # every pixel of each hole's window -- cheap at the small (post-crop)
+        # resolution reduce_basis normally crops down to, but expensive (an SVD
+        # of a full 1024x1024-per-hole dictionary) at the full pupil resolution
+        # zernike_basis/polike_basis are evaluated at. So unlike those, build it
+        # directly at small_npix: crop the (cheap, just 2 channels) coordinates
+        # first, then run the SVD only on that small window -- never touching a
+        # full-resolution dictionary at all. `corners` matches exactly what
+        # reduce_basis would return (same calc_hole_corners call), just computed
+        # up front here since fourier's path never gets there via reduce_basis.
+        if fourier and (aberration_orders is not None or amplitude_orders is not None):
+            hole_corners = calc_hole_corners(coords, holes, small_npix)
+            small_hole_coords = crop_hole_coords(hole_coords, hole_corners, small_npix)
+
         # Calculate the aberration basis functions
         if aberration_orders is not None:
-            abb_basis = 1e-9 * calc_basis(hole_coords, f2f, aberration_orders, polike)
-            self.abb_basis, corners = reduce_basis(abb_basis, coords, holes, size=small_npix)
+            if fourier:
+                abb_basis = 1e-9 * calc_fourier_basis(small_hole_coords, f2f, n_modes_keep, n_modes)
+                corners = hole_corners
+            else:
+                abb_basis = 1e-9 * calc_basis(hole_coords, f2f, aberration_orders, polike)
+                abb_basis, corners = reduce_basis(abb_basis, coords, holes, size=small_npix)
+            self.abb_basis = abb_basis
             self.abb_coeffs = np.zeros(self.abb_basis.shape[:-2])
         else:
             self.abb_basis = None
@@ -213,8 +346,13 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
 
         # Calculate the amplitude basis functions
         if amplitude_orders is not None:
-            amp_basis = calc_basis(hole_coords, f2f, amplitude_orders, polike)
-            self.amp_basis, corners = reduce_basis(amp_basis, coords, holes, size=small_npix)
+            if fourier:
+                amp_basis = calc_fourier_basis(small_hole_coords, f2f, n_modes_keep, n_modes)
+                corners = hole_corners
+            else:
+                amp_basis = calc_basis(hole_coords, f2f, amplitude_orders, polike)
+                amp_basis, corners = reduce_basis(amp_basis, coords, holes, size=small_npix)
+            self.amp_basis = amp_basis
             self.amp_coeffs = np.zeros(self.amp_basis.shape[:-2])
         else:
             self.amp_basis = None
@@ -239,6 +377,7 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
 
 
 class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.TransmissiveLayer):
+    size: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -252,6 +391,10 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
         amplitude_orders=None,
         oversize=1.1,
         polike=False,
+        fourier=False,
+        n_modes_keep=28,
+        n_modes=13,
+        small_npix=180,
     ):
         # Get distorted coordinates
         coords = dlu.pixel_coords(npixels, diameter)
@@ -266,6 +409,7 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
         # Calculate the transmission mask
         self.transmission = calc_mask(hole_coords, f2f, diameter / npixels)
         self.normalise = bool(normalise)
+        self.size = small_npix
 
         super().__init__(
             coords=coords,
@@ -275,6 +419,10 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
             aberration_orders=aberration_orders,
             amplitude_orders=amplitude_orders,
             polike=polike,
+            fourier=fourier,
+            n_modes_keep=n_modes_keep,
+            n_modes=n_modes,
+            small_npix=small_npix,
         )
 
     def calc_transmission(self):
@@ -284,25 +432,69 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
             )
         return self.transmission
 
-    def apply(self, wavefront):
+    def sparse_fields(self, npixels, diameter):
+        """
+        Per-hole mask, OPD (nm), and amplitude-perturbation arrays -- each
+        shape (n_holes, size, size) -- plus the physical (x, y) centre of
+        each hole's local window. Sparse-propagation equivalent of
+        `calc_transmission` + `calc_aberrations`, without ever assembling a
+        dense (npixels, npixels) array.
+
+        Note: `self.transmission` can be overwritten wholesale after
+        construction (e.g. `optics.set("transmission", ...)` when restoring a
+        fitted/measured aperture), so the per-hole windows are cropped fresh
+        from it on every call rather than cached at `__init__` time.
+        """
+        mask = crop_windows(self.transmission, self.corners, self.size)
+
+        if self.abb_basis is not None:
+            opd = eval_small_basis(self.abb_basis, self.abb_coeffs)
+        else:
+            opd = np.zeros_like(mask)
+
+        if self.amp_basis is not None:
+            amp = eval_small_basis(self.amp_basis, self.amp_coeffs)
+        else:
+            amp = np.zeros_like(mask)
+
+        centers = window_centers(self.corners, self.size, npixels, diameter)
+        return mask, opd, amp, centers
+
+    def __call__(self, wavefront):
         wavefront *= self.calc_transmission()
-        wavefront += self.calc_aberrations()
+        wavefront = wavefront.add_opd(self.calc_aberrations())
         if self.normalise:
             return wavefront.normalise()
         return wavefront
 
 
+def _cen_pix(n):
+    cen_pix = n / 2
+    if n % 2 == 0:
+        cen_pix -= 0.5
+    return cen_pix
+
+
 def calc_corners(holes, npixels, diameter, size):
     # Shift the coordinates to be centred at the corner (ie array indexed)
-    cen_pix = npixels / 2
-    if npixels % 2 == 0:
-        cen_pix -= 0.5
+    cen_pix = _cen_pix(npixels)
 
     # Get the corners of the hole cut outs
     pixel_scale = diameter / npixels
     holes_pix = np.rint((holes / pixel_scale) + cen_pix).astype(int)
     corners = holes_pix - size // 2
     return corners
+
+
+def window_centers(corners, size, npixels, diameter):
+    """
+    Physical (x, y) coordinates of the centre of each hole's local cut-out
+    window (as pasted by `calc_corners`/`dynamic_update_slice`), for use as
+    the per-hole coordinate offset in sparse propagation.
+    """
+    pixel_scale = diameter / npixels
+    pix_offset = _cen_pix(size) - _cen_pix(npixels)
+    return (corners + pix_offset) * pixel_scale
 
 
 def calc_mask_hole(coeffs, coords, hole_cen, powers, ap_fn, oversample=3):
@@ -333,6 +525,9 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         amplitude_orders=None,
         oversize=1.2,
         polike=False,
+        fourier=False,
+        n_modes_keep=28,
+        n_modes=13,
         size=180,
     ):
         if holes is None:
@@ -361,6 +556,9 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
             aberration_orders=aberration_orders,
             amplitude_orders=amplitude_orders,
             polike=polike,
+            fourier=fourier,
+            n_modes_keep=n_modes_keep,
+            n_modes=n_modes,
         )
 
     def calc_mask(self, npixels, diameter, oversample=3):
@@ -393,6 +591,59 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
             full = dynamic_update_slice(full, apertures[ind], (i, j))
         return full
 
+    def sparse_apertures(self, npixels, diameter, oversample=3):
+        """
+        Per-hole hexagonal transmission masks, shape (n_holes, size, size),
+        each evaluated on its own local coordinate window -- the same
+        per-hole content computed by `calc_mask`, without pasting it into a
+        dense (npixels, npixels) array.
+        """
+        pixel_scale = diameter / npixels
+
+        # Get the oversample sub-array coordinates
+        npix = npixels * oversample
+        full_size = self.size * oversample
+        full_pixel_scale = diameter / npix
+        small_diam = full_size * full_pixel_scale
+        coords = dlu.pixel_coords(full_size, small_diam)
+
+        # Calculate the offset
+        distort_fn = lambda coords: distort_coords(coords, self.distortion, self.primary_powers)
+        holes = distort_fn(self.holes.T[..., None])[..., 0].T
+        offset = holes - (pixel_scale * (2 * self.corners + self.size) - diameter) / 2
+
+        # Calculate the individual apertures
+        ap_fn = lambda coords: dlu.soft_reg_polygon(
+            coords, self.f2f / np.sqrt(3), 6, 0.25 * pixel_scale
+        )
+        mask_fn = lambda coeffs, cen: calc_mask_hole(
+            coeffs, coords, cen, self.primary_powers, ap_fn, oversample
+        )
+        return vmap(mask_fn)(self.primary_beam, offset)
+
+    def sparse_fields(self, npixels, diameter, oversample=3):
+        """
+        Per-hole mask, OPD (nm), and amplitude-perturbation arrays -- each
+        shape (n_holes, size, size) -- plus the physical (x, y) centre of
+        each hole's local window. This is the sparse-propagation equivalent
+        of `calc_mask` + `calc_transmission` + `calc_aberrations`, without
+        ever pasting per-hole content into a dense (npixels, npixels) array.
+        """
+        mask = self.sparse_apertures(npixels, diameter, oversample)
+
+        if self.abb_basis is not None:
+            opd = eval_small_basis(self.abb_basis, self.abb_coeffs)
+        else:
+            opd = np.zeros_like(mask)
+
+        if self.amp_basis is not None:
+            amp = eval_small_basis(self.amp_basis, self.amp_coeffs)
+        else:
+            amp = np.zeros_like(mask)
+
+        centers = window_centers(self.corners, self.size, npixels, diameter)
+        return mask, opd, amp, centers
+
     # def calc_mask(self, npixels, diameter, oversample=3):
     #     # npix = npixels * oversample
     #     # coords = self.transformation.apply(dlu.pixel_coords(npixels, diameter))
@@ -416,10 +667,10 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
     #     mask = calc_mask(hole_coords, self.f2f, 0.5 * diameter / npix)
     #     return dlu.downsample(mask, oversample, mean=True)
 
-    def apply(self, wavefront):
+    def __call__(self, wavefront):
         wavefront *= self.calc_transmission(npixels=wavefront.npixels)
         wavefront *= self.calc_mask(wavefront.npixels, wavefront.diameter)
-        wavefront += self.calc_aberrations(npixels=wavefront.npixels)
+        wavefront = wavefront.add_opd(self.calc_aberrations())
         if self.normalise:
             return wavefront.normalise()
         return wavefront
@@ -430,13 +681,12 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
 
 
-class AMIOptics(dl.optical_systems.AngularOpticalSystem):
+class AMIOptics(dl.AngularOpticalSystem):
     filters: dict
-    defocus_type: str
-    # defocus: np.ndarray
     defocus: np.ndarray
     corners: np.ndarray
     psf_upsample: int
+    sparse: bool = eqx.field(static=True)
 
     def __init__(
         self,
@@ -447,42 +697,25 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         coherence_orders=4,
         oversample=3,
         psf_upsample=3,
-        defocus_type="fft",
-        #
         pupil_mask=None,
         normalise=True,
         psf_npixels=80,
-        pixel_scale=0.065524085,
+        psf_pixel_scale=0.065524085,  # mas/pixel?
         diameter=6.603464,
         wf_npixels=1024,
         f2f=0.80,
         oversize=1.2,
         defocus=0.01,
         polike=False,
+        fourier=False,
+        n_modes_keep=28,
+        n_modes=13,
         static=True,
+        sparse=False,
     ):
-        if defocus_type not in ["phase", "fft", None]:
-            raise ValueError("defocus_type must be one of 'phase', 'fft', or None")
-        self.filters = filters
-        self.wf_npixels = wf_npixels
-        self.diameter = diameter
-        self.psf_npixels = psf_npixels
-        self.oversample = oversample
-        self.psf_upsample = psf_upsample
-        self.psf_pixel_scale = pixel_scale
-        self.defocus = np.array(defocus, float)
-        self.defocus_type = defocus_type
-        self.filters = dict([(filt, calc_throughput(filt, nwavels=nwavels)) for filt in filters])
+        self.sparse = bool(sparse)
 
-        layers = []
-
-        # if static_opd:
-        #     layers += [("wfs_opd", dl.AberratedLayer(opd=np.zeros((1024, 1024))))]
-
-        layers += [("InvertY", dl.Flip(0))]
-
-        # layers += [("fresnel_pre", FreeSpace(d_dist=0.1))]
-
+        # Instantiate pupil mask layer
         if pupil_mask is None:
             if not static:
                 pupil_mask = DynamicApertureMask(
@@ -495,6 +728,9 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
                     amplitude_orders=coherence_orders,
                     oversize=oversize,
                     polike=polike,
+                    fourier=fourier,
+                    n_modes_keep=n_modes_keep,
+                    n_modes=n_modes,
                 )
             else:
                 pupil_mask = StaticApertureMask(
@@ -506,12 +742,26 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
                     amplitude_orders=coherence_orders,
                     oversize=oversize,
                     polike=polike,
+                    fourier=fourier,
+                    n_modes_keep=n_modes_keep,
+                    n_modes=n_modes,
                 )
-        layers += [("pupil_mask", pupil_mask)]
 
-        # layers += [("fresnel_post", FreeSpace(d_dist=-0.1))]
+        # optical layers
+        layers = [("InvertY", dl.Flip(0)), ("pupil_mask", pupil_mask)]
 
-        self.layers = dlu.list2dictionary(layers, ordered=True)
+        super().__init__(
+            wf_npixels,
+            diameter,
+            layers,
+            psf_npixels,
+            np.array(psf_pixel_scale),
+            oversample,
+        )
+
+        self.psf_upsample = psf_upsample
+        self.defocus = np.array(defocus, float)
+        self.filters = dict([(filt, calc_throughput(filt, nwavels=nwavels)) for filt in filters])
 
         # Get the corners of the arrays for sparse propagation
         if not hasattr(self, "holes"):
@@ -543,172 +793,136 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             if `return_wf` is False, returns the psf Array.
             if `return_wf` is True, returns the Wavefront object.
         """
-        # Initialise wavefront
-        # wf = dl.Wavefront(self.wf_npixels, self.diameter, wavelength)
-        wf = Wavefront(self.wf_npixels, self.diameter, wavelength)
-        wf = wf.tilt(offset)
-
-        # Apply layers
-        for layer in list(self.layers.values()):
-            wf *= layer
-
-        # Propagate
-        true_pixel_scale = self.psf_pixel_scale / self.oversample
-        pixel_scale = dlu.arcsec2rad(true_pixel_scale)
+        # Get pixel scale in radians
+        pixel_scale = dlu.arcsec2rad(self.psf_pixel_scale / self.oversample)
         psf_npixels = self.psf_npixels * self.oversample
 
-        # This should be moved into dLux as a fix
-        if self.defocus_type == "phase":
-            first, second = dlu.propagation.fresnel_phase_factors(
-                wavelength=wf.wavelength * 1e6,
-                npixels_in=wf.npixels,
-                pixel_scale_in=wf.pixel_scale * 1e6,
-                focal_shift=self.defocus * 1e6,
-                # In theory these do not matter since the second factor only modifies
-                # the phase and so the PSF is unaffected. The 18 (microns) is the
-                # pixel scale but should cancel out.
-                npixels_out=psf_npixels,
-                pixel_scale_out=18 / self.oversample,
-                focal_length=18 / dlu.arcsec2rad(pixel_scale),
-            )
+        # Getting the focal length from the pixel scale and pixel size.
+        # NIRISS Pixel size quoted as 18 micron x 18 micron in JDOX
+        pixel_scale_metres = 18e-6 / self.oversample
+        focal_length = pixel_scale_metres / pixel_scale  # derived focal length
 
-            wf *= first
-            wf = wf.propagate(psf_npixels, pixel_scale)
-            wf *= second
+        # defining the propagator
+        # defocus stored in microns, converted to metres in the propagator
+        to_focal = dl.MFTPropagator(
+            [
+                ("ThinLens", dl.ABCDConjugatePlane(focal_length)),
+                ("FreeSpace", dl.ABCDFreeSpace(+1e-6 * self.defocus)),
+            ],
+            dl.CoordSpec(n=psf_npixels, d=pixel_scale_metres),
+        )
 
-        if self.defocus_type == "fft":
-            # Default to um defocus
-            # wf = wf.propagate(psf_npixels, pixel_scale)
-            wf = propagate_sparse(wf, psf_npixels, pixel_scale, corners=self.corners, size=180)
-            wf = plane_to_plane(wf, 1e-6 * self.defocus, pad=2)
+        if self.sparse:
+            wf = self._propagate_pupil_sparse(wavelength, offset, to_focal)
+        else:
+            # Initialise wavefront
+            wf = self.initialise_wavefront(wavelength, offset)
 
-        if self.defocus_type is None:
-            # wf = wf.propagate(psf_npixels, pixel_scale)
-            wf = propagate_sparse(wf, psf_npixels, pixel_scale, corners=self.corners, size=180)
+            # Apply layers
+            for layer in list(self.layers.values()):
+                wf = layer(wf)
+
+            wf = to_focal(wf)
 
         # Upsample and then downsample to get more PSF precision
-        knots = dlu.pixel_coords(psf_npixels, 2)
-        sample_coords = dlu.pixel_coords(psf_npixels * self.psf_upsample, 2)
-        psf = interp(wf.psf, knots, sample_coords, "cubic2")
+        knots = dlu.pixel_coords(psf_npixels, diameter=2)
+        sample_coords = dlu.pixel_coords(psf_npixels * self.psf_upsample, diameter=2)
+        psf = interp(wf.psf, knots, sample_coords, "cubic2")  # Upsampling with interp
         psf = dlu.downsample(psf, self.psf_upsample, mean=True)
-        psf = np.where(psf < 0, 0.0, psf)
-        wf = wf.set("amplitude", np.sqrt(psf))
+        psf = np.where(psf < 0, 0.0, psf)  # clipping
+
+        # resetting amplitude while not affecting phase
+        amplitude = np.sqrt(psf)
+        phase = np.angle(wf.phasor)
+        wf = wf.set("phasor", amplitude * np.exp(1j * phase))
 
         # Return PSF or Wavefront
         if return_wf:
             return wf
         return wf.psf
 
-
-class Wavefront(dl.Wavefront):
-
-    def downsample(self, factor=2):
+    def _propagate_pupil_sparse(self, wavelength, offset, to_focal):
         """
-        Downsample the wavefront by a factor of 2.
-        """
-        phasor = self.phasor
-        real = dlu.downsample(phasor.real, factor, mean=True)
-        imag = dlu.downsample(phasor.imag, factor, mean=True)
-        phasor = real + 1j * imag
-        amplitude = np.abs(phasor)
-        phase = np.angle(phasor)
+        Sparse-propagation equivalent of building the pupil-plane wavefront
+        (`initialise_wavefront` + the `InvertY`/`pupil_mask` layers) and
+        propagating it to the focal plane with `to_focal`. Instead of
+        assembling a dense (wf_npixels, wf_npixels) pupil array, each hole's
+        small local field is propagated individually and the results are
+        coherently summed at the output.
 
-        pixel_scale = self.pixel_scale * factor
-        return self.set(
-            ["pixel_scale", "amplitude", "phase"],
-            [pixel_scale, amplitude, phase],
+        Parameters
+        ----------
+        wavelength : float, metres
+        offset : Array, radians
+            The (x, y) offset from the optical axis of the source.
+        to_focal : dl.MFTPropagator
+            The (uninvoked) focal-plane propagator, used only for its
+            composed ABCD matrix and output coordinate specification -- this
+            guarantees the sparse path uses exactly the same defocus/lens
+            physics and output sampling as the dense path.
+
+        Returns
+        -------
+        wf : dl.Wavefront
+            The focal-plane wavefront, equivalent to `to_focal(wf)` in the
+            dense path.
+        """
+        pupil_mask = self.layers["pupil_mask"]
+        if not hasattr(pupil_mask, "sparse_fields"):
+            raise NotImplementedError(
+                f"Sparse propagation is not implemented for " f"{type(pupil_mask).__name__}."
+            )
+
+        ABCD = to_focal.abcd
+        spec_out = to_focal.spec.xs
+
+        # Per-hole mask, OPD, amplitude-perturbation, and window centres
+        mask, opd, amp, centers = pupil_mask.sparse_fields(self.wf_npixels, self.diameter)
+
+        # Per-hole local (x, y) coordinates, in the same frame as `centers`
+        pixel_scale = self.diameter / self.wf_npixels
+        local = dlu.nd_coords(pupil_mask.size, pixel_scale)
+        x = centers[:, 0:1] + local[None, :]
+        y = centers[:, 1:2] + local[None, :]
+
+        # Entrance-pupil complex field per hole
+        amplitude = mask * (1 + amp)
+        phase = dlu.opd2phase(opd, wavelength)
+
+        # `InvertY` is applied to the wavefront before the pupil mask in the
+        # dense path; on a flat tilted wavefront that only negates the
+        # y-component of the source-offset tilt, so replicate that here
+        # rather than flipping the already spatially-varying per-hole fields.
+        tilt = (2 * np.pi / wavelength) * (offset[0] * x[:, None, :] - offset[1] * y[:, :, None])
+
+        field = amplitude * np.exp(1j * (phase + tilt))
+        if pupil_mask.normalise:
+            field = field / np.sqrt(np.sum(np.abs(field) ** 2))
+
+        prop_fn = vmap(
+            lambda f, xi, yi: lct.lct_prop(
+                u_in=f, spec_in=(xi, yi), spec_out=spec_out, lam=wavelength, ABCD=ABCD
+            )
         )
+        focal_field = prop_fn(field, x, y).sum(0)
+        return dl.Wavefront.from_phasor(focal_field, wavelength, pixel_scale=to_focal.spec.d)
 
 
-def SparseMFT(
-    phasor,
-    wavelength: float,
-    pixel_scale_in: float,
-    npixels_out: int,
-    pixel_scale_out: float,
-    focal_length: float = None,
-    shift=np.zeros(2),
-    pixel: bool = True,
-    inverse: bool = False,
-    corner=None,
-    size=None,
-):
-    # Get parameters
-    npixels_in = phasor.shape[-1]
-    if not pixel:
-        shift /= pixel_scale_out
+# class Wavefront(dl.Wavefront):
 
-    # Alias the transfer matrix function
-    get_tf_mat = lambda s: transfer_matrix(
-        wavelength,
-        npixels_in,
-        pixel_scale_in,
-        npixels_out,
-        pixel_scale_out,
-        s,
-        focal_length,
-        0.0,
-        inverse,
-    )
+#     def downsample(self, factor=2):
+#         """
+#         Downsample the wavefront by a factor of 2.
+#         """
+#         phasor = self.phasor
+#         real = dlu.downsample(phasor.real, factor, mean=True)
+#         imag = dlu.downsample(phasor.imag, factor, mean=True)
+#         phasor = real + 1j * imag
+#         amplitude = np.abs(phasor)
+#         phase = np.angle(phasor)
 
-    # Get transfer matrices and propagate
-    x_mat, y_mat = vmap(get_tf_mat)(shift)
-
-    # Cut the bits out
-    if corner is not None:
-        x, y = corner
-        x_mat = dynamic_slice(x_mat, (x, 0), (size, x_mat.shape[1]))
-        y_mat = dynamic_slice(y_mat, (y, 0), (size, y_mat.shape[1]))
-        phasor = dynamic_slice(phasor, (y, x), (size, size))
-
-    # Propagate
-    phasor = (y_mat.T @ phasor) @ x_mat
-
-    # Normalise
-    nfringes = calc_nfringes(
-        wavelength,
-        npixels_in,
-        pixel_scale_in,
-        npixels_out,
-        pixel_scale_out,
-        focal_length,
-    )
-    phasor *= np.exp(np.log(nfringes) - (np.log(npixels_in) + np.log(npixels_out)))
-
-    return phasor
-
-
-def propagate_sparse(
-    wavefront,
-    npixels: int,
-    pixel_scale: float,
-    focal_length: float = None,
-    shift: Array = np.zeros(2),
-    pixel: bool = True,
-    corners=None,
-    size=None,
-):
-
-    inverse, plane, units = wavefront._prep_prop(focal_length)
-
-    # Enforce array so output can be vectorised by vmap
-    pixel_scale = np.asarray(pixel_scale, float)
-
-    # Calculate
-    phasor = SparseMFT(
-        wavefront.phasor,
-        wavefront.wavelength,
-        wavefront.pixel_scale,
-        npixels,
-        pixel_scale,
-        focal_length,
-        shift,
-        pixel,
-        inverse,
-    )
-
-    # Update
-    return wavefront.set(
-        ["amplitude", "phase", "pixel_scale", "plane", "units"],
-        [np.abs(phasor), np.angle(phasor), pixel_scale, plane, units],
-    )
+#         pixel_scale = self.pixel_scale * factor
+#         return self.set(
+#             ["pixel_scale", "amplitude", "phase"],
+#             [pixel_scale, amplitude, phase],
+#         )
