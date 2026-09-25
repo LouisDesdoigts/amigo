@@ -376,7 +376,11 @@ def summarise_fit(
         else:
             plt.show()
 
-def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_path=None):
+def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_path=None,
+         stride=1, full_res_keys=("nn_weights",)):
+    """`stride` is the Trainer's history_stride: strided params are recorded every
+    `stride` epochs, so their x-axis is scaled to real epochs. `full_res_keys` are
+    recorded every epoch regardless (see Trainer.history_full_res_keys)."""
 
     if save_path is not None:
         os.makedirs(save_path, exist_ok=True)
@@ -391,7 +395,8 @@ def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_
 
         param = params_in[i]
         leaf = history.params[param]
-        _plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end)
+        _plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end,
+                 x_scale=1 if param in full_res_keys else stride)
 
         ax = plt.subplot(1, 2, 2)
         if i + 1 == len(params_in):
@@ -404,7 +409,8 @@ def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_
 
         param = params_in[i + 1]
         leaf = history.params[param]
-        _plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end)
+        _plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end,
+                 x_scale=1 if param in full_res_keys else stride)
 
         plt.tight_layout()
         if save_path is not None:
@@ -446,7 +452,7 @@ def _get_styles(n):
     return color_list, linestyle_list
 
 
-def _plot_ax(leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, end=-1):
+def _plot_ax(leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, end=-1, x_scale=1):
 
     if exposures is not None:
         keys = [exp.key for exp in exposures]
@@ -465,20 +471,20 @@ def _plot_ax(leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, e
 
         for val, c, ls, label in zip(values, colors, linestyles, labels):
             kwargs = {"c": c, "ls": ls}
-            _plot_param(ax, val, param, start=start, end=end, **kwargs)
+            _plot_param(ax, val, param, start=start, end=end, x_scale=x_scale, **kwargs)
             ax.plot([], label=label, **kwargs)
 
         # plt.legend()
 
     else:
         arr = _format_leaf(leaf)
-        _plot_param(ax, arr, param, start=start, end=end)
+        _plot_param(ax, arr, param, start=start, end=end, x_scale=x_scale)
 
 
-def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
+def _plot_param(ax, arr, param, start=0, end=-1, x_scale=1, **kwargs):
     """This is the ugly gross function that is necessary"""
     arr = arr[start:end]
-    epochs = np.arange(len(arr))
+    epochs = x_scale * np.arange(len(arr))
     ax.set(xlabel="Epochs", title=param)
 
     match param:
