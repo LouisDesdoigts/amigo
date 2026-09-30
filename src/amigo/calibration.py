@@ -405,7 +405,28 @@ class ValBatchedTrainer(Trainer):
 
             if val < best_val:
                 best_val = val
-                best_batch = batch_params
+                # Average each batched param (e.g. nn_weights) over the winning epoch's
+                # own batches, matching final_state's convention (which averages
+                # `history[-n_batch:]`) instead of just keeping whatever batch_params
+                # happened to be after the last batch processed this epoch.
+                # _batch_history is reset to ParamHistory(batch_params) at the top of
+                # the epoch, which seeds itself with one pre-epoch snapshot before any
+                # append() below -- so this epoch's actual len(batches) updates are its
+                # last len(batches) entries, same slice final_state uses. Wrapped in
+                # try/except: this runs unprotected inside the training loop (unlike
+                # retrain_fns.py's best_state save, which already has one), so a bug
+                # here shouldn't be able to crash a long run -- fall back to the plain
+                # snapshot and keep training.
+                try:
+                    n_b = len(batches)
+                    is_leaf = lambda leaf: isinstance(leaf, list)
+                    avg_params = jtu.map(
+                        lambda leaf: onp.array(leaf[-n_b:]).mean(0), _batch_history.params, is_leaf=is_leaf
+                    )
+                    best_batch = batch_params.set("params", avg_params)
+                except Exception as e:
+                    print(f"best_batch epoch-averaging failed, falling back to the plain snapshot: {e}")
+                    best_batch = batch_params
                 best_state = model_params
 
             # Update the regular parameters and append to history

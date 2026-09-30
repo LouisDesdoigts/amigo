@@ -369,14 +369,25 @@ def load_eigen_basis(eigen_basis, coords, holes, hole_coords, f2f, size, n_eigen
     # eigenbasis_v1 file is built for oversize=1.2), otherwise cutting it to
     # them would silently drop or pad part of every mode.
     if raw.ndim == 4:
-        matches = ((onp.asarray(raw[:, :3]) != 0).any(1) == onp.asarray(support)).all()
+        footprint = (onp.asarray(raw[:, :3]) != 0).any(1)
         windows = onp.asarray(raw[:, :n_eigen]) * onp.asarray(support)[:, None]
     else:
         npix = raw.shape[-1]
-        matches = (onp.isfinite(raw[0]) == (onp.asarray(fill(support.astype(float), corners, npix)) > 0)).all()
+        footprint = onp.isfinite(raw[0])
+        support_full = onp.asarray(fill(support.astype(float), corners, npix)) > 0
         windows = crop_eigen_windows(raw[:n_eigen], corners, support)
-    if not matches:
+        support = support_full  # compare footprint and support on the same (full-pupil) grid below
+    mismatch_frac = (footprint != onp.asarray(support)).mean()
+    # A handful of hexagon-edge pixels can disagree between two independent computations of the
+    # same soft-edged support (dlu.soft_reg_polygon isn't bit-reproducible across separate JIT
+    # calls right at its threshold), so tolerate a small mismatch instead of demanding bit-exact
+    # agreement -- but still catch a genuinely wrong basis (wrong oversize/f2f), which mismatches
+    # over most of the aperture, not just its edge.
+    if mismatch_frac > 0.01:
         raise ValueError("eigenbasis support doesn't match this model's oversized hexagons (check oversize / f2f)")
+    elif mismatch_frac > 0:
+        print(f"load_eigen_basis: {mismatch_frac:.4%} of pixels disagree between the basis's own "
+              f"support and this model's geometric one (tolerated as edge-pixel noise)")
     return np.asarray(windows * onp.sqrt(onp.asarray(support).sum())), corners
 
 
