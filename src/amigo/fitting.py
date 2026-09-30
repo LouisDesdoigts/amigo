@@ -223,14 +223,22 @@ def estimate_batch_cost(batch):
     return float(sum(float(exp.ngroups) ** 3 for exp in batch))
 
 
-def assign_batches_to_devices(batches, devices):
+def assign_batches_to_devices(batches, devices, _cost_override=None):
     """Split `batches` across `devices` so each device's total estimated cost is
     as even as possible: a greedy longest-processing-time-first bin pack (sort
     batches by decreasing cost, assign each to the currently least-loaded
     device). Batch membership/cost don't change during a run, so this is computed
     once, not per epoch. Returns (assignment: {batch_key: device}, load:
-    {device: total_cost})."""
-    costs = {key: estimate_batch_cost(batch) for key, batch in batches.items()}
+    {device: total_cost}).
+
+    `_cost_override`, when given, is a {batch_key: cost} dict used in place of
+    `estimate_batch_cost(batch)` -- e.g. measured wall-clock time from a real
+    epoch, rather than the a-priori ngroups**3 proxy. `batches` values are then
+    unused and may be empty placeholders."""
+    if _cost_override is not None:
+        costs = _cost_override
+    else:
+        costs = {key: estimate_batch_cost(batch) for key, batch in batches.items()}
     order = sorted(batches.keys(), key=lambda k: costs[k], reverse=True)
     load = {d: 0.0 for d in devices}
     assignment = {}
@@ -570,9 +578,22 @@ class Trainer(zdx.Base):
             # different devices. One single-worker pool per device: a device's
             # batches stay sequential, but the devices overlap (JAX releases the GIL
             # while blocked).
-            pool_by_device = {
-                d: ThreadPoolExecutor(max_workers=1) for d in set(device_map.values())
-            }
+            pool_by_device = {d: ThreadPoolExecutor(max_workers=1) for d in self.devices}
+
+            # One-time rebalance after the first (post-compile) epoch: the cost
+            # proxy balances *total estimated cost* per device, not *batch count*,
+            # so a device can end up with several small batches while another gets
+            # one or two big ones -- if there's any fixed per-call overhead, the
+            # many-small-batches device pays it more times in aggregate even at
+            # equal total cost. Re-assign using each batch's actually-measured
+            # wall time from epoch 1 instead of the a-priori ngroups**3 guess.
+            rebalance_epoch = 1
+            measured_cost = {}
+
+            def _timed_loss_fn(*a):
+                t_start = time.time()
+                r = loss_fn(*a)
+                return r, time.time() - t_start
 
         # Looping things
         t0 = time.time()
@@ -617,12 +638,42 @@ class Trainer(zdx.Base):
                     batch_args["key"] = epoch_keys[i + 1]
                     batch_args = device_put_pytree(batch_args, d)
                     future = pool_by_device[d].submit(
-                        loss_fn,
+                        _timed_loss_fn,
                         params_by_device[d], lrs_by_device[d], model_by_device[d],
                         batches_by_device[batch_key], batch_args,
                     )
                     dispatched.append((batch_key, d, future))
                 dispatched = [(k, d, f.result()) for k, d, f in dispatched]
+                if epoch == rebalance_epoch:
+                    for k, d, (_r, dt) in dispatched:
+                        measured_cost[k] = dt
+                dispatched = [(k, d, r) for k, d, (r, _dt) in dispatched]
+
+                if os.environ.get("AMIGO_DEBUG_BADBATCH") == "1":
+                    for batch_key, d, (loss, _g, _a, aux) in dispatched:
+                        if not np.isfinite(loss) or abs(loss) > 1000:
+                            print(f"[badbatch] epoch {epoch} {batch_key} on {d}: loss={float(loss):.6g}", flush=True)
+                            for exp_key, (like, prior) in aux.items():
+                                print(f"[badbatch]   {exp_key}: likelihood={float(like):.6g} prior={float(prior):.6g}", flush=True)
+
+                if epoch == rebalance_epoch:
+                    new_map, new_load = assign_batches_to_devices(
+                        {k: [] for k in measured_cost}, self.devices,
+                        _cost_override=measured_cost,
+                    )
+                    moved = {k: (device_map[k], new_map[k]) for k in measured_cost if new_map[k] != device_map[k]}
+                    if moved:
+                        print(f"Rebalancing {len(moved)}/{len(measured_cost)} batches after epoch {epoch} "
+                              f"using measured time instead of the cost estimate:")
+                        for d in self.devices:
+                            keys_here = [k for k, dd in new_map.items() if dd == d]
+                            total_t = sum(measured_cost[k] for k in keys_here)
+                            print(f"  {d}: {keys_here} (measured {total_t:.2f}s)")
+                        for k, (_old, new_d) in moved.items():
+                            batches_by_device[k] = device_put_pytree(batches[k], new_d)
+                        device_map = new_map
+                    else:
+                        print("Rebalancing after epoch 1: measured split already matches the cost-estimate split.")
 
                 for batch_key, d, (loss, new_grads, _returned_args, aux) in dispatched:
                     grads += device_put_pytree(new_grads, self.devices[0])
