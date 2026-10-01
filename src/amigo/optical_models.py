@@ -291,17 +291,39 @@ def crop_windows(arr, corners, size):
 
 def eigen_support(coords, holes, hole_coords, f2f, size):
     """
-    Per-hole windows of the eigenbasis support, (n_holes, size, size) bool, and
-    the window corners. The support is each hole's (already oversized, `f2f`)
-    hexagon at its nominal position, soft edge included (> 0) -- the region the
-    eigenbasis is defined on. The oversized hexagons don't overlap, so a
-    pupil-wide mode cut into these windows loses nothing and counts nothing twice.
+    Per-hole windows of the nominal eigenbasis support, (n_holes, size, size)
+    bool, and the window corners: each hole's (already oversized, `f2f`) hexagon
+    at its nominal position, soft edge included (> 0).
+
+    This is only one possible support. A basis file carries its own (see
+    file_eigen_support), e.g. the fitted apertures grown by a smaller oversize.
     """
     corners = calc_hole_corners(coords, holes, size)
     small = crop_hole_coords(hole_coords, corners, size)
     pixel_scale = coords[0, 0, 1] - coords[0, 0, 0]
     hex_fn = lambda c: dlu.soft_reg_polygon(c, f2f / np.sqrt(3), 6, pixel_scale)
     return vmap(hex_fn)(small) > 0, corners
+
+
+def file_eigen_support(first_mode, corners, size):
+    """
+    The support a full-pupil eigenbasis file is defined on, read off the file
+    itself (finite pixels of its first mode) and cut into per-hole windows,
+    (n_holes, size, size) bool. The support need not sit at the nominal hole
+    positions, but it must fit inside the windows: every pixel of it has to land
+    in exactly one window, so a mode cut into them loses nothing and counts
+    nothing twice.
+    """
+    import numpy as onp
+
+    footprint = onp.isfinite(onp.asarray(first_mode))
+    support = onp.stack([footprint[i : i + size, j : j + size] for j, i in onp.asarray(corners)])
+    count = onp.zeros(footprint.shape, int)
+    for h, (j, i) in enumerate(onp.asarray(corners)):
+        count[i : i + size, j : j + size] += support[h]
+    if not (count == footprint).all():
+        raise ValueError("eigenbasis support doesn't fit inside the per-hole windows")
+    return support
 
 
 def crop_eigen_windows(full, corners, support):
@@ -323,7 +345,7 @@ def crop_eigen_windows(full, corners, support):
     return windows
 
 
-def save_eigen_windows(full_path, out_path, diameter=6.603464, npixels=1024, f2f=0.80, oversize=1.2, size=180):
+def save_eigen_windows(full_path, out_path, diameter=6.603464, npixels=1024, size=180):
     """
     One-off conversion of a full-pupil eigenbasis file into the per-hole
     windows file load_eigen_basis reads fast: (n_holes, n_modes, size, size),
@@ -332,13 +354,9 @@ def save_eigen_windows(full_path, out_path, diameter=6.603464, npixels=1024, f2f
     import numpy as onp
 
     coords = dlu.pixel_coords(npixels, diameter)
-    holes = get_initial_holes(diameter, npixels)
-    hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, holes)
-    support, corners = eigen_support(coords, holes, hole_coords, f2f * oversize, size)
+    corners = calc_hole_corners(coords, get_initial_holes(diameter, npixels), size)
     full = onp.load(full_path, mmap_mode="r")
-    support_full = onp.asarray(fill(support.astype(float), corners, npixels)) > 0
-    if not (onp.isfinite(full[0]) == support_full).all():
-        raise ValueError("eigenbasis support doesn't match the oversized hexagons")
+    support = file_eigen_support(full[0], corners, size)
     windows = crop_eigen_windows(full, corners, support)
     total = onp.array([(onp.nan_to_num(onp.asarray(full[k])) ** 2).sum() for k in range(full.shape[0])])
     if not onp.allclose((windows**2).sum((0, 2, 3)), total, rtol=1e-10, atol=0):
@@ -358,37 +376,28 @@ def load_eigen_basis(eigen_basis, coords, holes, hole_coords, f2f, size, n_eigen
 
     `eigen_basis` is a windows file from save_eigen_windows (fast), a
     full-pupil file (n_modes, npix, npix) with NaN outside the support, or an
-    array in either layout. `f2f` is the already-oversized flat-to-flat.
+    array in either layout.
+
+    The support is whatever the file was built on (see file_eigen_support), not
+    recomputed from `f2f`: it can be the oversized hexagons at the nominal hole
+    positions, or apertures at the fitted positions with a smaller oversize. It
+    is up to the basis to cover the model's aperture -- the OPD is zero wherever
+    the aperture transmits outside the support.
     """
     import numpy as onp
 
-    support, corners = eigen_support(coords, holes, hole_coords, f2f, size)
+    corners = calc_hole_corners(coords, holes, size)
     raw = onp.load(eigen_basis, mmap_mode="r") if isinstance(eigen_basis, str) else onp.asarray(eigen_basis)
 
-    # The basis must live on exactly this model's oversized hexagons (e.g. the
-    # eigenbasis_v1 file is built for oversize=1.2), otherwise cutting it to
-    # them would silently drop or pad part of every mode.
     if raw.ndim == 4:
-        footprint = (onp.asarray(raw[:, :3]) != 0).any(1)
-        windows = onp.asarray(raw[:, :n_eigen]) * onp.asarray(support)[:, None]
+        if raw.shape[0] != len(corners) or raw.shape[-1] != size:
+            raise ValueError("eigenbasis windows don't match this model's holes / window size")
+        support = (onp.asarray(raw[:, :3]) != 0).any(1)
+        windows = onp.asarray(raw[:, :n_eigen])
     else:
-        npix = raw.shape[-1]
-        footprint = onp.isfinite(raw[0])
-        support_full = onp.asarray(fill(support.astype(float), corners, npix)) > 0
+        support = file_eigen_support(raw[0], corners, size)
         windows = crop_eigen_windows(raw[:n_eigen], corners, support)
-        support = support_full  # compare footprint and support on the same (full-pupil) grid below
-    mismatch_frac = (footprint != onp.asarray(support)).mean()
-    # A handful of hexagon-edge pixels can disagree between two independent computations of the
-    # same soft-edged support (dlu.soft_reg_polygon isn't bit-reproducible across separate JIT
-    # calls right at its threshold), so tolerate a small mismatch instead of demanding bit-exact
-    # agreement -- but still catch a genuinely wrong basis (wrong oversize/f2f), which mismatches
-    # over most of the aperture, not just its edge.
-    if mismatch_frac > 0.01:
-        raise ValueError("eigenbasis support doesn't match this model's oversized hexagons (check oversize / f2f)")
-    elif mismatch_frac > 0:
-        print(f"load_eigen_basis: {mismatch_frac:.4%} of pixels disagree between the basis's own "
-              f"support and this model's geometric one (tolerated as edge-pixel noise)")
-    return np.asarray(windows * onp.sqrt(onp.asarray(support).sum())), corners
+    return np.asarray(windows * onp.sqrt(support.sum())), corners
 
 
 # Fill in the full array
