@@ -9,3 +9,4 @@ src/amigo.egg-info/
 dist/
 build/
 .conda/
+.vscode/
