@@ -371,7 +371,7 @@ class ModelFit(Exposure):
 
     def model_illuminance(self, psf, model):
         flux = self.ngroups * 10 ** model.fluxes[self.get_key("fluxes")]
-        psf = eqx.filter_jit(model.detector.apply)(psf)
+        psf = model.detector(psf, return_psf=True)
         return psf.multiply("data", flux)
 
     def calc_bias(self, illuminance, model):
