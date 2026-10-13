@@ -26,20 +26,21 @@ class Resample(DetectorLayer):
         return psf.set("data", interp(psf.data, coords, sample_coords, "cubic2"))
 
 
-class ApplyJitterJWST(ApplyJitter):
+class AsymmetricJitterJWST(ApplyJitter):
     """
     Child of `dLux.detector_layers.ApplyJitter with the JWST pixel scale
-    hardcoded so sigma can be expressed in units of arcseconds.
+    hardcoded so sigma can be expressed in units of arcseconds. sigma is one
+    width, or a pair (along x, along y) for an elliptical blur.
     """
 
     @property
     def kernel(self):
         # Converting jitter sigma into pixels, assuming an oversample of 3
         sigma_pixels = self.sigma / (0.065524085 / 3)  # arcsec / (arcsec/pixel)
-        
+
         kernel = dlu.gaussian(
             mean=np.array([0.0, 0.0]),
-            std=np.array([sigma_pixels, sigma_pixels]),
+            std=np.broadcast_to(sigma_pixels, (2,)),  # (x, y)
             npixels=self.kernel_size * self.oversample,
         )
         return dlu.downsample(kernel, self.oversample, mean=False)
@@ -58,7 +59,7 @@ class LinearDetector(LayeredDetector):
         
         super().__init__(
             [
-                ("jitter_model", ApplyJitterJWST(jitter, kernel_size, kernel_osamp)),
+                ("jitter_model", AsymmetricJitterJWST(jitter, kernel_size, kernel_osamp)),
                 ("resampler", Resample(rotation=rot_angle, anisotropy=anisotropy)),
             ]
         )
