@@ -975,7 +975,7 @@ class AMIOptics(dl.AngularOpticalSystem):
         psf = np.where(psf < 0, 0.0, psf)  # clipping
 
         # resetting amplitude while not affecting phase
-        amplitude = np.sqrt(psf)
+        amplitude = np.where(psf > 0, np.sqrt(np.where(psf > 0, psf, 1.0)), 0.0)  # sqrt'(0) = inf
         phase = np.angle(wf.phasor)
         wf = wf.set("phasor", amplitude * np.exp(1j * phase))
 
