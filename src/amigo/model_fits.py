@@ -727,14 +727,15 @@ class BinaryFit(PointFit):
         # and offsetting by JWST Parallactic Angle (ROLL_REF)
         phi = dlu.deg2rad((90 + pa) - self.parang)      
     
-        # separation vector d in radians
-        # I believe it's negative cos for x co-ordinate because
-        # of the YAxis Flip in the optical model. 
-        # TODO Check this
-        # d = separation * np.array([-np.cos(phi), np.sin(phi)])  # in radians
-        d = separation * np.array([np.cos(phi), np.sin(phi)])  # in radians
+        # separation vector d (from A to B) in the frame of `positions`. That frame's x is the
+        # detector column and its y is minus the row (the optics' InvertY), so x points to
+        # PA = parang - 90 and y to parang + 180: position angles run CLOCKWISE in it, hence
+        # the minus on y. Checked against the header WCS (PC matrix) and the fitted positions
+        # of 48 exposures (data centroid = +x column, -y row), 2026-10-13. The earlier
+        # (cos, sin) had the handedness wrong: it put B at 2 * parang - 180 - pa.
+        d = separation * np.array([np.cos(phi), -np.sin(phi)])  # arcsec, like positions
 
-        posA = mean_pos - d / 2  # brighter source
+        posA = mean_pos - d / 2  # brighter source (contrast is A's share of the flux)
         posB = mean_pos + d / 2  # dimmer source
 
         logfluxA = np.log10(contrast * total_flux)
