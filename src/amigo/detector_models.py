@@ -59,8 +59,8 @@ class LinearDetector(LayeredDetector):
         
         super().__init__(
             [
-                ("jitter_model", AsymmetricJitterJWST(jitter, kernel_size, kernel_osamp)),
                 ("resampler", Resample(rotation=rot_angle, anisotropy=anisotropy)),
+                ("convolution", AsymmetricJitterJWST(jitter, kernel_size, kernel_osamp)),
             ]
         )
 
