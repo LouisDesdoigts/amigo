@@ -8,7 +8,7 @@ from astropy.stats import sigma_clip
 
 # import pkg_resources as pkg
 from importlib import resources
-from .misc import tqdm
+from tqdm.auto import tqdm
 
 
 def delete_contents(path):
@@ -28,7 +28,7 @@ def process_calslope(
     output_dir,
     sigma=3.0,
     correct_ADC=True,
-    flat=False,
+    flat=False,  # includes NIS_LAMP, NIS_DARK
     clean_dir=True,
 ):
     if input_dir[-1] != "/":
@@ -68,8 +68,8 @@ def process_calslope(
             continue
 
         # Check if the file is a NIS_AMI file
-        if file[0].header["EXP_TYPE"] not in ["NIS_LAMP", "NIS_AMI"]:
-            print("Not a NIS_AMI or flat file, skipping...")
+        if file[0].header["EXP_TYPE"] not in ["NIS_LAMP", "NIS_AMI", "NIS_DARK"]:
+            print("Not a NIS_AMI or flat/dark file, skipping...")
             continue
 
         # Skip single group files
@@ -92,9 +92,11 @@ def process_calslope(
         file_root = "_".join(file_name.split("_")[:-2])
 
         # Check if the file is a NIS_AMI file
-        if flat:
+        if file[0].header["EXP_TYPE"] == "NIS_LAMP":
             file_name = f"flat_{filt}_{ngroups}_nis_calslope.fits"
-        else:
+        elif file[0].header["EXP_TYPE"] == "NIS_DARK":
+            file_name = f"dark_{filt}_{ngroups}_nis_calslope.fits"
+        if file[0].header["EXP_TYPE"] == "NIS_AMI":
             file_name = file_root + "_nis_calslope.fits"
         file_calslope = os.path.join(output_dir + file_name)
 
@@ -233,6 +235,24 @@ def apply_sigma_clip(data, sigma=5.0, axis=0):
     return data.at[np.where(data == -1.0)].set(np.nan)
 
 
+def eval_fourier_counts(data, theta, periods):
+    """
+    Taken from Dholakia et al. 2026
+    https://github.com/shashankdholakia/niriss-cal-inl
+    """
+    fs = np.zeros_like(data, dtype=float)
+    K = periods.size
+    
+    for k in range(K):
+        w = 2.0 * np.pi / periods[k]
+        s_coef = theta[2*k + 0]
+        c_coef = theta[2*k + 1]
+        arg = w * data
+        fs += s_coef * np.sin(arg) + c_coef * np.cos(arg)
+
+    return fs
+
+
 def clean_data(ramps, sigma=3.0, correct_ADC=True, flat=False):
     """
     Processes the data and saves the outputs to the file
@@ -241,11 +261,16 @@ def clean_data(ramps, sigma=3.0, correct_ADC=True, flat=False):
     like cosmic ray hits, etc. Then we take the slopes and sigma clip those to catch
     any outliers that might have been missed in the first pass. We then calculate the
     mean and standard error of the ramp and the slope.
+
+    ADC Correction is taken from the methods described in Dholakia et al. 2026.
+    https://github.com/shashankdholakia/niriss-cal-inl
     """
     # ADC correction
     if correct_ADC:
-        amp, period = 2, 1024
-        ramps = ramps - amp * np.sin(2 * np.pi * np.nanmean(ramps, axis=0) / period)
+        periods_grid = np.asarray([1024.0/3.0, 1024.0/2.0, 1024.0])
+        theta = np.load(resources.files(__package__) / "data" / "fourier_series_amplitudes.npy")
+        correction = 1.0 + eval_fourier_counts(ramps, theta, periods_grid)
+        ramps = ramps / correction
 
     if flat:
         slopes = np.diff(ramps, axis=1)
@@ -263,9 +288,6 @@ def clean_data(ramps, sigma=3.0, correct_ADC=True, flat=False):
     slopes = np.diff(ramps, axis=1)
 
     return ramps, slopes
-
-    # # Return the values
-    # return update_headers(file, ramps, slopes)
 
 
 def calc_mean_and_cov(data):  # , read_std):
