@@ -138,8 +138,8 @@ def calc_fourier_dict(coords, f2f, n_modes):
 def orthogonalise_fourier_basis(coords, f2f, n_modes, n_modes_keep):
     """
     SVD-orthogonalise the Fourier dictionary over the hexagonal aperture, for
-    one hole. Plain Zernikes/polike are only analytically orthogonal over a
-    circle or hexagon respectively; restricted to AMI's hexagonal holes, plain
+    one hole. Plain Zernikes are only analytically orthogonal over a
+    circle; restricted to AMI's hexagonal holes, plain
     Zernikes cross-talk (a "zeroed" high-order coefficient can still visibly
     show up as e.g. tip/tilt). This instead orthogonalises numerically via SVD,
     so it's exact for whatever aperture shape `dlu.soft_reg_polygon` actually
@@ -147,7 +147,7 @@ def orthogonalise_fourier_basis(coords, f2f, n_modes, n_modes_keep):
     aberrations (they're arbitrary combinations of Fourier modes instead).
 
     n_modes_keep must be static (fixed ahead of time -- e.g. to match the
-    current Zernike/polike aberration_orders' mode count for a fair
+    current Zernike aberration_orders' mode count for a fair
     comparison) rather than picked via a rank cutoff: the raw dictionary is
     close to full rank at practical mode counts (smooth singular-value decay,
     no natural truncation point), so truncating is a real approximation, not
@@ -163,14 +163,14 @@ def orthogonalise_fourier_basis(coords, f2f, n_modes, n_modes_keep):
 
     # U's columns are orthonormal as sum_pixels(U_i * U_j) = delta_ij over the
     # WHOLE npix*npix grid, so each mode's RMS within the aperture is
-    # ~1/sqrt(n_valid_pixels) -- ~0.007 here, vs dlu.zernike_basis/polike_basis's
+    # ~1/sqrt(n_valid_pixels) -- ~0.007 here, vs dlu.zernike_basis's
     # RMS~1-within-the-aperture convention. Left unscaled, that's a ~100x+
     # mismatch: the same aberration learning rate (tuned for Zernike-scale
     # coefficients) would move these modes ~100x too slowly, which would look
     # like "the basis doesn't converge" for a boring normalisation reason, not a
-    # real result about the basis. Rescale to match Zernike/polike's RMS~1
+    # real result about the basis. Rescale to match Zernike's RMS~1
     # convention instead (giving up exact sum-of-squares=1 orthonormality, which
-    # Zernike/polike don't have either -- they're only orthogonal, not
+    # Zernikes don't have either -- they're only orthogonal, not
     # orthonormal in this L2 sense, and not even exactly orthogonal here, which
     # is the whole point of this basis). n_valid uses the same >0.5 threshold as
     # a hard aperture cut, not the soft mask's fractional edge values.
@@ -182,22 +182,18 @@ def orthogonalise_fourier_basis(coords, f2f, n_modes, n_modes_keep):
 
 def calc_fourier_basis(coords, f2f, n_modes_keep, n_modes=13):
     """vmaps orthogonalise_fourier_basis over holes, matching calc_basis's
-    zernike/polike branches' contract: coords (n_holes, 2, npix, npix) ->
+    zernike branch's contract: coords (n_holes, 2, npix, npix) ->
     (n_holes, n_modes_keep, npix, npix)."""
     basis_fn = lambda c: orthogonalise_fourier_basis(c, f2f, n_modes, n_modes_keep)
     return vmap(basis_fn)(coords)
 
 
-def calc_basis(coords, f2f, radial_orders, polike=False, fourier=False, n_modes_keep=28, n_modes=13):
+def calc_basis(coords, f2f, radial_orders, fourier=False, n_modes_keep=28, n_modes=13):
     if fourier:
         return calc_fourier_basis(coords, f2f, n_modes_keep, n_modes)
 
     noll_inds = get_noll_indices(np.arange(radial_orders))
-
-    if polike:
-        basis_fn = lambda coords: dlu.polike_basis(6, noll_inds, coords, 2 * f2f / np.sqrt(3))
-    else:
-        basis_fn = lambda coords: dlu.zernike_basis(noll_inds, coords, 2 * f2f / np.sqrt(3))
+    basis_fn = lambda coords: dlu.zernike_basis(noll_inds, coords, 2 * f2f / np.sqrt(3))
     return vmap(basis_fn)(coords)
 
 
@@ -426,7 +422,6 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
         f2f,
         aberration_orders=None,
         amplitude_orders=None,
-        polike=False,
         fourier=False,
         n_modes_keep=28,
         n_modes=13,
@@ -434,14 +429,14 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
         eigen_basis=None,
         n_eigen=None,
     ):
-        if eigen_basis is not None and (fourier or polike):
-            raise ValueError("eigen_basis replaces the aberration basis, don't combine it with fourier/polike")
+        if eigen_basis is not None and fourier:
+            raise ValueError("eigen_basis replaces the aberration basis, don't combine it with fourier")
 
         # The fourier basis is built by SVD-orthogonalising a dictionary over
         # every pixel of each hole's window -- cheap at the small (post-crop)
         # resolution reduce_basis normally crops down to, but expensive (an SVD
         # of a full 1024x1024-per-hole dictionary) at the full pupil resolution
-        # zernike_basis/polike_basis are evaluated at. So unlike those, build it
+        # zernike_basis is evaluated at. So unlike those, build it
         # directly at small_npix: crop the (cheap, just 2 channels) coordinates
         # first, then run the SVD only on that small window -- never touching a
         # full-resolution dictionary at all. `corners` matches exactly what
@@ -465,7 +460,7 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
                 abb_basis = 1e-9 * calc_fourier_basis(small_hole_coords, f2f, n_modes_keep, n_modes)
                 corners = hole_corners
             else:
-                abb_basis = 1e-9 * calc_basis(hole_coords, f2f, aberration_orders, polike)
+                abb_basis = 1e-9 * calc_basis(hole_coords, f2f, aberration_orders)
                 abb_basis, corners = reduce_basis(abb_basis, coords, holes, size=small_npix)
             self.abb_basis = abb_basis
             self.abb_coeffs = np.zeros(self.abb_basis.shape[:-2])
@@ -479,7 +474,7 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
                 amp_basis = calc_fourier_basis(small_hole_coords, f2f, n_modes_keep, n_modes)
                 corners = hole_corners
             else:
-                amp_basis = calc_basis(hole_coords, f2f, amplitude_orders, polike)
+                amp_basis = calc_basis(hole_coords, f2f, amplitude_orders)
                 amp_basis, corners = reduce_basis(amp_basis, coords, holes, size=small_npix)
             self.amp_basis = amp_basis
             self.amp_coeffs = np.zeros(self.amp_basis.shape[:-2])
@@ -519,7 +514,6 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
         aberration_orders=None,
         amplitude_orders=None,
         oversize=1.1,
-        polike=False,
         fourier=False,
         n_modes_keep=28,
         n_modes=13,
@@ -549,7 +543,6 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
             f2f=f2f * oversize,  # Oversize the aberrations to avoid edge effects
             aberration_orders=aberration_orders,
             amplitude_orders=amplitude_orders,
-            polike=polike,
             fourier=fourier,
             n_modes_keep=n_modes_keep,
             n_modes=n_modes,
@@ -657,7 +650,6 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         aberration_orders=None,
         amplitude_orders=None,
         oversize=1.2,
-        polike=False,
         fourier=False,
         n_modes_keep=28,
         n_modes=13,
@@ -690,7 +682,6 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
             f2f=f2f * oversize,  # Oversize the aberrations to avoid edge effects
             aberration_orders=aberration_orders,
             amplitude_orders=amplitude_orders,
-            polike=polike,
             fourier=fourier,
             n_modes_keep=n_modes_keep,
             n_modes=n_modes,
@@ -843,7 +834,6 @@ class AMIOptics(dl.AngularOpticalSystem):
         f2f=0.80,
         oversize=1.2,
         defocus=0.01,
-        polike=False,
         fourier=False,
         n_modes_keep=28,
         n_modes=13,
@@ -866,7 +856,6 @@ class AMIOptics(dl.AngularOpticalSystem):
                     aberration_orders=radial_orders,
                     amplitude_orders=coherence_orders,
                     oversize=oversize,
-                    polike=polike,
                     fourier=fourier,
                     n_modes_keep=n_modes_keep,
                     n_modes=n_modes,
@@ -882,7 +871,6 @@ class AMIOptics(dl.AngularOpticalSystem):
                     aberration_orders=radial_orders,
                     amplitude_orders=coherence_orders,
                     oversize=oversize,
-                    polike=polike,
                     fourier=fourier,
                     n_modes_keep=n_modes_keep,
                     n_modes=n_modes,
