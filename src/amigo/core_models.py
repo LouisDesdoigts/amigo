@@ -85,6 +85,11 @@ class AmigoModel(BaseModeller):
 
         if state is not None:
             params["defocus"] = state["defocus"]
+            # one blur per filter: a state with only the single sigma (jitter) gives it to every filter
+            if "sigmas" in state:
+                params["sigmas"] = state["sigmas"]
+            elif jitter is not None:
+                params["sigmas"] = {key: np.asarray(jitter, float) for key in params["sigmas"]}
 
             abb = {}
             for key in params["aberrations"].keys():

@@ -120,6 +120,8 @@ class Exposure(zdx.Base):
         params["aberrations"] = (self.get_key("aberrations"), abb)
         params["spectra"] = (self.get_key("spectra"), np.array(0.0))
         params["defocus"] = (self.get_key("defocus"), np.array(0.01))
+        params["sigmas"] = (self.get_key("sigmas"), np.array(0.0214))  # detector blur, arcsec
+        params["rotations"] = (self.get_key("rotations"), np.array(0.0))  # degrees
 
         # Reflectivity
         if self.fit_reflectivity:
@@ -264,21 +266,13 @@ class ModelFit(Exposure):
         if param in ["amplitudes", "phases", "vis"]:
             return "_".join([self.star, self.filter])
 
-        # if param in ["aberrations", "reflectivity"]:
-        #     return "_".join([self.program, self.filter])
         if param == "aberrations":
             return "_".join([self.program, self.filter])
 
-        # if param in ["reflectivity", "beam_coeffs", "defocus"]:
-        #     return self.filter
-
-        if param in ["reflectivity", "defocus"]:
+        if param in ["reflectivity", "defocus", "sigmas"]:
             return self.filter
 
-        # if param == "fluxes":
-        #     return "_".join([self.star, self.filter])
-
-        if param == "biases":
+        if param in ["biases", "rotations"]:
             return self.program
 
         if param == "Teffs":
@@ -316,6 +310,8 @@ class ModelFit(Exposure):
             "separations",
             "position_angles",
             "defocus",
+            "rotations",
+            "sigmas",
         ]:
             return f"{param}.{self.get_key(param)}"
 
@@ -357,7 +353,13 @@ class ModelFit(Exposure):
         return wavels, weights / weights.sum()
 
     def model_wfs(self, model):
-        pos = dlu.arcsec2rad(model.positions[self.key])
+        # The detector's resampler turns the whole image about the array centre (model_illuminance),
+        # but the mask turns the pattern about the star, not the star: so turn the star back by the
+        # same angle first, which also keeps the rotation from pulling on the fitted position.
+        angle = dlu.deg2rad(model.rotations[self.get_key("rotations")])
+        x, y = model.positions[self.key]
+        c, s = np.cos(angle), np.sin(angle)
+        pos = dlu.arcsec2rad(np.array([c * x + s * y, -s * x + c * y]))
         wavels, weights = self.get_spectra(model)
 
         optics = self.update_optics(model)
@@ -371,7 +373,12 @@ class ModelFit(Exposure):
 
     def model_illuminance(self, psf, model):
         flux = self.ngroups * 10 ** model.fluxes[self.get_key("fluxes")]
-        psf = model.detector(psf, return_psf=True)
+        # This exposure's rotation, on top of the detector's (the NRM sits in the pupil wheel, which
+        # does not come back to exactly the same angle between visits), and its filter's blur
+        # (mostly charge diffusion, which depends on how deep the photons are absorbed)
+        detector = model.detector.add("layers.resampler.rotation", model.rotations[self.get_key("rotations")])
+        detector = detector.set("layers.convolution.sigma", model.sigmas[self.get_key("sigmas")])
+        psf = detector(psf, return_psf=True)
         return psf.multiply("data", flux)
 
     def calc_bias(self, illuminance, model):
