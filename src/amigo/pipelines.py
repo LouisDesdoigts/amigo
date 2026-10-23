@@ -288,12 +288,19 @@ def calc_mean_and_cov(data):  # , read_std):
 
 
 def nancov(X, eps=1e-6):
-    """Compute covariance while ignoring NaNs."""
+    """Estimate covariance between group means at one detector pixel.
+
+    X has shape (groups, integrations), or (group differences, integrations)
+    when processing slopes. Integrations are assumed independent, with
+    nested missing-sample masks.
+    """
     mask = np.isnan(X)
     valid_counts = np.sum(~mask, axis=1, keepdims=True)
     mean = np.nansum(X, axis=1, keepdims=True) / valid_counts
     X_centered = np.where(mask, 0, X - mean)
-    cov_matrix = (X_centered @ X_centered.T) / (valid_counts @ valid_counts.T - 1)
+    # Ramp rebuilding makes masks nested: denominator = max(n_i, n_j) * (min(n_i, n_j) - 1).
+    denominator = valid_counts @ valid_counts.T - np.maximum(valid_counts, valid_counts.T)
+    cov_matrix = (X_centered @ X_centered.T) / denominator
     return cov_matrix + eps * np.eye(cov_matrix.shape[0])
 
 
