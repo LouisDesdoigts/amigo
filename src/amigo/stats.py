@@ -33,8 +33,10 @@ def build_cov(var, read_std):
     slope_cov_mask = get_slope_cov_mask(len(var))
 
     # Create the read noise covariance matrix
-    # 2x here to account for the two reads that contribute to the slope
-    read_cov = 2 * read_std[None, None, ...] * slope_cov_mask[..., None, None]
+    # Adjacent slopes share one read with opposite signs, so their covariance
+    # is -sigma_read**2. The factor of two belongs only on the diagonal
+    # variance because each slope contains two independent reads.
+    read_cov = read_std[None, None, ...] ** 2 * slope_cov_mask[..., None, None]
 
     # Return the combined covariance matrix
     return slope_cov + read_cov
