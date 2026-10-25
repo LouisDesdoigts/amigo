@@ -164,7 +164,7 @@ class ModelFit(Exposure):
         fit_one_on_fs=False,
         fit_bias=False,
         validator=False,
-        use_cov=False,
+        use_cov=True,
         only_diag=False,
         **kwargs,
     ):
