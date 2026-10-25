@@ -46,7 +46,8 @@ def inject_vis(wfs, log_amps, phases, otf_coords):
 
     # Apply the visibility maps
     splodges = to_uv(wfs.psf) * np.exp(log_amps + 1j * phases)
-    return np.abs(from_uv(splodges)).sum(0)
+    # Recover intensity without folding negative predictions positive.
+    return np.real(from_uv(splodges)).sum(0)
 
 
 class BaseLogVisModel(zdx.Base):
@@ -85,7 +86,8 @@ class BaseLogVisModel(zdx.Base):
         to_uv = vmap(lambda x: np.fft.fftshift(np.fft.fft2(pad_fn(x))))
         from_uv = vmap(lambda x: crop_fn(np.fft.ifft2(np.fft.ifftshift(x))))
         vis_splodges = to_uv(wfs.psf) * cplx_vis
-        return np.abs(from_uv(vis_splodges)).sum(0)
+        # Recover intensity without folding negative predictions positive.
+        return np.real(from_uv(vis_splodges)).sum(0)
 
     def wfs_to_otf(self, wfs, oversample=2):
         # Get the bits for mapping to UV plane
