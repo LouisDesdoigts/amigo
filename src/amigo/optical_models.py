@@ -6,7 +6,7 @@ from jax import Array, vmap
 import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
-from .misc import calc_throughput, interp
+from .misc import calc_throughput, interp, spectral_weights
 from .intensity import Intensity
 from jax.lax import dynamic_update_slice, dynamic_slice
 from abcdLux import lct
@@ -641,6 +641,71 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
             return intensity
         psf = intensity.to_psf()
         return psf if return_psf else psf.data
+
+    def visibility_model(
+        self, filter_name, *, n_knots, spectral_slope=None, pad=2,
+        downsample=1, n_modes=None, retained_trace=0.99,
+        batch_size=8, checkpoint=True,
+    ):
+        """Build a LogVisModel from this optics' centred, normalized-spectrum PSF.
+
+        Uses the configured optical field, pixel scale and interpolation, with
+        uniform image-pixel weighting and no source flux or detector response.
+        ``n_knots`` is an odd UV grid size spanning twice the pupil diameter.
+        ``spectral_slope=None`` uses throughput alone; otherwise apply the same
+        linear spectral weighting as the forward fit.
+
+        ``pad`` sets the FFT size factor for generation and later injection.
+        ``downsample`` sums optical pixels for basis selection only. Choose
+        ``n_modes`` explicitly or retain ``retained_trace`` of the JTJ spectrum.
+        ``batch_size`` limits derivative columns per batch; ``checkpoint``
+        trades recomputation for memory. The result stores complex modes,
+        the full eigenvalue spectrum and sampling choices.
+        """
+        from .vis_models import LogVisModel
+        from .visibility_basis import visibility_jtj, select_visibility_modes
+
+        for name, value in (("n_knots", n_knots), ("pad", pad),
+                            ("downsample", downsample), ("batch_size", batch_size)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if n_knots < 3 or n_knots % 2 == 0:
+            raise ValueError("n_knots must be odd and at least three")
+        if (self.psf_npixels * self.oversample) % downsample:
+            raise ValueError("downsample must divide the optical intensity image size")
+        if spectral_slope is not None:
+            if np.ndim(spectral_slope) != 0 or not bool(np.isfinite(spectral_slope)):
+                raise ValueError("spectral_slope must be a finite scalar")
+
+        # Propagate the reference PSF using the forward model's spectral weights.
+        wavelengths, throughput = self.filters[filter_name]
+        weights = spectral_weights(throughput, spectral_slope)
+        if not bool(np.all(np.isfinite(weights))):
+            raise ValueError("spectral weights must have a finite, nonzero total")
+        intensity = self.propagate(
+            wavelengths, offset=np.zeros(2), weights=weights, return_intensity=True,
+        )
+
+        # Each independent complex knot has two real degrees of freedom.
+        coords = dlu.pixel_coords(n_knots, 2 * self.diameter)
+        identity = np.eye((n_knots**2 - 1) // 2, dtype=complex)
+        knot_modes = np.concatenate([identity, 1j * identity])
+
+        # Rank combinations of knots by their unweighted image response.
+        jtj = visibility_jtj(
+            intensity, knot_modes, coords, pad=pad, downsample=downsample,
+            batch_size=batch_size, checkpoint=checkpoint,
+        )
+        modes, eigenvalues = select_visibility_modes(
+            jtj, knot_modes, n_modes=n_modes, retained_trace=retained_trace,
+        )
+        return LogVisModel({
+            "otf_coords": coords,
+            "modes": {filter_name: modes},
+            "eigen_values": {filter_name: eigenvalues},
+            "fft_pad": pad,
+            "basis_downsample": downsample,
+        }, filter_name)
 
     def _propagate_pupil_sparse(self, wavelength, offset, to_focal):
         """

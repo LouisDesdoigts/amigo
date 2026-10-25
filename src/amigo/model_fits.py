@@ -8,7 +8,7 @@ from jax import lax, vmap
 
 # import pkg_resources as pkg
 from importlib import resources
-from .misc import find_position, gen_surface
+from .misc import find_position, gen_surface, spectral_weights
 from .ramp_models import Ramp
 from .optical_models import gen_powers
 from .stats import mv_zscore, loglike
@@ -318,11 +318,8 @@ class ModelFit(Exposure):
 
     def get_spectra(self, model):
         wavels, filt_weights = model.filters[self.filter]
-        xs = np.linspace(-1, 1, len(wavels), endpoint=True)
-        spectra_slopes = 1 + model.get(self.map_param("spectra")) * xs
-        weights = filt_weights * spectra_slopes
-        weights = np.where(weights < 0, 0.0, weights)
-        return wavels, weights / weights.sum()
+        slope = model.get(self.map_param("spectra"))
+        return wavels, spectral_weights(filt_weights, slope)
 
     def model_wfs(self, model, return_wf=True):
         """Return optical fields, or integrated Intensity images when requested.

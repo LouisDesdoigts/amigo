@@ -237,3 +237,13 @@ def gen_surface(coords, coeffs, pows):
     pow_base = np.multiply(*(coords[:, None, ...] ** pows[..., None, None]))
     surface = np.sum(coeffs[..., None, None] * pow_base[None, ...], axis=1)
     return surface.sum(0)
+
+
+def spectral_weights(throughput, slope=None):
+    """Normalize throughput, optionally applying a linear source spectrum."""
+    weights = throughput
+    if slope is not None:
+        x = np.linspace(-1, 1, len(weights), endpoint=True)
+        weights = weights * (1 + slope * x)
+        weights = np.where(weights < 0, 0.0, weights)
+    return weights / weights.sum()

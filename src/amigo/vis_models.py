@@ -30,25 +30,27 @@ def vis_to_im(log_visibility, shape):
     ]).reshape(shape)
 
 
-def inject_vis(intensity, log_visibility, otf_coords):
+def inject_vis(intensity, log_visibility, otf_coords, *, pad=2):
     """Apply complex log visibility to wavelength-weighted intensity.
 
     Interpolate in baseline coordinates, multiply each image's Fourier
     transform, then crop and sum the corrected images over wavelength.
     """
     log_visibility = vis_to_im(log_visibility, otf_coords.shape[1:])
-    uv_coords = intensity_fft_coords(intensity, pad=2)
+    uv_coords = intensity_fft_coords(intensity, pad=pad)
     sampled = vmap(lambda uv: interp(
         log_visibility, otf_coords, uv, method="linear", fill=0.0
     ))(uv_coords)
 
-    n = uv_coords.shape[-1] // 4
+    size = intensity.npixels
+    extra = (pad - 1) * size
+    before, after = extra // 2, extra - extra // 2
     to_uv = vmap(lambda image: np.fft.fftshift(
-        np.fft.fft2(np.pad(image, n, mode="constant"))
+        np.fft.fft2(np.pad(image, ((before, after), (before, after))))
     ))
     from_uv = vmap(lambda spectrum: np.fft.ifft2(
         np.fft.ifftshift(spectrum)
-    )[n:-n, n:-n])
+    )[before:before + size, before:before + size])
     spectrum = to_uv(intensity.data) * np.exp(sampled)
     # Recover intensity without folding negative predictions positive.
     return np.real(from_uv(spectrum)).sum(0)
@@ -61,6 +63,9 @@ class LogVisModel(zdx.Base):
     """
 
     modes: dict
+    eigenvalues: dict
+    fft_pad: int = eqx.field(static=True)
+    basis_downsample: int = eqx.field(static=True)
     otf_coords: np.ndarray
     n_basis: int = eqx.field(static=True)
     n_knots: int = eqx.field(static=True)
@@ -69,6 +74,15 @@ class LogVisModel(zdx.Base):
     def __init__(self, basis, filter_name=None, *, n_basis=None):
         if "modes" not in basis:
             raise ValueError("Expected complex 'modes' per filter; regenerate the old split basis")
+        self.fft_pad = basis.get("fft_pad", 2)
+        self.basis_downsample = basis.get("basis_downsample", 1)
+        for name in ("fft_pad", "basis_downsample"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        self.eigenvalues = {
+            name: np.asarray(values) for name, values in basis.get("eigen_values", {}).items()
+        }
         self.otf_coords = np.asarray(basis["otf_coords"], dtype=float)
         self.n_knots = int(self.otf_coords.shape[-1])
         self.active_filter = filter_name
@@ -94,7 +108,7 @@ class LogVisModel(zdx.Base):
 
     def model_vis(self, intensity, coefficients, filter):
         log_visibility = self.from_latent(coefficients, filter)
-        image = inject_vis(intensity, log_visibility, self.otf_coords)
+        image = inject_vis(intensity, log_visibility, self.otf_coords, pad=self.fft_pad)
         return dl.PSF(image, intensity.pixel_scale.mean(0))
 
     def intensity_to_otf(self, intensity, oversample=2):
