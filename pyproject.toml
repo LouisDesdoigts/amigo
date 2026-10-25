@@ -13,8 +13,9 @@ urls = {repository = "https://github.com/LouisDesdoigts/amigo"}
 dependencies = [
   "jax", 
   "jaxlib", 
-  "zodiax>=0.4.1",
-  "dLux",
+  "zodiax>=0.6.0",
+  "dLux>=0.15.1,<0.16",
+  "abcdLux>=0.0.2",
   "tqdm",
   "interpax",
   "IPython",

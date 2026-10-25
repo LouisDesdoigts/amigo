@@ -331,10 +331,6 @@ class ModelFit(Exposure):
         optics = self.update_optics(model)
         wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
 
-        # Convert Cartesian to Angular wf
-        if wfs.units == "Cartesian":
-            wfs = wfs.multiply("pixel_scale", 1 / optics.focal_length)
-            wfs = wfs.set(["plane", "units"], ["Focal", "Angular"])
         return wfs
 
     def model_psf(self, model):
@@ -343,7 +339,7 @@ class ModelFit(Exposure):
 
     def model_illuminance(self, psf, model):
         flux = self.ngroups * 10 ** model.fluxes[self.get_key("fluxes")]
-        psf = eqx.filter_jit(model.detector.apply)(psf)
+        psf = eqx.filter_jit(model.detector)(psf, return_psf=True)
         return psf.multiply("data", flux)
 
     def model_ramp(self, illuminance, model):
@@ -378,7 +374,7 @@ class ModelFit(Exposure):
             model = model.set("pixel_bias.bias", model.biases[self.get_key("biases")])
 
         # Apply the read effects
-        return eqx.filter_jit(model.read.apply)(ramp)
+        return eqx.filter_jit(model.read)(ramp, return_psf=True)
 
     def nuke_pixel_grads(self, model):
         FF = lax.stop_gradient(model.FF)

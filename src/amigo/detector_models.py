@@ -17,7 +17,7 @@ class Resample(dl.layers.detector_layers.DetectorLayer):
         self.rotation = np.array(rotation, float)
         self.anisotropy = np.array(anisotropy, float)
 
-    def apply(self, PSF):
+    def __call__(self, PSF):
         angle = dlu.deg2rad(self.rotation)
         coords = dlu.pixel_coords(PSF.data.shape[0], 2)
         rot_coords = dlu.rotate_coords(coords, angle)
@@ -56,7 +56,7 @@ class BaseJitter(dl.layers.detector_layers.DetectorLayer):
         self.kernel_size = int(kernel_size)
         self.kernel_oversample = kernel_oversample
 
-    def apply(self, psf):
+    def __call__(self, psf):
         """Convert the pixel scale to arcseconds and convolve"""
         kernel = self.generate_kernel(dlu.rad2arcsec(psf.pixel_scale))
         return psf.convolve(kernel)
@@ -110,12 +110,16 @@ class LayeredDetector(dl.detectors.LayeredDetector):
                 return getattr(layer, key)
         raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
 
-    def apply(self, psf):
+    def __call__(self, psf, return_psf=False):
         for layer in list(self.layers.values()):
             if layer is None:
                 continue
-            psf = layer.apply(psf)
-        return psf
+            psf = layer(psf)
+        return psf if return_psf else psf.data
+
+    def apply(self, psf):
+        """Compatibility alias for existing callers expecting a PSF/Ramp object."""
+        return self(psf, return_psf=True)
 
 
 class LinearDetector(LayeredDetector):

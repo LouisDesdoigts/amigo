@@ -24,7 +24,7 @@ class IPC(dl.detector_layers.DetectorLayer):
     def __init__(self, ipc):
         self.ipc = np.array(ipc, float)
 
-    def apply(self, ramp):
+    def __call__(self, ramp):
         conv_fn = lambda x: convolve(x, self.ipc, mode="same")
         return ramp.set("data", vmap(conv_fn)(ramp.data))
 
@@ -40,7 +40,7 @@ class Amplifier(dl.detector_layers.DetectorLayer):
             self.one_on_fs = None
         self.axis = int(axis)
 
-    def apply(self, ramp):
+    def __call__(self, ramp):
 
         if self.one_on_fs is None:
             return ramp
@@ -58,7 +58,7 @@ class DarkCurrent(dl.detector_layers.DetectorLayer):
     def __init__(self, dark_current):
         self.dark_current = np.array(dark_current, float)
 
-    def apply(self, ramp):
+    def __call__(self, ramp):
         dark_current = self.dark_current * (np.arange(len(ramp.data)) + 1)
         # dark_current = model_dark_current(self.dark_current, len(ramp.data))
         return ramp.add("data", dark_current[..., None, None])
@@ -78,7 +78,7 @@ class ADC(dl.detector_layers.DetectorLayer):
         self.ADC_coeffs = np.array(ADC_coeffs, float)
         self.period = int(period)
 
-    def apply(self, ramp):
+    def __call__(self, ramp):
         data = ramp.data
         apply_fn = vmap(lambda x: gen_fourier_signal(x, self.ADC_coeffs, self.period))
         correction = apply_fn(data.reshape(len(data), -1).T).T.reshape(data.shape)
@@ -110,7 +110,7 @@ class PixelNonLinearity(zdx.Base):
         self.gain = np.array(gain, float)
         self.non_linearity = np.zeros((poly_order - 1, 80, 80))
 
-    def apply(self, ramp):
+    def __call__(self, ramp):
         # Get the non-linear, per-pixel gain form voltage to counts
         # Assumes that bias has already been added back into the ramp
         # the ramp here is actually the _voltage_ in each pixel
