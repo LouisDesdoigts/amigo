@@ -125,4 +125,4 @@ def vis_jac_fn(model_params, args):
         intensity = optics.propagate(wavels, offset, weights, return_intensity=True)
     else:
         intensity = optics.propagate(wavels, weights=weights, return_intensity=True)
-    return vis_model.wfs_to_latent(intensity, filter)
+    return vis_model.intensity_to_latent(intensity, filter)

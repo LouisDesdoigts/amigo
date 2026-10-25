@@ -419,8 +419,7 @@ class SplineVisFit(PointFit):
         if vis_model is None:
             raise ValueError("vis_model must be provided for SplineVisFit")
         n = vis_model.n_basis
-        params["amplitudes"] = (self.get_key("amplitudes"), np.zeros(n))
-        params["phases"] = (self.get_key("phases"), np.zeros(n))
+        params["vis"] = (self.get_key("vis"), np.zeros(n))
         return params
 
     def get_key(self, param):
@@ -432,10 +431,9 @@ class SplineVisFit(PointFit):
 
         return super().get_key(param)
 
-    def model_vis(self, wfs, model):
-        amps = model.amplitudes[self.get_key("amplitudes")]
-        phases = model.phases[self.get_key("phases")]
-        return model.vis_model.model_vis(wfs, amps, phases, self.filter)
+    def model_vis(self, intensity, model):
+        coefficients = model.vis[self.get_key("vis")]
+        return model.vis_model.model_vis(intensity, coefficients, self.filter)
 
     def model_psf(self, model):
         intensity = self.model_wfs(model, return_wf=False)

@@ -78,7 +78,8 @@ class AmigoModel(BaseModeller):
             if isinstance(x, jax.Array):
                 if "i" in x.dtype.str:
                     return x
-                return np.array(x, dtype=float)
+                dtype = complex if np.iscomplexobj(x) else float
+                return np.array(x, dtype=dtype)
             return x
 
         self.params = jtu.map(lambda x: fn(x), params)
