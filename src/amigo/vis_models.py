@@ -180,11 +180,11 @@ def vis_jac_fn(model_params, args):
     if "flux" in model_params.keys():
         weights *= 10**model_params.flux
 
-    # Propagate the wavefront and project to the latent space
+    # Propagate intensity and project to the latent space
     if "positions" in model_params.keys():
         wavels, weights = optics.filters[filter]
         offset = dlu.arcsec2rad(model_params.positions)
-        wfs = optics.propagate(wavels, offset, weights, return_wf=True)
+        intensity = optics.propagate(wavels, offset, weights, return_intensity=True)
     else:
-        wfs = optics.propagate(wavels, weights=weights, return_wf=True)
-    return vis_model.wfs_to_latent(wfs, filter)
+        intensity = optics.propagate(wavels, weights=weights, return_intensity=True)
+    return vis_model.wfs_to_latent(intensity, filter)

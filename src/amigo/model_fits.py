@@ -324,18 +324,23 @@ class ModelFit(Exposure):
         weights = np.where(weights < 0, 0.0, weights)
         return wavels, weights / weights.sum()
 
-    def model_wfs(self, model):
+    def model_wfs(self, model, return_wf=True):
+        """Return optical fields, or integrated Intensity images when requested.
+
+        Wavefronts are returned before subpixel intensity averaging. The fitting
+        path requests intensity explicitly to avoid reconstructing optical phase.
+        """
         pos = dlu.arcsec2rad(model.positions[self.key])
         wavels, weights = self.get_spectra(model)
 
         optics = self.update_optics(model)
-        wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
-
-        return wfs
+        return eqx.filter_jit(optics.propagate)(
+            wavels, pos, weights, return_wf=return_wf, return_intensity=not return_wf
+        )
 
     def model_psf(self, model):
-        wfs = self.model_wfs(model)
-        return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale.mean(0))
+        intensity = self.model_wfs(model, return_wf=False)
+        return intensity.to_psf()
 
     def model_illuminance(self, psf, model):
         flux = self.ngroups * 10 ** model.fluxes[self.get_key("fluxes")]
@@ -433,9 +438,8 @@ class SplineVisFit(PointFit):
         return model.vis_model.model_vis(wfs, amps, phases, self.filter)
 
     def model_psf(self, model):
-        wfs = self.model_wfs(model)
-        psf = self.model_vis(wfs, model)
-        return psf
+        intensity = self.model_wfs(model, return_wf=False)
+        return self.model_vis(intensity, model)
 
 
 class FlatFit(ModelFit):
@@ -574,7 +578,7 @@ class BinaryFit(ModelFit):
     def get_spectra(self, model, exposure):
         return super().get_spectra(model, exposure)
 
-    def model_wfs(self, model, exposure):
+    def model_wfs(self, model, exposure, return_wf=True):
         wavels, weights = self.get_spectra(model, exposure)
 
         # Update the weights for each binary component
@@ -590,14 +594,15 @@ class BinaryFit(ModelFit):
         positions = np.array([position + sep_vec, position - sep_vec])
         # positions = vmap(dlu.arcsec2rad)(positions)
 
-        # Model the optics - unit weights to apply each flux
         optics = self.update_optics(model, exposure)
-        prop_fn = lambda pos: optics.propagate(wavels, pos, return_wf=True)
-        wfs = eqx.filter_jit(eqx.filter_vmap(prop_fn))(positions)
-
-        # Return the correctly weighted wfs - needs sqrt because its amplitude not psf
-        return wfs * np.sqrt(weights)[..., None, None]
+        prop_fn = lambda pos: optics.propagate(
+            wavels, pos, return_wf=return_wf, return_intensity=not return_wf
+        )
+        result = eqx.filter_jit(eqx.filter_vmap(prop_fn))(positions)
+        if return_wf:
+            return result.multiply("phasor", np.sqrt(weights)[..., None, None])
+        return result.multiply("data", weights[..., None, None])
 
     def model_psf(self, model, exposure):
-        wfs = self.model_wfs(model, exposure)
-        return dl.PSF(wfs.psf.sum((0, 1)), wfs.pixel_scale.mean((0, 1)))
+        intensity = self.model_wfs(model, exposure, return_wf=False)
+        return intensity.to_psf(axis=(0, 1))

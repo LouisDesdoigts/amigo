@@ -7,6 +7,7 @@ import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
 from .misc import calc_throughput, interp
+from .intensity import Intensity
 from jax.lax import dynamic_update_slice, dynamic_slice
 from abcdLux import lct
 
@@ -35,6 +36,20 @@ def distort_coords(coords, coeffs, pows):
     pow_base = np.multiply(*(coords[:, None, ...] ** pows[..., None, None]))
     distortion = np.sum(coeffs[..., None, None] * pow_base[None, ...], axis=1)
     return coords + distortion
+
+
+def resample_intensity(field, factor):
+    """Interpolate a complex field, then average its subpixel intensities.
+
+    The output keeps the input shape and pixel scale. Real and imaginary
+    components are interpolated separately; no optical phase is reconstructed.
+    """
+    npixels = field.shape[-1]
+    knots = dlu.pixel_coords(npixels, 2)
+    samples = dlu.pixel_coords(npixels * factor, 2)
+    real = interp(field.real, knots, samples, "cubic2")
+    imag = interp(field.imag, knots, samples, "cubic2")
+    return dlu.downsample(real**2 + imag**2, factor, mean=True)
 
 
 class DistortedCoords(zdx.Base):
@@ -461,6 +476,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
     defocus: np.ndarray
     corners: np.ndarray
     psf_upsample: int
+    psf_interpolation: str
 
     def __init__(
         self,
@@ -482,10 +498,14 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         defocus=0.01,
         polike=False,
         static=True,
+        psf_interpolation="phasor",
         sparse=False,
     ):
         self.sparse = bool(sparse)
         self.psf_upsample = psf_upsample
+        if psf_interpolation not in ("intensity", "phasor"):
+            raise ValueError("psf_interpolation must be 'intensity' or 'phasor'")
+        self.psf_interpolation = psf_interpolation
         self.defocus = np.array(defocus, float)
         self.filters = dict([(filt, calc_throughput(filt, nwavels=nwavels)) for filt in filters])
 
@@ -536,13 +556,13 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         offset : Array, radians = np.zeros(2)
             The (x, y) offset from the optical axis of the source.
         return_wf: bool = False
-            Should the Wavefront object be returned instead of the psf Array?
+            Return the propagated field before subpixel intensity averaging?
 
         Returns
         -------
         object : Array, Wavefront
             if `return_wf` is False, returns the psf Array.
-            if `return_wf` is True, returns the Wavefront object.
+            if `return_wf` is True, returns the field before intensity averaging.
         """
         # Get pixel scale in radians
         pixel_scale = dlu.arcsec2rad(self.psf_pixel_scale / self.oversample)
@@ -578,17 +598,49 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         # The propagator samples in metres; downstream detector/visibility
         # models use radians per pixel, as before the dLux upgrade.
         wf = wf.set("pixel_scale", pixel_scale)
-        # Preserve intensity interpolation during the dLux migration.
-        knots = dlu.pixel_coords(psf_npixels, diameter=2)
-        samples = dlu.pixel_coords(psf_npixels * self.psf_upsample, diameter=2)
-        psf = interp(wf.psf, knots, samples, "cubic2")
-        psf = dlu.downsample(psf, self.psf_upsample, mean=True)
-        psf = np.where(psf < 0, 0.0, psf)
         if return_wf:
-            # Keep the inactive square-root branch finite at zero intensity.
-            amplitude = np.where(psf > 0, np.sqrt(np.where(psf > 0, psf, 1.0)), 0.0)
-            return wf.set("phasor", amplitude * np.exp(1j * np.angle(wf.phasor)))
-        return psf
+            return wf
+        if self.psf_interpolation == "intensity":
+            # Retain the explicit legacy option for comparisons with saved fits.
+            npixels = wf.phasor.shape[-1]
+            knots = dlu.pixel_coords(npixels, 2)
+            samples = dlu.pixel_coords(npixels * self.psf_upsample, 2)
+            intensity = interp(wf.psf, knots, samples, "cubic2")
+            intensity = dlu.downsample(intensity, self.psf_upsample, mean=True)
+            return np.where(intensity < 0, 0.0, intensity)
+        return resample_intensity(wf.phasor, self.psf_upsample)
+
+    def propagate(self, wavelengths, offset=None, weights=None,
+                  return_wf=False, return_psf=False, return_intensity=False):
+        """Return a broadband array, PSF, spectral Intensity, or optical fields.
+
+        Set at most one return flag. Fields precede subpixel intensity averaging;
+        Intensity retains the wavelength axis for visibility modelling.
+        """
+        if sum((return_wf, return_psf, return_intensity)) > 1:
+            raise ValueError("Set at most one of return_wf, return_psf, return_intensity")
+        wavelengths = np.atleast_1d(wavelengths)
+        weights = np.ones_like(wavelengths) / wavelengths.size if weights is None else weights
+        weights = np.atleast_1d(weights)
+        offset = np.zeros(2) if offset is None else np.asarray(offset)
+        if weights.shape != wavelengths.shape:
+            raise ValueError("Weights must have the same shape as wavelengths")
+        if offset.shape != (2,):
+            raise ValueError("Offset must have shape (2,) in radians")
+
+        result = eqx.filter_vmap(
+            lambda wavelength: self.propagate_mono(wavelength, offset, return_wf=return_wf)
+        )(wavelengths)
+        if return_wf:
+            return result.multiply("phasor", np.sqrt(weights)[:, None, None])
+        intensity = Intensity(
+            result * weights[:, None, None], wavelengths,
+            dlu.arcsec2rad(self.psf_pixel_scale / self.oversample),
+        )
+        if return_intensity:
+            return intensity
+        psf = intensity.to_psf()
+        return psf if return_psf else psf.data
 
     def _propagate_pupil_sparse(self, wavelength, offset, to_focal):
         """
