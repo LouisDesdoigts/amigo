@@ -21,6 +21,7 @@ dependencies = [
   "IPython",
   "matplotlib",
   "optimistix",
+  "optax",
   "chainconsumer",
 ]
 

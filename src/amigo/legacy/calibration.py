@@ -105,8 +105,8 @@ import jax.tree as jtu
 import numpy as onp
 import time
 from datetime import timedelta
-from .core_models import ModelParams, ParamHistory
-from .misc import tqdm
+from ..core_models import ModelParams, ParamHistory
+from ..misc import tqdm
 from .fitting import (
     get_optimiser,
     get_val_grad_fn,

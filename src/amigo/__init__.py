@@ -12,8 +12,7 @@ from . import ramp_models
 from . import read_models
 from . import model_fits
 from . import files
-from . import fisher
-from . import fitting
+from . import optimisation
 from . import stats
 from . import pipelines
 from . import plotting
@@ -30,8 +29,7 @@ __all__ = [
     read_models,
     model_fits,
     files,
-    fisher,
-    fitting,
+    optimisation,
     stats,
     pipelines,
     plotting,

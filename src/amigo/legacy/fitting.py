@@ -1,13 +1,12 @@
-from .fisher import FIM
 import equinox as eqx
 import zodiax as zdx
 import time
 from datetime import timedelta
 import jax.tree as jtu
-from .core_models import ModelParams, ParamHistory
+from ..core_models import ModelParams, ParamHistory
 from .fisher import calc_fishers
-from .misc import tqdm
-from .stats import covariance_model
+from ..misc import tqdm
+from ..stats import covariance_model
 import optax
 import jax
 import jax.numpy as np
@@ -274,46 +273,28 @@ class Trainer(zdx.Base):
         verbose=True,
         save=True,
         args=None,
-        # reduce_ram=False,
-        batch_size=None,
+        nbatches=1,
+        checkpoint=False,
     ):
-        # RANDOM TODO: Models params should be renamed ParamsDict everywhere and always
-        # Use the dark current data to get a measure of the read noise
+        """Cache exact objective curvature using Zodiax column batching."""
+        loss_args = () if args is None else (args,)
 
-        if batch_size is None:
-            batch_size = 1
-            reduce_ram = False
-        else:
-            reduce_ram = True
-
-        def fisher_fn(model, exposure, param):
+        def fisher_fn(model, exposure, paths):
             slopes, cov = covariance_model(model, exposure)
             exposure = exposure.set(["slopes", "cov"], [slopes, cov])
+            values = tuple(np.asarray(model.get(path), dtype=float) for path in paths)
 
-            # NOTE: FIM doesnt return aux, so even though has_aux=True, it wont be returned
-            if args is not None:
-                fmat = FIM(
-                    model,
-                    param,
-                    self.loss_fn,
-                    exposure,
-                    args,
-                    reduce_ram=reduce_ram,
-                    has_aux=True,
-                    batch_size=batch_size,
-                )
-            else:
-                fmat = FIM(
-                    model,
-                    param,
-                    self.loss_fn,
-                    exposure,
-                    reduce_ram=reduce_ram,
-                    has_aux=True,
-                    batch_size=batch_size,
-                )
+            # Differentiate selected parameters in their existing physical coordinates.
+            def objective(values):
+                reference = model.set(paths, list(values))
+                loss, _ = self.loss_fn(reference, exposure, *loss_args)
+                return loss
 
-            return -fmat
+            curvature = zdx.hessian(
+                objective, values, nbatches=nbatches, checkpoint=checkpoint,
+            )
+            # Preserve Trainer's existing log-likelihood sign convention.
+            return -curvature.matrix
 
         # Calculate the fishers
         fishers = calc_fishers(
