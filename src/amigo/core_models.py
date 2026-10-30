@@ -185,31 +185,6 @@ class ModelParams(BaseModeller):
     def combine(self, params2):
         return ModelParams({**self.params, **params2.params})
 
-    def jacfwd(self, fn, n_batch=1):
-        return self.jac(fn, n_batch=n_batch, type="fwd")
-
-    def jacrev(self, fn, n_batch=1):
-        return self.jac(fn, n_batch=n_batch, type="rev")
-
-    def jac(self, fn, n_batch=1, type="fwd"):
-        # X, unravel_fn = ravel_pytree(self)
-        X, unravel_fn = self.ravel(return_unravel=True)
-        Xs = np.array_split(X, n_batch)
-        rebuild = lambda X_batch, index: X.at[index : index + len(X_batch)].set(X_batch)
-        lens = np.cumsum(np.array([len(x) for x in Xs]))[:-1]
-        starts = np.concatenate([np.array([0]), lens])
-
-        def batch_fn(x, index):
-            model_params = unravel_fn(rebuild(x, index))
-            return eqx.filter_jit(fn)(model_params)
-
-        if type == "fwd":
-            batched_jac_fn = eqx.filter_jacfwd(batch_fn)
-
-        elif type == "rev":
-            batched_jac_fn = eqx.filter_jacrev(batch_fn)
-
-        return np.concatenate([batched_jac_fn(x, index) for x, index in zip(Xs, starts)], axis=-1)
 
 
 import numpy as onp

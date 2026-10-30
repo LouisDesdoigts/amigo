@@ -1,7 +1,6 @@
 import jax.numpy as np
 import jax.scipy as jsp
 from jax import vmap, lax
-import equinox as eqx
 
 # import pkg_resources as pkg
 from importlib import resources
@@ -90,24 +89,6 @@ def covariance_model(model, exposure):
     return slopes, cov
 
 
-def batched_jacobian(X, fn, n_batch=1):
-    Xs = np.array_split(X, n_batch)
-    rebuild = lambda X_batch, index: X.at[index : index + len(X_batch)].set(X_batch)
-    lens = np.cumsum(np.array([len(x) for x in Xs]))[:-1]
-    starts = np.concatenate([np.array([0]), lens])
-
-    @eqx.filter_jacfwd
-    def batched_jac_fn(x, index):
-        return eqx.filter_jit(fn)(rebuild(x, index))
-
-    return np.concatenate([batched_jac_fn(x, index) for x, index in zip(Xs, starts)], axis=-1).T
-
-
-def gauss_hessian(J, cov):
-    # Gauss-Newton hessian approximation under the assumption of a multivariate normal
-    return J @ (np.linalg.inv(cov) @ J.T)
-
-
 def mv_zscore(x, mu, cov):
     """Multivariate z-score, return identical gradients to normal log-likelihood"""
     return -0.5 * np.dot(x - mu, np.dot(np.linalg.inv(cov), x - mu))
@@ -159,27 +140,6 @@ def orthogonalise(x, cov):
 
 def build_disco(latent_mat, kernel_mat, ortho_mat):
     return ortho_mat @ (kernel_mat @ latent_mat)
-
-
-def calc_projection(fmat=None, cov=None, unit=True):
-    if fmat is None and cov is None:
-        raise ValueError("Must provide either fmat or cov")
-    mat = fmat if fmat is not None else cov
-
-    # Dont normalise the values since we need them
-    eig_vals, eig_vecs = decompose(mat, normalise=False)
-
-    # Eigen values of cov and fisher matrices are inverse
-    if fmat is not None:
-        scale = eig_vals**0.5
-    else:
-        scale = eig_vals**-0.5
-
-    # Project to orthogonal or ortho-normal space
-    projection = eig_vecs
-    if unit:
-        projection *= scale[:, None]
-    return projection, eig_vecs, eig_vals
 
 
 def weighted_average(values, errors):
