@@ -123,32 +123,3 @@ class LogVisModel(zdx.Base):
     def intensity_to_latent(self, intensity, filter):
         vis = self.intensity_to_otf(intensity)
         return self.to_latent(np.log(vis.flatten()[:vis.size // 2]), filter)
-
-
-def vis_jac_fn(model_params, args):
-    optics, vis_model, filter = args
-
-    # Populate the optics with any bits we want
-    for key, value in model_params.items():
-        if hasattr(optics, key):
-            optics = optics.set(key, value)
-
-    # Get the spectrally weighted wavelengths
-    wavels, filt_weights = optics.filters[filter]
-    xs = np.linspace(-1, 1, len(wavels), endpoint=True)
-    spectra_slopes = 1 + model_params.spectra * xs
-    weights = filt_weights * spectra_slopes
-    weights /= weights.sum()
-
-    # Apply flux if in there
-    if "flux" in model_params.keys():
-        weights *= 10**model_params.flux
-
-    # Propagate intensity and project to the latent space
-    if "positions" in model_params.keys():
-        wavels, weights = optics.filters[filter]
-        offset = dlu.arcsec2rad(model_params.positions)
-        intensity = optics.propagate(wavels, offset, weights, return_intensity=True)
-    else:
-        intensity = optics.propagate(wavels, weights=weights, return_intensity=True)
-    return vis_model.intensity_to_latent(intensity, filter)

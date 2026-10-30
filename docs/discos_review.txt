@@ -1,0 +1,33 @@
+2026-10-30 — Simplified, separate null construction
+
+Fourier: vis_null(optics, vis_model, filt, null_params, spectra=...).
+Optical paths are relative to optics. "spectra" selects the explicit source
+slope. The visibility basis is fixed; source position is zero and flux unity.
+No exposure is involved. vis_jac exposes the response for inspection.
+
+Image: image_null(model, exp, null_params, weighting=None).
+Uses exp.to_vec(exp(model)): the existing fitted forward model and valid pixel
+support, including detector, ramp and read effects. The visibility path comes
+from exp.map_param("vis"). image_jacs exposes both responses for inspection.
+No separate normalization, artificial background pedestal or sampling code.
+This supersedes the earlier detector_plane/downsample/background API.
+
+Construct K once at an explicitly chosen common reference, then reuse it for
+all science/calibrator measurements, predictions and covariance in the same
+visibility basis. Filter-specific or otherwise different bases are not
+interchangeable. If responses at multiple references must be nulled, combine
+responses in common coefficient coordinates BEFORE constructing one kernel;
+separately computed kernels cannot be directly subtracted or pooled.
+
+weighting=None is uniform. Explicit weighting must match the forward model's
+selected observable rows, including group differences; no PSF is inferred.
+Only parameters present in the forward model can be nulled. In particular,
+there is no synthetic background parameter. Wholly zero selected responses
+are rejected. Existing forward-model gradient stops still apply.
+
+PENDING: numerical validation of derivatives through the full forward model,
+finite-difference checks for extended parameters, retained signal and leakage,
+and sensitivity to the chosen common optical/image/spectrum reference.
+This changes the image response from a separately normalized PSF to the fitted
+observable. It does not claim equivalence to archived extended24 results.
+The derivative adapter and both matrix kernel algorithms are unchanged.

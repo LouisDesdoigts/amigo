@@ -5,7 +5,7 @@ __version__ = importlib.metadata.version("amigo")
 from . import core_models
 from . import optical_models
 from . import vis_models
-from . import vis_null
+from . import discos
 from . import vis_analysis
 from . import detector_models
 from . import ramp_models
@@ -23,7 +23,7 @@ __all__ = [
     core_models,
     optical_models,
     vis_models,
-    vis_null,
+    discos,
     vis_analysis,
     detector_models,
     ramp_models,
