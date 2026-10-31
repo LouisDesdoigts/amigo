@@ -116,12 +116,15 @@ def opd_basis(component, shape):
     """Sample a linear evaluator in its native coefficient coordinates.
 
     ``shape`` is the native coefficient shape, before any input Map. Rows of the
-    result are unit-coefficient OPD stamps. This setup calculation uses Zodiax's
-    Jacobian implementation; it is not part of propagation or optimisation.
+    result are unit-coefficient OPD stamps. Evaluators are linear, so sample
+    coefficient unit vectors directly instead of differentiating image outputs.
+    This setup calculation is not part of propagation or optimisation.
     """
-    x = np.zeros(shape)
-    jac = zdx.jacobian(lambda x: component.fwd(x).reshape(-1), x)
-    return jac.matrix.T.reshape((x.size, *component.fwd(x).shape))
+    size = 1
+    for dimension in shape:
+        size *= dimension
+    coefficients = np.eye(size).reshape((size, *shape))
+    return vmap(component.fwd)(coefficients)
 
 
 def pupil_metric(weights):
