@@ -117,7 +117,7 @@ class LogVisModel(zdx.Base):
         npix = oversample * self.otf_coords.shape[-1]
         pscale = np.diff(self.otf_coords[0, 0]).mean() / oversample
         to_uv = vmap(lambda arr, wl: dlu.MFT(arr, wl, psf_pscale, npix, pscale))
-        downsample = vmap(lambda arr: dlu.downsample(arr, 2, mean=True))
+        downsample = vmap(lambda arr: dlu.downsample(arr, oversample, mean=True))
         return np.mean(downsample(to_uv(intensity.data, wls)), axis=0)
 
     def intensity_to_latent(self, intensity, filter):
