@@ -286,7 +286,9 @@ class Disco(zdx.Base):
             raise ValueError("uncertainty must be positive")
         if self.uv.shape != (2, self.operator.shape[1]):
             raise ValueError("uv must have shape (2, number of operator columns)")
-        if self.wavel.shape not in ((), (self.operator.shape[1],)) or not bool(np.all(self.wavel > 0)):
+        if self.wavel.shape not in ((), (self.operator.shape[1],)) or not bool(
+            np.all(self.wavel > 0)
+        ):
             raise ValueError("wavel must be positive and scalar or one value per column")
         if self.transform.shape != (2, 2) or not bool(np.all(np.isfinite(self.transform))):
             raise ValueError("transform must be a finite 2x2 matrix")
@@ -320,9 +322,14 @@ def to_virgil(disco):
     u, v = disco.sky_uv
 
     # Virgil's AMIGO record reader negates u/v; compensate at this boundary.
-    return OIData(dict(
-        u=-np.asarray(u), v=-np.asarray(v), wavelength_m=disco.wavel,
-        disco_coefficients=disco.data, disco_sigma=disco.uncertainty,
-        disco_logamp_model_operator=disco.operator.real,
-        disco_phase_model_operator=disco.operator.imag,
-    ))
+    return OIData(
+        dict(
+            u=-np.asarray(u),
+            v=-np.asarray(v),
+            wavelength_m=disco.wavel,
+            disco_coefficients=disco.data,
+            disco_sigma=disco.uncertainty,
+            disco_logamp_model_operator=disco.operator.real,
+            disco_phase_model_operator=disco.operator.imag,
+        )
+    )
