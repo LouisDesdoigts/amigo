@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from operator import index
 from jax import Array, vmap
 from jax.scipy.linalg import solve_triangular
+from .opd import opd_key
 
 # Residuals and objective functions
 
@@ -501,7 +502,18 @@ def _groups(model, parameters, exposures):
 
         for parameter in names:
             candidates = [parameter]
-            if exposures and "." not in parameter:
+            if (
+                exposures
+                and parameter.startswith("opds.")
+                and model.optics.pupil_mask.opd_sharing is not None
+            ):
+                alias = parameter.removeprefix("opds.")
+                groups_by_name = dict(model.optics.pupil_mask.opd_sharing)
+                if alias in groups_by_name:
+                    candidates = [
+                        parameter + "." + opd_key(exp, groups_by_name[alias]) for exp in exposures
+                    ]
+            elif exposures and "." not in parameter:
                 candidates = [exp.map_param(parameter) for exp in exposures]
 
             for path in candidates:

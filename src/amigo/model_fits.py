@@ -11,6 +11,7 @@ from importlib import resources
 from .misc import find_position, gen_surface, spectral_weights
 from .ramp_models import Ramp
 from .optical_models import gen_powers
+from .opd import apply_opds
 from .stats import mv_zscore, loglike
 
 
@@ -302,7 +303,12 @@ class ModelFit(Exposure):
         the derivative of the same forward model.
         """
         optics = model.optics
-        if "aberrations" in model.params.keys():
+        if optics.pupil_mask.opd_sharing is not None:
+            coefficients = {**optics.opd_coefficients, **model.params.get("opds", {})}
+            aperture = apply_opds(optics.pupil_mask, coefficients,
+                                 optics.pupil_mask.opd_sharing, self)
+            optics = optics.set(["pupil_mask", "opd_selected"], [aperture, True])
+        elif "aberrations" in model.params.keys():
             coefficients = model.aberrations[self.get_key("aberrations")]
             optics = optics.set("pupil_mask.aberrations", coefficients)
         if "reference_opd" in model.params:

@@ -5,6 +5,7 @@ import jax.numpy as np
 import jax.tree as jtu
 from jax.lax import dynamic_slice as lax_slice
 from jax.flatten_util import ravel_pytree
+from .opd import init_opds, OPDCalibration
 
 
 class BaseModeller(zdx.Base):
@@ -40,7 +41,10 @@ class AmigoModel(BaseModeller):
     ramp_model: None
     read: None
 
-    def __init__(self, exposures, optics, detector, ramp_model, read, state=None, vis_model=None):
+    def __init__(
+        self, exposures, optics, detector, ramp_model, read,
+        state=None, vis_model=None,
+    ):
         if state is not None:
             optics = optics.set("transmission", state["transmission"])
             detector = detector.set("jitter", state["jitter"])
@@ -51,6 +55,11 @@ class AmigoModel(BaseModeller):
                 ["dark_current", "non_linearity"],
                 [state["dark_current"], state["non_linearity"]],
             )
+
+        # OPD definitions and sharing belong to the optical model.
+        opd_sharing = optics.pupil_mask.opd_sharing
+        if opd_sharing is not None and state is not None and "aberrations" in state:
+            raise ValueError("Install calibrated OPD on the aperture before grouped fitting")
 
         params = {}
         for exp in exposures:
@@ -63,15 +72,22 @@ class AmigoModel(BaseModeller):
                     params[param] = {}
                 params[param][key] = value
 
+        if opd_sharing is not None:
+            params.pop("aberrations", None)
+            active = tuple((name, fields) for name, fields in opd_sharing
+                           if name in optics.opd_fits)
+            params["opds"] = init_opds(optics.pupil_mask, exposures, active,
+                                       optics.opd_coefficients)
+
         if state is not None:
             params["defocus"] = state["defocus"]
 
-            abb = {}
-            for key in params["aberrations"].keys():
-                prog, filt = key.split("_")
-                abb[key] = state["aberrations"][filt]
-
-            params["aberrations"] = abb  # jtu.map(lambda x: abb, params["aberrations"])
+            if "aberrations" in params:
+                abb = {}
+                for key in params["aberrations"]:
+                    prog, filt = key.split("_")
+                    abb[key] = state["aberrations"][filt]
+                params["aberrations"] = abb
 
         # This seems to fix some recompile issues
         def fn(x):
@@ -88,6 +104,11 @@ class AmigoModel(BaseModeller):
         self.ramp_model = jtu.map(lambda x: fn(x), ramp_model)
         self.read = jtu.map(lambda x: fn(x), read)
         self.vis_model = jtu.map(lambda x: fn(x), vis_model)
+
+    def opd_calibration(self):
+        """Export bases, mappings and latest fixed/fitted coefficient groups together."""
+        coefficients = {**self.optics.opd_coefficients, **self.params.get("opds", {})}
+        return OPDCalibration(self.optics.pupil_mask, coefficients, filters=tuple(self.optics.filters))
 
     def __getattr__(self, key):
         if key in self.params:

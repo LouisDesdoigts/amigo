@@ -1,5 +1,6 @@
 # import pkg_resources as pkg
 from importlib import resources
+from copy import copy
 import equinox as eqx
 import zodiax as zdx
 from jax import Array, vmap
@@ -8,7 +9,8 @@ import dLux as dl
 import dLux.utils as dlu
 from .misc import calc_throughput, interp, spectral_weights
 from .intensity import Intensity
-from .opd import sum_opds, zernike_opd
+from .opd import (sum_opds, zernike_opd, build_opds, standard_opds,
+                  DEFAULT_FILTER_MODES, OPDCalibration, apply_opds, coefficient_value)
 from jax.lax import dynamic_update_slice, dynamic_slice
 from abcdLux import lct
 
@@ -146,6 +148,7 @@ class BaseApertureMask(dl.OpticalLayer, zdx.Module):
     the complex field. The fitted coefficients and reference OPD stay unchanged.
     """
     opds: dict | None = eqx.field(default=None, kw_only=True)
+    opd_sharing: tuple | None = eqx.field(default=None, kw_only=True, static=True)
     amp_basis: Array | None = eqx.field(default=None, kw_only=True)
     amp_coeffs: Array | None = eqx.field(default=None, kw_only=True)
     corners: Array
@@ -229,6 +232,10 @@ class StaticApertureMask(BaseApertureMask, dl.TransmissiveLayer):
         """
         if aperture is not None and geometry:
             raise ValueError("Supply an aperture or geometry keywords, not both")
+        # Build recipes against the final static transmission, not an interim mask.
+        pending_opds = geometry.pop("opds", None) if aperture is None else None
+        pending_alias = geometry.pop("alias", None) if pending_opds is not None else None
+        sharing = geometry.pop("opd_sharing", None) if aperture is None else None
         if aperture is None:
             geometry.setdefault("oversize", 1.1)  # Preserve the static OPD basis extent.
             aperture = DynamicApertureMask(**geometry)
@@ -244,13 +251,21 @@ class StaticApertureMask(BaseApertureMask, dl.TransmissiveLayer):
         self.normalise = aperture.normalise
         self.size = aperture.size
         # Freeze geometry only; preserve the existing amplitude and OPD state.
-        for name in ("corners", "amp_basis", "amp_coeffs", "opds"):
+        for name in ("corners", "amp_basis", "amp_coeffs", "opds", "opd_sharing"):
             setattr(self, name, getattr(aperture, name))
         self.npixels = aperture.npixels
         self.diameter = aperture.diameter
         # Geometry is frozen; retain aliases to the live OPD/amplitude inputs.
         self.alias = {name: path for name, path in (aperture.alias or ())
                       if path.split(".")[0] in {"opds", "amp_basis", "amp_coeffs"}}
+        if pending_opds is not None:
+            if self.opds is not None:
+                raise ValueError("Supply opds or aberration_orders, not both")
+            self.opds = pending_opds
+            self.alias = {**dict(self.alias or ()), **dict(pending_alias or ())}
+            self.opds, self.alias, self.opd_sharing = build_opds(self, sharing)
+        elif sharing is not None:
+            self.opds, self.alias, self.opd_sharing = build_opds(self, sharing)
 
     def calc_transmission(self):
         mask = self.transmission
@@ -396,6 +411,7 @@ class DynamicApertureMask(BaseApertureMask, dl.OpticalLayer):
         oversample=3,
         opds=None,
         alias=None,
+        opd_sharing=None,
     ):
         if holes is None:
             holes = get_initial_holes(diameter, npixels)
@@ -441,6 +457,7 @@ class DynamicApertureMask(BaseApertureMask, dl.OpticalLayer):
         )
         if np.any(self.corners < 0) or np.any(self.corners + size > npixels):
             raise ValueError("Aperture windows extend outside the pupil")
+        self.opds, self.alias, self.opd_sharing = build_opds(self, opd_sharing)
 
     def to_static(self):
         """Freeze the current geometry, retaining the same windows and OPD state."""
@@ -511,6 +528,12 @@ class AMIOptics(dl.AngularOpticalSystem):
     numerically interchangeable with the former angular-grid FFT parameter.
     ``sparse=True`` propagates the aperture windows separately, then adds their
     complex fields. The dense path is the default, matching retrain.
+
+    By default construct Fourier (5 modes per axis), per-filter global Zernikes
+    (Noll 5--10), and residual PTT. Only PTT is fitted by default. fit_fourier,
+    fit_filter_opd and fit_ptt select fitted groups; false retains fixed values.
+    calibrated accepts model.opd_calibration(), preserving reference geometry,
+    basis arrays and coefficient mappings. No basis is rebuilt on this path.
     """
     filters: dict
     sparse: bool
@@ -518,12 +541,15 @@ class AMIOptics(dl.AngularOpticalSystem):
     corners: np.ndarray
     psf_upsample: int
     psf_interpolation: str
+    opd_coefficients: dict
+    opd_fits: tuple = eqx.field(static=True)
+    opd_selected: bool
 
     def __init__(
         self,
         nwavels=9,
         filters=["F380M", "F430M", "F480M"],
-        radial_orders=4,
+        radial_orders=None,
         aperture_distortion=None,
         coherence_orders=4,
         oversample=3,
@@ -541,7 +567,32 @@ class AMIOptics(dl.AngularOpticalSystem):
         static=True,
         psf_interpolation="phasor",
         sparse=False,
+        opds=None,
+        opd_sharing=None,
+        fourier_modes=None,
+        filter_modes=None,
+        fourier_coeffs=None,
+        filter_coeffs=None,
+        ptt_coeffs=None,
+        fit_fourier=False,
+        fit_filter_opd=False,
+        fit_ptt=True,
+        calibrated=None,
     ):
+        # A calibration supplies the exact reference geometry and basis mappings.
+        self.opd_coefficients = {}
+        self.opd_selected = False
+        if calibrated is not None:
+            if not isinstance(calibrated, OPDCalibration):
+                raise TypeError("calibrated must be an OPDCalibration from model.opd_calibration()")
+            if pupil_mask is not None or opds is not None or radial_orders is not None:
+                raise ValueError("A calibrated OPD already supplies its reference aperture")
+            if fourier_modes is not None or filter_modes is not None:
+                raise ValueError("A calibration retains its basis definitions; do not supply new modes")
+            pupil_mask = calibrated.aperture
+            wf_npixels, diameter = pupil_mask.npixels, pupil_mask.diameter
+            self.opd_coefficients = dict(calibrated.coefficients)
+
         self.sparse = bool(sparse)
         self.psf_upsample = psf_upsample
         if psf_interpolation not in ("intensity", "phasor"):
@@ -554,31 +605,51 @@ class AMIOptics(dl.AngularOpticalSystem):
 
         layers += [("InvertY", dl.Flip(0))]
 
+        if pupil_mask is not None and opds is not None:
+            raise ValueError("Supply a pupil_mask or opds, not both")
         if pupil_mask is None:
-            if not static:
-                pupil_mask = DynamicApertureMask(
-                    distortion=aperture_distortion,
-                    diameter=diameter,
-                    npixels=wf_npixels,
-                    f2f=f2f,
-                    normalise=normalise,
-                    aberration_orders=radial_orders,
-                    amplitude_orders=coherence_orders,
-                    oversize=oversize,
-                    polike=polike,
-                )
-            else:
-                pupil_mask = StaticApertureMask(
-                    distortion=aperture_distortion,
-                    diameter=diameter,
-                    npixels=wf_npixels,
-                    f2f=f2f,
-                    normalise=normalise,
-                    aberration_orders=radial_orders,
-                    amplitude_orders=coherence_orders,
-                    oversize=oversize,
-                    polike=polike,
-                )
+            mask_type = StaticApertureMask if static else DynamicApertureMask
+            pupil_mask = mask_type(
+                distortion=aperture_distortion, diameter=diameter,
+                npixels=wf_npixels, f2f=f2f, normalise=normalise,
+                aberration_orders=radial_orders if opds is None else None,
+                opds=opds, amplitude_orders=coherence_orders,
+                oversize=oversize, polike=polike,
+            )
+        if pupil_mask.opds is None:
+            pupil_mask = standard_opds(
+                pupil_mask, 5 if fourier_modes is None else fourier_modes,
+                DEFAULT_FILTER_MODES if filter_modes is None else filter_modes,
+            )
+        if opd_sharing is not None:
+            sharing = dict(pupil_mask.opd_sharing or ())
+            sharing.update({name: (fields,) if isinstance(fields, str) else tuple(fields)
+                            for name, fields in opd_sharing.items()})
+            pupil_mask = copy(pupil_mask)
+            object.__setattr__(pupil_mask, "opd_sharing", tuple(sharing.items()))
+
+        # False means fixed, not absent. Keep all coefficients on the optics;
+        # only selected groups become optimisation parameters in AmigoModel.
+        flags = {"fourier_coeffs": fit_fourier, "filter_coeffs": fit_filter_opd,
+                 "ptt_coeffs": fit_ptt}
+        groups = dict(pupil_mask.opd_sharing or ())
+        self.opd_fits = tuple(name for name in groups if flags.get(name, True))
+        supplied = {"fourier_coeffs": fourier_coeffs, "filter_coeffs": filter_coeffs,
+                    "ptt_coeffs": ptt_coeffs}
+        for name, value in supplied.items():
+            if value is not None:
+                if name not in groups:
+                    raise ValueError(f"No OPD component accepts {name!r}")
+                self.opd_coefficients[name] = value
+        # Validate supplied/calibrated values for the filters available here.
+        for name, fields in groups.items():
+            if all(field == "filter" for field in fields):
+                for filt in filters:
+                    coefficient_value(pupil_mask, name, self.opd_coefficients, {"filter": filt})
+        # Apply values that need no exposure selection immediately.
+        common = tuple((name, fields) for name, fields in groups.items()
+                       if not fields or not isinstance(self.opd_coefficients.get(name), dict))
+        pupil_mask = apply_opds(pupil_mask, self.opd_coefficients, common, {})
         layers += [("pupil_mask", pupil_mask)]
 
         super().__init__(
@@ -586,6 +657,18 @@ class AMIOptics(dl.AngularOpticalSystem):
             np.asarray(psf_pixel_scale), oversample,
         )
         self.corners = pupil_mask.corners
+
+    def for_filter(self, filter_name):
+        """Select fixed OPD values for standalone propagation/visibility generation.
+
+        Exposure-dependent values require ModelFit.update_optics instead. A
+        wavelength array alone cannot identify which filter calibration to use.
+        """
+        if filter_name not in self.filters:
+            raise ValueError(f"Unknown filter {filter_name!r}")
+        aperture = apply_opds(self.pupil_mask, self.opd_coefficients,
+                             self.pupil_mask.opd_sharing or (), {"filter": filter_name})
+        return self.set(["pupil_mask", "opd_selected"], [aperture, True])
 
     def propagate_mono(self, wavelength, offset=np.zeros(2), return_wf=False):
         """
@@ -606,6 +689,12 @@ class AMIOptics(dl.AngularOpticalSystem):
             if `return_wf` is False, returns the psf Array.
             if `return_wf` is True, returns the field before intensity averaging.
         """
+        if not self.opd_selected:
+            groups = dict(self.pupil_mask.opd_sharing or ())
+            if any(groups.get(name) and isinstance(value, dict) and value
+                   for name, value in self.opd_coefficients.items()):
+                raise ValueError("Select calibrated OPD with for_filter() or an exposure before propagation")
+
         # Get pixel scale in radians
         pixel_scale = dlu.arcsec2rad(self.psf_pixel_scale / self.oversample)
         psf_npixels = self.psf_npixels * self.oversample
@@ -724,7 +813,7 @@ class AMIOptics(dl.AngularOpticalSystem):
         weights = spectral_weights(throughput, spectral_slope)
         if not bool(np.all(np.isfinite(weights))):
             raise ValueError("spectral weights must have a finite, nonzero total")
-        intensity = self.propagate(
+        intensity = self.for_filter(filter_name).propagate(
             wavelengths, offset=np.zeros(2), weights=weights, return_intensity=True,
         )
 
