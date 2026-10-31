@@ -1,37 +1,31 @@
+"""AMIGO modelling tools; numerical and plotting modules load on demand."""
+
+import importlib
 import importlib.metadata
 
 __version__ = importlib.metadata.version("amigo")
 
-from . import core_models
-from . import optical_models
-from . import vis_models
-from . import discos
-from . import vis_analysis
-from . import detector_models
-from . import ramp_models
-from . import read_models
-from . import model_fits
-from . import files
-from . import optimisation
-from . import stats
-from . import pipelines
-from . import plotting
-from . import misc
-
 __all__ = [
-    core_models,
-    optical_models,
-    vis_models,
-    discos,
-    vis_analysis,
-    detector_models,
-    ramp_models,
-    read_models,
-    model_fits,
-    files,
-    optimisation,
-    stats,
-    pipelines,
-    plotting,
-    misc,
+    "core_models",
+    "optical_models",
+    "vis_models",
+    "discos",
+    "detector_models",
+    "ramp_models",
+    "read_models",
+    "model_fits",
+    "files",
+    "optimisation",
+    "stats",
+    "pipelines",
+    "plotting",
+    "misc",
 ]
+
+
+def __getattr__(name):
+    if name not in __all__:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = importlib.import_module(f".{name}", __name__)
+    globals()[name] = module
+    return module

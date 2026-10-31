@@ -46,7 +46,6 @@ class Exposure(zdx.Base):
     def __init__(self, file):
         self.slopes = np.array(file["SLOPE"].data, float)
         self.cov = np.array(file["SLOPE_COV"].data, float)
-        self.support = np.where(~np.array(file["BADPIX"].data, bool))
         self.ramp = np.asarray(file["RAMP"].data, float)
         self.ramp_cov = np.asarray(file["RAMP_COV"].data, float)
         self.slope_support = np.asarray(file["SLOPE_SUP"].data, int)
@@ -57,6 +56,7 @@ class Exposure(zdx.Base):
         static_badpix = np.load(resources.files(__package__) / "data" / "badpix.npy")
         pipeline_badpix = np.array(file["BADPIX"].data, bool)
         self.badpix = static_badpix | pipeline_badpix
+        self.support = np.where(~self.badpix)
 
         #
         self.nints = file[0].header["NINTS"]
@@ -413,9 +413,11 @@ class PointFit(ModelFit):
 
 class SplineVisFit(PointFit):
     joint_fit: bool = eqx.field(static=True)
+    vis_key: str | None = eqx.field(static=True, default=None)
 
-    def __init__(self, *args, joint_fit=False, **kwargs):
+    def __init__(self, *args, joint_fit=False, vis_key=None, **kwargs):
         self.joint_fit = bool(joint_fit)
+        self.vis_key = vis_key
         super().__init__(*args, **kwargs)
 
     def initialise_params(self, optics, vis_model=None, one_on_fs_order=1):
@@ -429,6 +431,9 @@ class SplineVisFit(PointFit):
         return params
 
     def get_key(self, param):
+
+        if param == "vis" and self.vis_key is not None:
+            return self.vis_key
 
         # Return the per exposure key if not joint fitting
         if not self.joint_fit:

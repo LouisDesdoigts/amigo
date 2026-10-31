@@ -9,6 +9,7 @@ covariance too: K @ prediction and K @ covariance @ K.T.
 import jax
 import jax.numpy as np
 import zodiax as zdx
+import dLux.utils as dlu
 from jax.scipy.linalg import cho_solve
 from .misc import spectral_weights
 
@@ -58,25 +59,31 @@ class _VisReference(zdx.Base):
 
     optics: zdx.Base
     spectra: np.ndarray
+    positions: np.ndarray
 
 
-def vis_jac(optics, vis_model, filt, params, *, spectra, nbatches=1, checkpoint=False):
+def vis_jac(optics, vis_model, filt, params, *, spectra, positions=None, nbatches=1, checkpoint=False):
     """Differentiate optical coefficients at one explicit, exposure-free reference.
 
-    params selects paths within optics, plus optional "spectra" for the source
-    spectral slope. Returned optical column labels are prefixed with "optics.".
-    Position is zero and source flux is unity. The supplied visibility basis is
+    params selects paths within optics, plus "spectra" and "positions" for the
+    source spectrum and two optical offsets in arcseconds. Offsets default to
+    zero; returned optical column labels are prefixed with "optics.".
+    Source flux is unity. The supplied visibility basis is
     held fixed; detector and fitted visibility parameters do not enter.
     """
     params = [params] if isinstance(params, str) else list(params)
-    paths = [p if p == "spectra" else "optics." + p for p in params]
-    reference = _VisReference(optics, np.asarray(spectra))
+    paths = [p if p in ("spectra", "positions") else "optics." + p for p in params]
+    positions = np.zeros(2) if positions is None else np.asarray(positions)
+    if positions.shape != (2,):
+        raise ValueError("positions must contain two optical offsets in arcseconds")
+    reference = _VisReference(optics, np.asarray(spectra), positions)
 
     def coefficients(ref):
         wavelengths, throughput = ref.optics.filters[filt]
         weights = spectral_weights(throughput, ref.spectra)
         intensity = ref.optics.propagate(
             wavelengths,
+            offset=dlu.arcsec2rad(ref.positions),
             weights=weights,
             return_intensity=True,
         )
@@ -85,7 +92,7 @@ def vis_jac(optics, vis_model, filt, params, *, spectra, nbatches=1, checkpoint=
     return model_jac(reference, paths, coefficients, nbatches=nbatches, checkpoint=checkpoint)
 
 
-def vis_null(optics, vis_model, filt, null_params, *, spectra, nbatches=1, checkpoint=False):
+def vis_null(optics, vis_model, filt, null_params, *, spectra, positions=None, nbatches=1, checkpoint=False, return_info=False):
     """Build one Fourier null to reuse for all data in this visibility basis.
 
     Choose a common optical state and spectrum explicitly. Do not regenerate K
@@ -97,11 +104,13 @@ def vis_null(optics, vis_model, filt, null_params, *, spectra, nbatches=1, check
         filt,
         null_params,
         spectra=spectra,
+        positions=positions,
         nbatches=nbatches,
         checkpoint=checkpoint,
     )
     _check_null_jac(jac)
-    return vis_kernel(jac.matrix)
+    kernel, info = null_space(jac.matrix)
+    return (kernel, info) if return_info else kernel
 
 
 # Image workflow
@@ -128,7 +137,7 @@ def image_jacs(model, exp, null_params, *, nbatches=1, checkpoint=False):
     return vis_jac, null_jac
 
 
-def image_null(model, exp, null_params, *, weighting=None, nbatches=1, checkpoint=False):
+def image_null(model, exp, null_params, *, weighting=None, nbatches=1, checkpoint=False, return_info=False):
     """Build one image-overlap null from a deliberately selected reference.
 
     Reuse K for all measurements in the same visibility basis. exp selects the
@@ -140,7 +149,21 @@ def image_null(model, exp, null_params, *, weighting=None, nbatches=1, checkpoin
         model, exp, null_params, nbatches=nbatches, checkpoint=checkpoint
     )
     _check_null_jac(null_jac)
-    return image_kernel(vis_jac.matrix, null_jac.matrix, weighting=weighting)
+    kernel = image_kernel(vis_jac.matrix, null_jac.matrix, weighting=weighting)
+    if not return_info:
+        return kernel
+    visibility, response = vis_jac.matrix, null_jac.matrix
+    if weighting is not None:
+        psf = np.asarray(weighting).reshape(-1)
+        keep = psf > 1e-14 * psf.max()
+        visibility = visibility[keep] / np.sqrt(psf[keep, None])
+        response = response[keep] / np.sqrt(psf[keep, None])
+    coefficients = np.linalg.lstsq(visibility, response, rcond=_RANK_RTOL)[0]
+    _, info = null_space(coefficients)
+    scale = info["column_scale"]
+    info["leakage"] = kernel @ (coefficients / np.where(scale > 0, scale, 1))
+    info["rank"] = visibility.shape[1] - kernel.shape[0]
+    return kernel, info
 
 
 # Null modes
@@ -158,6 +181,25 @@ def _response_matrix(response):
     return response
 
 
+def null_space(null_jac):
+    """Return a coefficient null and diagnostics with unit-independent rank.
+
+    Normalize each nonzero response column before determining its span. Scaling
+    a parameter changes neither that span nor the selected numerical rank.
+    Leakage is measured against those same normalized columns.
+    """
+    response = _response_matrix(null_jac)
+    peak = np.max(np.abs(response), axis=0, initial=0)
+    scaled = response / np.where(peak > 0, peak, 1)
+    norms = np.linalg.norm(scaled, axis=0)
+    scaled = scaled / np.where(norms > 0, norms, 1)
+    left, singular, _ = np.linalg.svd(scaled, full_matrices=True)
+    rank = int(np.sum(singular > _RANK_RTOL * singular.max(initial=0)))
+    kernel = left[:, rank:].T
+    return kernel, dict(response=response, singular_values=singular, rank=rank,
+                        column_scale=peak * norms, leakage=kernel @ scaled)
+
+
 def vis_kernel(null_jac):
     """Return K with K @ null_jac = 0.
 
@@ -165,14 +207,7 @@ def vis_kernel(null_jac):
     into the real visibility coefficients, with shape (n_visibility, n_null).
     Rows of K are an orthonormal basis of the retained coefficient space.
     """
-    response = _response_matrix(null_jac)
-    if response.shape[1] == 0:
-        return np.eye(response.shape[0], dtype=response.dtype)
-
-    # Remove the full independent span selected for nulling, including redundant columns.
-    left, singular, _ = np.linalg.svd(response, full_matrices=True)
-    rank = int(np.sum(singular > _RANK_RTOL * singular.max(initial=0)))
-    return left[:, rank:].T
+    return null_space(null_jac)[0]
 
 
 def image_kernel(
@@ -223,7 +258,12 @@ def image_kernel(
     model_whitener = singular[:, None] * right
     if null.shape[1] == 0:
         return model_whitener
-    q_null, null_singular, _ = np.linalg.svd(null, full_matrices=False)
+    # Column units must not decide which selected null directions survive.
+    peak = np.max(np.abs(null), axis=0, initial=0)
+    scaled = null / np.where(peak > 0, peak, 1)
+    norms = np.linalg.norm(scaled, axis=0)
+    scaled = scaled / np.where(norms > 0, norms, 1)
+    q_null, null_singular, _ = np.linalg.svd(scaled, full_matrices=False)
     null_rank = int(np.sum(null_singular > _RANK_RTOL * null_singular.max(initial=0)))
     q_null = q_null[:, :null_rank]
     if null_rank == 0:

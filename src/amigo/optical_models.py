@@ -812,7 +812,8 @@ class AMIOptics(dl.AngularOpticalSystem):
         weights = spectral_weights(throughput, spectral_slope)
         if not bool(np.all(np.isfinite(weights))):
             raise ValueError("spectral weights must have a finite, nonzero total")
-        intensity = self.for_filter(filter_name).propagate(
+        reference = self if self.opd_selected else self.for_filter(filter_name)
+        intensity = reference.propagate(
             wavelengths, offset=np.zeros(2), weights=weights, return_intensity=True,
         )
 
