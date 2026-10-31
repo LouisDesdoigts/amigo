@@ -320,3 +320,21 @@ kernel timing. Synthetic checks also cover uneven batches, checkpoint modes,
 cached diagonals, optional validation and explicit full scaling.
 Evidence: ../Analysis/Validation/diagonal_normalisation_20261031/results/results.json.
 Results archived with matching local/remote SHA256.
+
+
+2026-10-31 — Self-contained DISCO representation
+
+Disco(data, uncertainty, operator, uv, wavel, transform=None) owns the measured
+coefficients, independent errors, complex projection, optical UV coordinates
+in metres and wavelength in metres (scalar or per operator column).
+The 2x2 transform maps optical angular offsets to sky East/North; it includes
+rotation and parity. sky_uv = solve(transform.T, uv) preserves Fourier phase.
+Already sky-oriented coordinates use identity. Never apply the roll again.
+
+project(vis) applies Re(operator @ conj(vis)) to an explicitly prepared vector.
+model(source) evaluates source.model(u, v, wavel) on sky_uv and projects log(V).
+No spectral integration, reference state, file schema or metadata lives here.
+The optional amigo.discos.to_virgil(disco) constructs native OIData with the
+same geometry and log-complex prediction, without extra geometry arguments.
+Existing campaign bundle I/O and reference/chromatic forward modelling remain
+outside the core object. There are no Product/Response classes or aliases.

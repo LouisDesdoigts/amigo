@@ -6,6 +6,7 @@ columns are selected parameters. Apply every returned K to predictions and
 covariance too: K @ prediction and K @ covariance @ K.T.
 """
 
+import jax
 import jax.numpy as np
 import zodiax as zdx
 from .misc import spectral_weights
@@ -247,3 +248,81 @@ def calibrate(c, C, cal, Ccal):
     calibrated observations must be retained separately by the caller.
     """
     return c - cal, C + Ccal
+
+
+class Disco(zdx.Base):
+    """Independent real measurements and a complex projection operator.
+
+    Rows of ``operator`` correspond to measurements; columns correspond to
+    optical-frame ``uv`` samples (metres). ``wavel`` is in metres, either one
+    effective wavelength or one per column. No band integration is implied.
+
+    ``transform`` maps optical angular offsets to sky East/North offsets.
+    It includes rotation and parity. Sky baselines use its inverse transpose,
+    preserving the Fourier phase with convention exp(-2 pi i uv.theta / wavel).
+    If UV coordinates are already on sky, use the identity transform.
+    """
+
+    data: jax.Array
+    uncertainty: jax.Array
+    operator: jax.Array
+    uv: jax.Array
+    wavel: jax.Array
+    transform: jax.Array
+
+    def __init__(self, data, uncertainty, operator, uv, wavel, transform=None):
+        self.data = np.asarray(data, dtype=float)
+        self.uncertainty = np.asarray(uncertainty, dtype=float)
+        self.operator = np.asarray(operator, dtype=complex)
+        self.uv = np.asarray(uv, dtype=float)
+        self.wavel = np.asarray(wavel, dtype=float)
+        self.transform = np.eye(2) if transform is None else np.asarray(transform, dtype=float)
+
+        if self.data.ndim != 1 or self.uncertainty.shape != self.data.shape:
+            raise ValueError("data and uncertainty must be matching vectors")
+        if self.operator.ndim != 2 or self.operator.shape[0] != self.data.size:
+            raise ValueError("operator must have one row per measurement")
+        if not bool(np.all(self.uncertainty > 0)):
+            raise ValueError("uncertainty must be positive")
+        if self.uv.shape != (2, self.operator.shape[1]):
+            raise ValueError("uv must have shape (2, number of operator columns)")
+        if self.wavel.shape not in ((), (self.operator.shape[1],)) or not bool(np.all(self.wavel > 0)):
+            raise ValueError("wavel must be positive and scalar or one value per column")
+        if self.transform.shape != (2, 2) or not bool(np.all(np.isfinite(self.transform))):
+            raise ValueError("transform must be a finite 2x2 matrix")
+        if not bool(np.abs(np.linalg.det(self.transform)) > 0):
+            raise ValueError("transform must be nonsingular")
+
+    @property
+    def sky_uv(self):
+        """Baselines in sky East/North, with rotation and parity applied once."""
+        return np.linalg.solve(self.transform.T, self.uv)
+
+    def model(self, source):
+        """Project log visibility from a sky source with model(u, v, wavel)."""
+        u, v = self.sky_uv
+        return self.project(np.log(source.model(u, v, self.wavel)))
+
+    def project(self, vis):
+        """Return Re(operator @ conj(vis)), a real-linear projection."""
+        return np.real(self.operator @ np.conj(vis))
+
+
+def to_virgil(disco):
+    """Build a native Virgil observation of projected log-complex visibility.
+
+    Geometry comes from disco.sky_uv and disco.wavel. Virgil performs log(V)
+    before projection, matching disco.model(source). Other forward mappings
+    need their own observation adapter.
+    """
+    from virgil.oidata import OIData
+
+    u, v = disco.sky_uv
+
+    # Virgil's AMIGO record reader negates u/v; compensate at this boundary.
+    return OIData(dict(
+        u=-np.asarray(u), v=-np.asarray(v), wavelength_m=disco.wavel,
+        disco_coefficients=disco.data, disco_sigma=disco.uncertainty,
+        disco_logamp_model_operator=disco.operator.real,
+        disco_phase_model_operator=disco.operator.imag,
+    ))
