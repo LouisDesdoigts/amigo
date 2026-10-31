@@ -300,3 +300,23 @@ An initial checkpoint-order validation failure was preserved; no refinement
 ran before its driver-only correction. Final archives match remote SHA256.
 Evidence: ../Analysis/Validation/bfgs_refinement_20261031/remote_results/
 bfgs_refinement_20261031_02/results.json (relative to workspace amigo directory).
+
+
+2026-10-31 — Exact diagonal residual normalisation
+
+Trainer.normalise already defaults to diagonal scaling. That path now sums
+squared whitened-residual Jacobian columns directly, retaining only the diagonal
+as a labelled Zodiax TreeVector. It avoids full JTJ construction and reverse
+products. Full scaling and scalar-Hessian calculations remain unchanged.
+Cached diagonals and check=True use the same objective-curvature convention.
+No Zodiax changes or batching/checkpoint default changes.
+
+GPU validation reused the saved 761-parameter PDS70 reference, with 381 batches
+and checkpoint=True. Diagonal values agree with the archived full calculation
+to 6.33e-15 relative; coordinate scales agree to 3.06e-15. New normalisation
+wall time including synchronisation: 245.869s; earlier setup: 483.122s, including
+saving information. This is a single practical setup comparison, not isolated
+kernel timing. Synthetic checks also cover uneven batches, checkpoint modes,
+cached diagonals, optional validation and explicit full scaling.
+Evidence: ../Analysis/Validation/diagonal_normalisation_20261031/results/results.json.
+Results archived with matching local/remote SHA256.

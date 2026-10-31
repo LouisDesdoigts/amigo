@@ -11,6 +11,7 @@ import zodiax as zdx
 import optax
 import optimistix as optx
 from collections.abc import Mapping
+from operator import index
 from jax import Array, vmap
 from jax.scipy.linalg import solve_triangular
 
@@ -542,8 +543,33 @@ def _check_objectives(loss, residual_loss, z):
         raise ValueError("loss_fn and residual_fn must describe the same objective")
 
 
+def _residual_diagonal(residual, origin, nbatches, checkpoint):
+    """Sum squared Jacobian columns in batches, without building JTJ."""
+    if isinstance(nbatches, bool):
+        raise TypeError("nbatches must be a positive integer")
+    nbatches = index(nbatches)
+    if not 1 <= nbatches <= origin.size:
+        raise ValueError("nbatches must lie between one and the parameter count")
+
+    # Reuse one linearisation, with the same memory controls as full information.
+    function = jax.checkpoint(residual) if checkpoint else residual
+    _, derivative = jax.linearize(jax.jit(function), origin)
+    batch_size = (origin.size + nbatches - 1) // nbatches
+    columns = np.arange(nbatches * batch_size).reshape(nbatches, batch_size)
+
+    # Only column norms survive each batch; padded directions are zero.
+    def step(carry, columns):
+        directions = jax.nn.one_hot(columns, origin.size, dtype=origin.dtype)
+        responses = jax.vmap(derivative)(directions).reshape(batch_size, -1)
+        return carry, np.sum(responses ** 2, axis=1)
+
+    _, diagonal = jax.lax.scan(jax.jit(step), None, columns)
+    return diagonal.reshape(-1)[:origin.size]
+
+
 def _objective_information(
-    model, layout, loss, residual, source, nbatches, checkpoint, check_loss=False
+    model, layout, loss, residual, source, nbatches, checkpoint, check_loss=False,
+    diagonal=False
 ):
     """Calculate reference curvature in physical parameter coordinates."""
     origin = layout.flatten(model)
@@ -561,6 +587,11 @@ def _objective_information(
                 lambda x: 0.5 * np.sum(residual(inject(x)) ** 2),
                 origin,
             )
+        if diagonal:
+            values = _residual_diagonal(
+                lambda x: residual(inject(x)), origin, nbatches, checkpoint
+            )
+            return zdx.TreeVector(values, layout)
         result = zdx.gauss_newton(
             lambda x: residual(inject(x)), origin, nbatches=nbatches, checkpoint=checkpoint
         )
@@ -574,6 +605,16 @@ def _objective_information(
 
 def _normalisation_check(metric, transform, method, source):
     """Report objective information in optimizer coordinates, without repairing it."""
+    if isinstance(metric, zdx.TreeVector):
+        diagonal = transform ** 2 * metric.vector
+        return {
+            "objective_source": source,
+            "method": method,
+            "finite": np.all(np.isfinite(diagonal)),
+            "diagonal": diagonal,
+            "max_diagonal_error": np.max(np.abs(diagonal - 1)),
+            "max_identity_error": None,
+        }
     if transform.ndim == 1:
         matrix = transform[:, None] * metric.matrix * transform[None, :]
     else:
@@ -721,6 +762,8 @@ class Trainer(zdx.Base):
         parameters accepts names/paths or {group: names/paths} for coupled blocks.
         method is none/diagonal/full, globally or per group. source is residual
         JTJ or scalar Hessian; custom losses default to Hessian, others to JTJ.
+        Diagonal residual scaling calculates only squared Jacobian column norms;
+        full scaling and scalar Hessians retain the full matrix calculation.
 
         preconditioner={group: metric} supplies APPROXIMATE cached information in
         objective-curvature units. Missing groups are calculated from the objective.
@@ -757,6 +800,7 @@ class Trainer(zdx.Base):
                 objective_metric = _objective_information(
                     model, layout, loss, residual, source, nbatches, checkpoint,
                     check_loss=self.loss_fn is not None,
+                    diagonal=methods[name] == "diagonal",
                 )
 
             if methods[name] == "none":
