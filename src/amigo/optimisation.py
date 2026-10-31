@@ -472,14 +472,25 @@ def _descent(
         gradient_evaluations += 1
         history.append(
             _record(
-                coordinates, z, value, step=iteration + 1, rate=rate,
+                coordinates,
+                z,
+                value,
+                step=iteration + 1,
+                rate=rate,
                 search_evaluations=evaluations,
             )
         )
 
     accepted = status == "gradient_target" and bool(value <= initial)
     return FitResult(
-        coordinates(z), coordinates, z, value, score, accepted, status, tuple(history),
+        coordinates(z),
+        coordinates,
+        z,
+        value,
+        score,
+        accepted,
+        status,
+        tuple(history),
         criteria={"gradient_tolerance": tolerance, "max_steps": max_steps},
         evaluations={"loss_only": loss_evaluations, "value_and_grad": gradient_evaluations},
     )
@@ -573,15 +584,14 @@ def _residual_diagonal(residual, origin, nbatches, checkpoint):
     def step(carry, columns):
         directions = jax.nn.one_hot(columns, origin.size, dtype=origin.dtype)
         responses = jax.vmap(derivative)(directions).reshape(batch_size, -1)
-        return carry, np.sum(responses ** 2, axis=1)
+        return carry, np.sum(responses**2, axis=1)
 
     _, diagonal = jax.lax.scan(jax.jit(step), None, columns)
-    return diagonal.reshape(-1)[:origin.size]
+    return diagonal.reshape(-1)[: origin.size]
 
 
 def _objective_information(
-    model, layout, loss, residual, source, nbatches, checkpoint, check_loss=False,
-    diagonal=False
+    model, layout, loss, residual, source, nbatches, checkpoint, check_loss=False, diagonal=False
 ):
     """Calculate reference curvature in physical parameter coordinates."""
     origin = layout.flatten(model)
@@ -618,7 +628,7 @@ def _objective_information(
 def _normalisation_check(metric, transform, method, source):
     """Report objective information in optimizer coordinates, without repairing it."""
     if isinstance(metric, zdx.TreeVector):
-        diagonal = transform ** 2 * metric.vector
+        diagonal = transform**2 * metric.vector
         return {
             "objective_source": source,
             "method": method,
@@ -657,9 +667,9 @@ def _check_batches(exposures, batches):
         if not batch:
             raise ValueError("Exposure batches must not be empty")
         for exp in batch:
-            for index, reference in enumerate(remaining):
+            for i, reference in enumerate(remaining):
                 if eqx.tree_equal(exp, reference):
-                    remaining.pop(index)
+                    remaining.pop(i)
                     break
             else:
                 raise ValueError("Batches must partition the Trainer's stored exposures")
@@ -810,7 +820,13 @@ class Trainer(zdx.Base):
             # The comparison uses the chosen objective source, not the cache.
             if check or (methods[name] != "none" and name not in supplied):
                 objective_metric = _objective_information(
-                    model, layout, loss, residual, source, nbatches, checkpoint,
+                    model,
+                    layout,
+                    loss,
+                    residual,
+                    source,
+                    nbatches,
+                    checkpoint,
                     check_loss=self.loss_fn is not None,
                     diagonal=methods[name] == "diagonal",
                 )
@@ -833,14 +849,30 @@ class Trainer(zdx.Base):
 
         return self.set(
             [
-                "groups", "methods", "sources", "checks", "reference",
-                "reference_exposures", "reference_args", "reference_functions",
-                "information", "transforms", "layouts",
+                "groups",
+                "methods",
+                "sources",
+                "checks",
+                "reference",
+                "reference_exposures",
+                "reference_args",
+                "reference_functions",
+                "information",
+                "transforms",
+                "layouts",
             ],
             [
-                groups, methods, sources, checks, model,
-                self.exposures, self.args, (self.loss_fn, self.residual_fn),
-                metrics, transforms, layouts,
+                groups,
+                methods,
+                sources,
+                checks,
+                model,
+                self.exposures,
+                self.args,
+                (self.loss_fn, self.residual_fn),
+                metrics,
+                transforms,
+                layouts,
             ],
         )
 
@@ -980,9 +1012,7 @@ class Trainer(zdx.Base):
             options,
         )
 
-    def _refine(
-        self, model, parameters, method, max_steps, tolerance, solver, options
-    ):
+    def _refine(self, model, parameters, method, max_steps, tolerance, solver, options):
         if max_steps < 0:
             raise ValueError("Refinement budget must be nonnegative")
         if tolerance is not None and (not np.isfinite(tolerance) or tolerance < 0):
