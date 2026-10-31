@@ -338,3 +338,22 @@ The optional amigo.discos.to_virgil(disco) constructs native OIData with the
 same geometry and log-complex prediction, without extra geometry arguments.
 Existing campaign bundle I/O and reference/chromatic forward modelling remain
 outside the core object. There are no Product/Response classes or aliases.
+
+2026-10-31 — Full-rank calibration assembly
+
+combine(data, covariance) precision-combines independent estimates of the same
+coefficient vector, with full positive-definite covariance. It does not select
+calibrators, repair singular matrices, or account for shared-calibrator
+cross-observation correlations. The rank-deficient pipeline path is unchanged.
+The pipeline owns the sequence; AMIGO supplies the numerical tools:
+
+    science, science_cov = combine(science_data, science_covariances)
+    cal, cal_cov = combine(calibrator_data, calibrator_covariances)
+    c, C = calibrate(science, science_cov, cal, cal_cov)
+    data, covariance, rotation, variance = orthogonalise(K @ c, K @ C @ K.T)
+    operator = build_disco(basis, K, rotation)
+    disco = Disco(data, sqrt(variance), operator, uv, wavel, transform)
+
+K is chosen upstream and expressed in the common coefficient basis; basis maps
+complex log visibility into that basis. Orthogonalise only after the final null.
+Selection, persistence, reports and validation remain pipeline responsibilities.

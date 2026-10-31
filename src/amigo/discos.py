@@ -9,6 +9,7 @@ covariance too: K @ prediction and K @ covariance @ K.T.
 import jax
 import jax.numpy as np
 import zodiax as zdx
+from jax.scipy.linalg import cho_solve
 from .misc import spectral_weights
 
 # Shared parameter selection and differentiation
@@ -238,6 +239,33 @@ def image_kernel(
 
 
 # Coefficient calibration
+
+
+def combine(data, covariance):
+    """Combine independent estimates of the same coefficient vector.
+
+    data has shape (n_estimates, n_coefficients); covariance has shape
+    (n_estimates, n_coefficients, n_coefficients). All estimates must use the
+    same basis and have positive-definite covariance. Correlations between
+    estimates and rank-deficient uncertainties require separate treatment.
+    """
+    data = np.asarray(data, dtype=float)
+    covariance = np.asarray(covariance, dtype=float)
+    if data.ndim != 2 or not all(data.shape):
+        raise ValueError("data must be a nonempty array of coefficient vectors")
+    if covariance.shape != (*data.shape, data.shape[1]):
+        raise ValueError("Supply one full covariance matrix per estimate")
+
+    # Accumulate precision and precision-weighted coefficients.
+    identity = np.eye(data.shape[1], dtype=data.dtype)
+    factors = np.linalg.cholesky(covariance)
+    precision = jax.vmap(lambda lower: cho_solve((lower, True), identity))(factors)
+    total = precision.sum(axis=0)
+    weighted = np.einsum("nij,nj->i", precision, data)
+
+    # Recover the combined covariance and mean without dropping cross terms.
+    lower = np.linalg.cholesky(total)
+    return cho_solve((lower, True), weighted), cho_solve((lower, True), identity)
 
 
 def calibrate(c, C, cal, Ccal):
