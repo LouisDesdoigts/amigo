@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from amigo.detector_models import LinearDetector, Resample
-from amigo.optical_models import DynamicApertureMask, crop_windows, fill, window_centers
+from amigo.optical_models import DynamicApertureMask, PolynomialDistortion, crop_windows, fill, window_centers
 from amigo.ramp_models import Ramp
 from amigo.read_models import ReadModel
 
@@ -34,10 +34,8 @@ class TestDLuxCompatibility(TestCase):
         holes = jnp.array([[-1., -1.], [1., 1.]])
         # An empty aberration basis must still give valid window corners.
         mask = DynamicApertureMask(holes=holes, npixels=64, size=16,
-                                   distortion_orders=3, aberration_orders=None,
+                                   distortion=PolynomialDistortion(order=3, n_holes=2), aberration_orders=None,
                                    amplitude_orders=None)
-        # This class normally models seven NIRISS holes; restrict the synthetic case.
-        mask = mask.set('primary_beam', mask.primary_beam[:2])
         windows, opd, amp, _ = mask.sparse_fields(64, 6.603464)
         np.testing.assert_allclose(mask.calc_mask(64, 6.603464), fill(windows, mask.corners, 64))
         wf = dl.Wavefront(4.3e-6, 64, 6.603464)

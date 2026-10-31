@@ -52,27 +52,6 @@ def resample_intensity(field, factor):
     return dlu.downsample(real**2 + imag**2, factor, mean=True)
 
 
-class DistortedCoords(zdx.Base):
-    powers: np.ndarray
-    distortion: np.ndarray
-
-    def __init__(self, order=1, distortion=None):
-        self.powers = np.array(gen_powers(order + 1))[:, 1:]
-
-        if distortion is None:
-            distortion = np.zeros_like(self.powers)
-        if distortion is not None and distortion.shape != self.powers.shape:
-            raise ValueError("Distortion shape must match powers shape")
-        self.distortion = distortion
-
-    def calculate(self, npix, diameter):
-        coords = dlu.pixel_coords(npix, diameter)
-        return distort_coords(coords, self.distortion, self.powers)
-
-    def apply(self, coords):
-        return distort_coords(coords, self.distortion, self.powers)
-
-
 def get_noll_indices(radial_orders: Array | list = None, noll_indices: Array | list = None):
     if radial_orders is not None:
         radial_orders = np.array(radial_orders)
@@ -163,16 +142,16 @@ def fill(arr, indices, npix):
     return vmap(expand, (0, 0, None))(arr, indices, npix).sum(0)
 
 
-class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
+class BaseApertureMask(dl.OpticalLayer, zdx.Module):
     """AMIGO pupil coefficients retain their dLux 0.14 OPD sign convention.
 
     dLux 0.15 reverses the Fourier sign, so negate OPD when applying it to
     the complex field. The fitted coefficients stay unchanged.
     """
-    abb_basis: Array
-    abb_coeffs: Array
-    amp_basis: Array
-    amp_coeffs: Array
+    abb_basis: Array | None = eqx.field(default=None, kw_only=True)
+    abb_coeffs: Array | None = eqx.field(default=None, kw_only=True)
+    amp_basis: Array | None = eqx.field(default=None, kw_only=True)
+    amp_coeffs: Array | None = eqx.field(default=None, kw_only=True)
     corners: Array
 
     def __init__(
@@ -227,53 +206,46 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
         return np.zeros((npixels, npixels))
 
 
-class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.TransmissiveLayer):
+class StaticApertureMask(BaseApertureMask, dl.TransmissiveLayer):
     size: int = eqx.field(static=True)
+    npixels: int = eqx.field(static=True)
+    diameter: float = eqx.field(static=True)
 
-    def __init__(
-        self,
-        holes=None,
-        f2f=0.80,
-        diameter=6.603464,
-        npixels=1024,
-        transformation=None,
-        normalise=True,
-        aberration_orders=None,
-        amplitude_orders=None,
-        oversize=1.1,
-        polike=False,
-    ):
-        self.size = 180
-        # Get distorted coordinates
-        coords = dlu.pixel_coords(npixels, diameter)
-        if transformation is not None:
-            coords = transformation.apply(coords)
+    def __init__(self, *, transmission=None, aperture=None, **geometry):
+        """Freeze per-hole amplitude transmission on fixed pupil windows.
 
-        # Get the holes coordinates
-        if holes is None:
-            holes = get_initial_holes(diameter, npixels)
-        hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, holes)
+        Supply transmission as (holes, size, size) stamps or a full pupil image.
+        Geometry keywords are the same as DynamicApertureMask. Alternatively,
+        aperture supplies an existing dynamic mask at its current values.
+        """
+        if aperture is not None and geometry:
+            raise ValueError("Supply an aperture or geometry keywords, not both")
+        if aperture is None:
+            geometry.setdefault("oversize", 1.1)  # Preserve the static OPD basis extent.
+            aperture = DynamicApertureMask(**geometry)
+        if transmission is None:
+            transmission = aperture.sparse_apertures()
+        transmission = np.asarray(transmission, float)
+        stamps = (len(aperture.corners), aperture.size, aperture.size)
+        full = (aperture.npixels, aperture.npixels)
+        if transmission.shape not in (stamps, full):
+            raise ValueError("Transmission must match the hole windows or full pupil")
 
-        # Calculate the transmission mask
-        self.transmission = calc_mask(hole_coords, f2f, diameter / npixels)
-        self.normalise = bool(normalise)
-
-        super().__init__(
-            coords=coords,
-            holes=holes,
-            hole_coords=hole_coords,
-            f2f=f2f * oversize,  # Oversize the aberrations to avoid edge effects
-            aberration_orders=aberration_orders,
-            amplitude_orders=amplitude_orders,
-            polike=polike,
-        )
+        self.transmission = transmission
+        self.normalise = aperture.normalise
+        self.size = aperture.size
+        # Freeze geometry only; preserve the existing amplitude and OPD state.
+        for name in ("corners", "amp_basis", "amp_coeffs", "abb_basis",
+                     "abb_coeffs"):
+            setattr(self, name, getattr(aperture, name))
+        self.npixels = aperture.npixels
+        self.diameter = aperture.diameter
 
     def calc_transmission(self):
-        if self.amp_basis is not None:
-            return self.transmission * super().calc_transmission(
-                npixels=self.transmission.shape[0]
-            )
-        return self.transmission
+        mask = self.transmission
+        if mask.ndim == 3:
+            mask = fill(mask, self.corners, self.npixels)
+        return mask * super().calc_transmission(self.npixels)
 
     def sparse_fields(self, npixels, diameter):
         """
@@ -283,12 +255,16 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
         `calc_transmission` + `calc_aberrations`, without ever assembling a
         dense (npixels, npixels) array.
 
-        Note: `self.transmission` can be overwritten wholesale after
-        construction (e.g. `optics.set("transmission", ...)` when restoring a
-        fitted/measured aperture), so the per-hole windows are cropped fresh
-        from it on every call rather than cached at `__init__` time.
+        Transmission may be stored as hole stamps or a full pupil image.
+        Full images are cropped on evaluation so restoring a calibrated
+        transmission image also updates the sparse propagation path.
         """
-        mask = crop_windows(self.transmission, self.corners, self.size)
+        if npixels != self.npixels:
+            raise ValueError("Aperture sampling must match its fixed pupil windows")
+        mask = eqx.error_if(self.transmission, diameter != self.diameter,
+                            "Aperture diameter must match its fixed pupil windows")
+        if mask.ndim == 2:
+            mask = crop_windows(mask, self.corners, self.size)
 
         if self.abb_basis is not None:
             opd = eval_small_basis(self.abb_basis, self.abb_coeffs)
@@ -334,21 +310,66 @@ def window_centers(corners, size, npixels, diameter):
     return (corners + (size - npixels) / 2) * (diameter / npixels)
 
 
-def calc_mask_hole(coeffs, coords, hole_cen, powers, ap_fn, oversample=3):
-    coords += hole_cen[:, None, None]
-    coords = distort_coords(coords, coeffs, powers)
-    return dlu.downsample(ap_fn(coords), oversample, mean=True)
+class PolynomialDistortion(zdx.Base):
+    """Local per-hole coordinate distortions, without translation terms.
+
+    Coordinates and coefficients are dimensionless. Zero coefficients give
+    the identity map; order includes both linear and higher-order terms.
+    """
+    powers: Array
+    coefficients: Array
+
+    def __init__(self, order=3, n_holes=7, coefficients=None):
+        if not isinstance(order, int) or order < 1:
+            raise ValueError("Polynomial order must be a positive integer")
+        self.powers = np.array(gen_powers(order + 1))[:, 1:]
+        if coefficients is None:
+            coefficients = np.zeros((n_holes, *self.powers.shape))
+        coefficients = np.asarray(coefficients, float)
+        if coefficients.ndim != 3 or coefficients.shape[1:] != self.powers.shape:
+            raise ValueError("Coefficients must have shape (holes, 2, polynomial terms)")
+        self.coefficients = coefficients
+
+    def apply(self, coords):
+        """Transform coordinates with shape (holes, 2, rows, columns)."""
+        return vmap(distort_coords, (0, 0, None))(coords, self.coefficients, self.powers)
 
 
-class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLayer):
-    holes: Array
+class AffineDistortion(PolynomialDistortion):
+    """Four linear coefficients per hole; positions supply all translations."""
+
+    def __init__(self, n_holes=7, coefficients=None):
+        super().__init__(order=1, n_holes=n_holes, coefficients=coefficients)
+
+
+def relative_positions(n_holes):
+    """Orthonormal map from n-1 offsets to n zero-mean hole displacements.
+
+    Apply the same map to x and y. No rotation or scale direction is removed.
+    """
+    row = np.arange(n_holes)[:, None]
+    column = np.arange(1, n_holes)[None, :]
+    values = np.where(row < column, 1, np.where(row == column, -column, 0))
+    return values / np.sqrt(column * (column + 1))
+
+
+class DynamicApertureMask(BaseApertureMask, dl.OpticalLayer):
+    """Relative hole positions and local shapes inside fixed pupil windows.
+
+    holes is a Zodiax Map from 2*(n_holes-1) fitted coordinates to physical
+    positions in metres. The positions alias selects holes.x for fitting.
+    distortion applies a local coordinate map; AffineDistortion is the default.
+    Custom maps implement apply(coords) and should omit translations. f2f is
+    the nominal hole size; local affine terms already allow size changes.
+    """
+    holes: zdx.Map
+    distortion: zdx.Base
     f2f: Array
     normalise: bool
-    transformation: None
-    primary_beam: Array
-    primary_powers: Array
-    corners: Array
     size: int = eqx.field(static=True)
+    npixels: int = eqx.field(static=True)
+    diameter: float = eqx.field(static=True)
+    oversample: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -356,77 +377,94 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         f2f=0.80,
         diameter=6.603464,
         npixels=1024,
-        distortion_orders=None,
+        positions=None,
+        distortion=None,
         normalise=True,
         aberration_orders=None,
         amplitude_orders=None,
         oversize=1.2,
         polike=False,
         size=180,
+        oversample=3,
     ):
         if holes is None:
             holes = get_initial_holes(diameter, npixels)
-        self.holes = holes
+        hole_map = holes if isinstance(holes, zdx.Map) else None
+        holes = np.asarray(zdx.resolve(holes), float)
+        if holes.ndim != 2 or holes.shape[1] != 2 or len(holes) < 2:
+            raise ValueError("holes must resolve to shape (n_holes, 2), with at least two holes")
+        if oversample < 1:
+            raise ValueError("Oversampling must be positive")
+
+        # Bind the reduced coordinates and nominal positions in one leaf.
+        if hole_map is None:
+            basis = np.einsum("hi,ab->ibha", relative_positions(len(holes)), np.eye(2))
+            basis = basis.reshape(2 * (len(holes)-1), len(holes), 2)
+            hole_map = zdx.Map(x=np.zeros(basis.shape[0]), M=basis, b=holes)
+        if positions is not None:
+            positions = np.asarray(positions, float)
+            if positions.shape != hole_map.x.shape:
+                raise ValueError("positions must match the reduced coordinates in holes.x")
+            hole_map = hole_map.set("x", positions)
+        self.holes = hole_map
+        self.alias = {"positions": "holes.x"}
+        self.distortion = AffineDistortion(n_holes=len(holes)) if distortion is None else distortion
+
         self.f2f = np.asarray(f2f, float)
-        self.transformation = DistortedCoords(distortion_orders)
         self.normalise = bool(normalise)
+        self.size, self.npixels = size, npixels
+        self.diameter, self.oversample = float(diameter), oversample
 
-        #
-        # self.softness = np.array(softness, float)
-        self.primary_powers = np.array(gen_powers(4))[:, 1:]
-        self.primary_beam = np.zeros((7, *self.primary_powers.shape))
-        self.corners = calc_corners(holes, npixels, diameter, size)
-        self.size = size
-
-        # Get undistorted coordinates for aberrations
+        # Keep the existing amplitude/OPD bases and window construction.
         coords = dlu.pixel_coords(npixels, diameter)
         hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, holes)
-
         super().__init__(
             coords=coords,
             holes=holes,
             hole_coords=hole_coords,
-            f2f=f2f * oversize,  # Oversize the aberrations to avoid edge effects
+            f2f=f2f * oversize,
             aberration_orders=aberration_orders,
             amplitude_orders=amplitude_orders,
             polike=polike,
             small_npix=size,
         )
+        if np.any(self.corners < 0) or np.any(self.corners + size > npixels):
+            raise ValueError("Aperture windows extend outside the pupil")
 
-    def calc_mask(self, npixels, diameter, oversample=3):
-        return fill(self.sparse_apertures(npixels, diameter, oversample), self.corners, npixels)
+    def to_static(self):
+        """Freeze the current geometry, retaining the same windows and OPD state."""
+        return StaticApertureMask(aperture=self)
 
-    def sparse_apertures(self, npixels, diameter, oversample=3):
-        """
-        Per-hole hexagonal transmission masks, shape (n_holes, size, size),
-        each evaluated on its own local coordinate window -- the same
-        per-hole content computed by `calc_mask`, without pasting it into a
-        dense (npixels, npixels) array.
-        """
-        pixel_scale = diameter / npixels
+    def calc_mask(self, npixels=None, diameter=None, oversample=None):
+        stamps = self.sparse_apertures(npixels, diameter, oversample)
+        return fill(stamps, self.corners, self.npixels)
 
-        # Get the oversample sub-array coordinates
-        npix = npixels * oversample
-        full_size = self.size * oversample
-        full_pixel_scale = diameter / npix
-        small_diam = full_size * full_pixel_scale
-        coords = dlu.pixel_coords(full_size, small_diam)
+    def sparse_apertures(self, npixels=None, diameter=None, oversample=None):
+        """Evaluate hole shapes on fixed windows, shifting masks within them."""
+        if npixels is not None and npixels != self.npixels:
+            raise ValueError("Aperture sampling must match its fixed pupil windows")
+        oversample = self.oversample if oversample is None else oversample
+        pixel_scale = np.asarray(self.diameter / self.npixels)
+        if diameter is not None:
+            pixel_scale = eqx.error_if(pixel_scale, diameter != self.diameter,
+                                      "Aperture diameter must match its fixed pupil windows")
+        grid = dlu.pixel_coords(self.size * oversample, self.size * pixel_scale)
+        centers = window_centers(self.corners, self.size, self.npixels, self.diameter)
 
-        # Calculate the offset
-        distort_fn = lambda coords: distort_coords(coords, self.distortion, self.primary_powers)
-        holes = distort_fn(self.holes.T[..., None])[..., 0].T
-        offset = holes - (pixel_scale * (2 * self.corners + self.size) - diameter) / 2
+        # Centre coordinates on each fitted hole; shape maps cannot translate it.
+        local = grid[None] - (zdx.resolve(self.holes) - centers)[:, :, None, None]
+        local = local / self.f2f
+        warped = self.distortion.apply(local)
 
-        # Calculate the individual apertures
-        ap_fn = lambda coords: dlu.soft_reg_polygon(
-            coords, self.f2f / np.sqrt(3), 6, 0.25 * pixel_scale
-        )
-        mask_fn = lambda coeffs, cen: calc_mask_hole(
-            coeffs, coords, cen, self.primary_powers, ap_fn, oversample
-        )
-        return vmap(mask_fn)(self.primary_beam, offset)
+        # Integrate the softened hexagon over each pupil pixel.
+        def render(coords):
+            mask = dlu.soft_reg_polygon(coords, 1 / np.sqrt(3), 6,
+                                        0.25 * pixel_scale / self.f2f)
+            return dlu.downsample(mask, oversample, mean=True)
 
-    def sparse_fields(self, npixels, diameter, oversample=3):
+        return vmap(render)(warped)
+
+    def sparse_fields(self, npixels, diameter, oversample=None):
         """
         Per-hole mask, OPD (metres), and amplitude-perturbation arrays -- each
         shape (n_holes, size, size) -- plus the physical (x, y) centre of
@@ -457,13 +495,8 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
             return wavefront.normalise()
         return wavefront
 
-    def __getattr__(self, key):
-        if hasattr(self.transformation, key):
-            return getattr(self.transformation, key)
-        raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
 
-
-class AMIOptics(dl.optical_systems.AngularOpticalSystem):
+class AMIOptics(dl.AngularOpticalSystem):
     """NIRISS optics using the retrain branch's ABCD dense/sparse propagators.
 
     ``defocus`` is the physical axial displacement in micrometres; it is not
@@ -483,7 +516,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         nwavels=9,
         filters=["F380M", "F430M", "F480M"],
         radial_orders=4,
-        distortion_orders=3,
+        aperture_distortion=None,
         coherence_orders=4,
         oversample=3,
         psf_upsample=3,
@@ -516,7 +549,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
         if pupil_mask is None:
             if not static:
                 pupil_mask = DynamicApertureMask(
-                    distortion_orders=distortion_orders,
+                    distortion=aperture_distortion,
                     diameter=diameter,
                     npixels=wf_npixels,
                     f2f=f2f,
@@ -528,6 +561,7 @@ class AMIOptics(dl.optical_systems.AngularOpticalSystem):
                 )
             else:
                 pupil_mask = StaticApertureMask(
+                    distortion=aperture_distortion,
                     diameter=diameter,
                     npixels=wf_npixels,
                     f2f=f2f,
