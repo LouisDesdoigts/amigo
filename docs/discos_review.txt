@@ -202,3 +202,101 @@ Validation: tiny synthetic correlated-data and custom-objective checks cover
 solvers, scaling, cache mismatch reporting, changed-state guards, batching,
 Optax histories and step-limit handling. Real AMIGO data fitting remains pending.
 Future: investigate bidirectional Armijo step-size adaptation, separately.
+
+
+2026-10-30 — Two-way Armijo search
+
+GD reuses the last accepted step. If its initial trial fails, shrink to the
+first Armijo-valid step; otherwise grow while Armijo holds and loss improves.
+Rejected/nonfinite expansion keeps the best accepted trial. A search with no
+accepted trial leaves the model unchanged. One budget covers all trials.
+API: growth=2, max_search_steps=30 replaces max_backtracks. growth=1 disables
+expansion but still reuses steps; it is not the old reset-every-iteration policy.
+Histories record accepted rate and search_evaluations. FitResult.evaluations
+counts loss_only and value_and_grad calls, including failed searches; Trainer.gd
+also counts its endpoint auxiliary evaluation. No objective or scaling change.
+
+Controlled JAX float64 comparisons against committed a263313 used identical
+starts, identity coordinates, initial step 1, gradient threshold 1e-5 and budget
+5000. All cases converged. Total loss evaluations (including value-and-gradient
+calls, excluding the Trainer endpoint auxiliary call common to both):
+                                  old      two-way
+Unit quadratic                      3            4
+Quadratic curvature 100            249           99
+Quadratic curvature 0.01          1653           29
+Mixed quadratic curvature 1/100   4403         1893
+Quartic plus quadratic             14           20
+Expansion can cost more when resetting to one already works well. These are
+synthetic evaluation counts, not measured AMIGO fitting speedups. Full Trainer
+and correlated-residual checks pass; real-data performance remains pending.
+
+
+ERS real-data Armijo comparison, completed
+HD116084 F380M, jw01386012001_03102_00001_nis, full covariance.
+Current AMIGO with calibrated pupil held fixed; free position, flux, spectral
+slope, physical defocus and rotation. Both use the exact same starting model
+and once-computed residual information: full position block, diagonal others.
+Current physical-defocus default used instead of interpreting old calibration
+units as ABCD displacement. Shared setup 122.691s; shared compile 16.116s.
+Gradient threshold 1e-3; initial step 1; cap 300. Both converge after 18 updates.
+Initial MSE 1453.24267297; both end at 647.47282519 and gradient 0.000730437.
+Baseline: 18 loss-only + 19 value/gradient calls; warm solve 12.114s.
+Two-way: 36 loss-only + 19 value/gradient calls; warm solve 15.170s.
+Both retain rate 1 throughout. Expansion adds one unsuccessful extra trial per
+update, with no convergence gain. This is a single paired runtime measurement,
+not a claim about all ERS fits or full wavefront/visibility optimization.
+Three pre-solve setup failures preserved: GPU reservation OOM; optional JAX
+constant handling compatibility error; full-model callable serialization.
+Successful attempt uses checkpointed normalization, 65% GPU reservation,
+numerical-state export and exact warmed gradient wrapper reuse for timing.
+Inputs and final result archives verified by local/remote SHA256.
+Detailed evidence: ../Analysis/Validation/armijo_ers_20261030/remote_results/
+ers_armijo_20261030_04/comparison.json (relative to workspace amigo directory).
+
+
+PDS70 real-data Armijo comparison, completed
+F380M; newly fit HD123991 calibrator with the existing 17-mode OPD corrections,
+position, flux, spectrum, physical defocus and rotation. Calibrator MSE
+51.74905 -> 2.80443; normalized gradient 7.55e-8. Convergence gates passed.
+Recovered pupil and defocus frozen for a new AMIOptics.visibility_model basis:
+51 UV knots, pad=2, image downsample=3, throughput-only spectral weighting,
+99% unweighted-JTJ trace, 757 retained real coefficients on complex modes.
+Science uses the existing full primary-beam+5% background-star mask and full
+covariance. Free position/flux/spectrum/vis: 761 total parameters. One fixed
+shared diagonal residual-JTJ normalization; identical zero-vis starting model.
+Normalization currently materializes full JTJ even for diagonal scaling; this
+setup took 483.122s, separate from both search times. Compilation: 19.589s.
+Baseline: 104 updates,104 loss-only+105 value/gradient calls,63.981s,
+loss1.7497056127,gradient0.0009998585.
+Two-way:60 updates,138 loss-only+61 value/gradient calls,52.768s,
+loss1.7496218864,gradient0.0008923066.
+Both pass the same 1e-3 gradient threshold. Two-way is17.5% faster in this
+single paired run, despite more loss-only trials; total objective calls fall
+209->199. It uses larger accepted steps, reducing expensive gradients.
+Results are optimizer comparisons, not full posterior/scientific acceptance.
+An initial driver tree-update error was preserved; it occurred before fitting.
+Calibrator, basis, normalization and both endpoints archived with matching
+local/remote SHA256 under Analysis/Validation/armijo_pds70_20261031.
+
+
+2026-10-31 — BFGS refinement of the saved GD endpoints
+
+All four GPU refinements reused the original fixed normalization; saved
+transforms and starting losses were checked before each solve. No calibrator
+fit or visibility basis was regenerated. Gradient target 1e-6, native rtol/atol
+1e-10, maximum 300 solver steps. All four passed the gradient target.
+                         total/accepted steps   final loss       seconds
+ERS baseline                      59/9          647.472824643     40.962
+ERS two-way                       17/9          647.472824643     30.348
+PDS70 baseline                   101/54           1.749427483     58.777
+PDS70 two-way                     90/61           1.749427483     56.219
+Steps are Optimistix counts, including line-search trials in the total.
+Times include compilation per API call, unlike the warm GD comparisons.
+ERS loss reductions are approximately 5.49e-7; PDS70 reductions are 2.78e-4
+and 1.94e-4 respectively. Both GD methods refine to the same final loss to
+numerical precision. Final normalized gradients range from 3.07e-10 to
+1.28e-8. These timings do not establish a speed advantage between endpoints.
+An initial checkpoint-order validation failure was preserved; no refinement
+ran before its driver-only correction. Final archives match remote SHA256.
+Evidence: ../Analysis/Validation/bfgs_refinement_20261031/remote_results/
+bfgs_refinement_20261031_02/results.json (relative to workspace amigo directory).

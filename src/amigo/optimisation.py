@@ -317,6 +317,8 @@ class FitResult(zdx.Base):
     gradient is the maximum absolute gradient in normalized coordinates.
     A capped/failed solve still returns its endpoint for inspection or continuation.
     criteria records requested thresholds; message preserves the solver's reason.
+    GD evaluations counts loss-only calls separately from value-and-gradient calls;
+    the latter also evaluate the loss. Other solvers leave evaluations unset.
     """
 
     model: zdx.Base
@@ -329,6 +331,7 @@ class FitResult(zdx.Base):
     history: tuple
     aux: object = None
     opt_state: object = None
+    evaluations: dict | None = eqx.field(default=None, kw_only=True)
     criteria: dict | None = None
     message: str = eqx.field(static=True, default="")
 
@@ -348,23 +351,41 @@ class FitResult(zdx.Base):
         return np.asarray([row["loss"] for row in self.history])
 
 
-def _backtrack(objective, z, value, gradient, step_size, contraction, decrease, max_steps):
-    """Find an Armijo step, or return the unchanged point on failure."""
-    direction = -gradient
-    slope = np.vdot(gradient, direction)
+def _line_search(
+    objective, z, value, gradient, step_size, growth, contraction, decrease, max_steps
+):
+    """Shrink to an Armijo step, or grow a valid step while the loss improves.
+
+    Trials share one evaluation budget. Keep the best valid point if expansion
+    fails; if no trial passes, return the original point unchanged.
+    """
+    slope = -np.vdot(gradient, gradient)
     rate = step_size
+    best, best_rate, best_value = z, step_size, value
+    accepted = False
+    shrinking = False
 
-    for backtrack in range(max_steps):
-        candidate = z + rate * direction
+    for evaluation in range(1, max_steps + 1):
+        candidate = z - rate * gradient
         trial = objective(candidate)
-        bound = value + decrease * rate * slope
+        valid = np.isfinite(trial) and trial <= value + decrease * rate * slope
 
-        if np.isfinite(trial) and trial <= bound:
-            return candidate, rate, backtrack, True
+        if valid and (not accepted or trial < best_value):
+            best, best_rate, best_value = candidate, rate, trial
+            accepted = True
+            if shrinking or growth == 1:
+                break
+            rate *= growth
+        elif accepted:
+            break
+        else:
+            shrinking = True
+            rate *= contraction
 
-        rate *= contraction
+        if not np.isfinite(rate) or rate <= 0:
+            break
 
-    return z, rate, max_steps, False
+    return best, best_rate, evaluation, accepted
 
 
 def armijo(residuals, coordinates, **kwargs):
@@ -381,17 +402,24 @@ def _descent(
     max_steps=100,
     tolerance=1e-3,
     step_size=1.0,
+    growth=2.0,
     contraction=0.5,
     sufficient_decrease=1e-4,
-    max_backtracks=30,
+    max_search_steps=30,
 ):
-    """Standard Armijo descent of a scalar objective in fixed coordinates."""
-    if max_steps < 0 or max_backtracks < 1:
-        raise ValueError("Invalid iteration or backtracking budget")
+    """Two-way Armijo descent, reusing the previous accepted step size.
+
+    growth=1 disables expansion but still reuses the previous step size.
+    Evaluation counts separate loss-only trials from value-and-gradient calls.
+    """
+    if max_steps < 0 or max_search_steps < 1:
+        raise ValueError("Invalid iteration or line-search budget")
     if not np.isfinite(tolerance) or tolerance < 0:
         raise ValueError("Tolerance must be finite and nonnegative")
     if not np.isfinite(step_size) or step_size <= 0:
         raise ValueError("Step size must be finite and positive")
+    if not np.isfinite(growth) or growth < 1:
+        raise ValueError("Step growth must be finite and at least one")
     if not 0 < contraction < 1 or not 0 < sufficient_decrease < 1:
         raise ValueError("Armijo contraction and decrease must lie between zero and one")
 
@@ -404,6 +432,9 @@ def _descent(
     initial = value
     history = [_record(coordinates, z, value, step=0)]
     status = "iteration_cap"
+    rate = step_size
+    loss_evaluations = 0
+    gradient_evaluations = 1
 
     for iteration in range(max_steps + 1):
         # Reaching the iteration cap alone does not establish convergence.
@@ -417,16 +448,18 @@ def _descent(
         if iteration == max_steps:
             break
 
-        candidate, rate, backtracks, accepted = _backtrack(
+        candidate, rate, evaluations, accepted = _line_search(
             value_only,
             z,
             value,
             gradient,
-            step_size,
+            rate,
+            growth,
             contraction,
             sufficient_decrease,
-            max_backtracks,
+            max_search_steps,
         )
+        loss_evaluations += evaluations
         if not accepted:
             status = "line_search_failed"
             break
@@ -434,14 +467,19 @@ def _descent(
         # Only accepted points update the state and step history.
         z = candidate
         value, gradient = value_gradient(z)
+        gradient_evaluations += 1
         history.append(
-            _record(coordinates, z, value, step=iteration + 1, rate=rate, backtracks=backtracks)
+            _record(
+                coordinates, z, value, step=iteration + 1, rate=rate,
+                search_evaluations=evaluations,
+            )
         )
 
     accepted = status == "gradient_target" and bool(value <= initial)
     return FitResult(
         coordinates(z), coordinates, z, value, score, accepted, status, tuple(history),
         criteria={"gradient_tolerance": tolerance, "max_steps": max_steps},
+        evaluations={"loss_only": loss_evaluations, "value_and_grad": gradient_evaluations},
     )
 
 
@@ -800,11 +838,16 @@ class Trainer(zdx.Base):
         max_steps=100,
         tolerance=1e-3,
         step_size=1.0,
+        growth=2.0,
         contraction=0.5,
         sufficient_decrease=1e-4,
-        max_backtracks=30,
+        max_search_steps=30,
     ):
-        """Armijo descent using the chosen objective and fixed reference scales."""
+        """Two-way Armijo descent with fixed reference scales and step-size reuse.
+
+        step_size is the initial guess; growth=1 disables expansion. Each search
+        gets max_search_steps loss evaluations, including rejected trials.
+        """
         _, coordinates = self._coordinates(model, parameters)
         loss, _ = self._objective()
         objective = lambda z: loss(coordinates(z))[0]
@@ -815,11 +858,15 @@ class Trainer(zdx.Base):
             max_steps=max_steps,
             tolerance=tolerance,
             step_size=step_size,
+            growth=growth,
             contraction=contraction,
             sufficient_decrease=sufficient_decrease,
-            max_backtracks=max_backtracks,
+            max_search_steps=max_search_steps,
         )
-        return result.set("aux", loss(result.model)[1])
+        # The endpoint evaluation also supplies custom objective auxiliaries.
+        counts = dict(result.evaluations)
+        counts["loss_only"] += 1
+        return result.set(["aux", "evaluations"], [loss(result.model)[1], counts])
 
     def bfgs(
         self,
