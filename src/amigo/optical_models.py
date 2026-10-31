@@ -793,8 +793,7 @@ class AMIOptics(dl.AngularOpticalSystem):
         trades recomputation for memory. The result stores complex modes,
         the full eigenvalue spectrum and sampling choices.
         """
-        from .vis_models import LogVisModel
-        from .visibility_basis import visibility_jtj, select_visibility_modes
+        from .vis_models import LogVisModel, visibility_jtj, select_visibility_modes
 
         for name, value in (("n_knots", n_knots), ("pad", pad),
                             ("downsample", downsample), ("batch_size", batch_size)):
