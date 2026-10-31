@@ -8,6 +8,7 @@ import dLux as dl
 import dLux.utils as dlu
 from .misc import calc_throughput, interp, spectral_weights
 from .intensity import Intensity
+from .opd import sum_opds, zernike_opd
 from jax.lax import dynamic_update_slice, dynamic_slice
 from abcdLux import lct
 
@@ -127,10 +128,6 @@ def reduce_basis(basis, coords, holes, size=180):
     return small_basis, hole_corners
 
 
-def eval_small_basis(small_basis, coeffs):
-    return vmap(dlu.eval_basis)(small_basis, coeffs)
-
-
 # Fill in the full array
 def expand(arr, index, npix):
     j, i = index
@@ -146,10 +143,9 @@ class BaseApertureMask(dl.OpticalLayer, zdx.Module):
     """AMIGO pupil coefficients retain their dLux 0.14 OPD sign convention.
 
     dLux 0.15 reverses the Fourier sign, so negate OPD when applying it to
-    the complex field. The fitted coefficients stay unchanged.
+    the complex field. The fitted coefficients and reference OPD stay unchanged.
     """
-    abb_basis: Array | None = eqx.field(default=None, kw_only=True)
-    abb_coeffs: Array | None = eqx.field(default=None, kw_only=True)
+    opds: dict | None = eqx.field(default=None, kw_only=True)
     amp_basis: Array | None = eqx.field(default=None, kw_only=True)
     amp_coeffs: Array | None = eqx.field(default=None, kw_only=True)
     corners: Array
@@ -164,20 +160,29 @@ class BaseApertureMask(dl.OpticalLayer, zdx.Module):
         amplitude_orders=None,
         polike=False,
         small_npix=180,
+        opds=None,
     ):
 
         pixel_scale = np.diff(coords[0, 0]).mean()
         corners = calc_corners(holes, coords.shape[-1],
                                pixel_scale * coords.shape[-1], small_npix)
 
-        # Calculate the aberration basis functions
+        # The old radial-order input is a convenience builder, not a second
+        # representation. Coefficients retain their existing nanometre units.
+        if opds is not None and aberration_orders is not None:
+            raise ValueError("Supply opds or aberration_orders, not both")
+        self.opds = opds
         if aberration_orders is not None:
-            abb_basis = 1e-9 * calc_basis(hole_coords, f2f, aberration_orders, polike)
-            self.abb_basis, corners = reduce_basis(abb_basis, coords, holes, size=small_npix)
-            self.abb_coeffs = np.zeros(self.abb_basis.shape[:-2])
-        else:
-            self.abb_basis = None
-            self.abb_coeffs = None
+            local = np.stack([crop_windows(axis, corners, small_npix) for axis in coords], axis=1)
+            local = local - holes[:, :, None, None]
+            indices = get_noll_indices(np.arange(aberration_orders))
+            zernikes = zernike_opd(local, indices, 2 * f2f / np.sqrt(3),
+                                  per_hole=True, polike=polike)
+            zernikes = zernikes.set("x", zdx.Map(x=zernikes.x, s=1e-9))
+            self.opds = {"zernikes": zernikes}
+            aliases = dict(self.alias or ())
+            aliases.setdefault("aberrations", "opds.zernikes.x.x")
+            self.alias = aliases
 
         # Calculate the amplitude basis functions
         if amplitude_orders is not None:
@@ -189,10 +194,9 @@ class BaseApertureMask(dl.OpticalLayer, zdx.Module):
             self.amp_coeffs = None
 
         self.corners = corners
-        # self.corners = np.array(corners, dtype=float)
 
     def eval_basis(self, basis, coeffs, npixels=1024):
-        small_eval = eval_small_basis(basis, coeffs)
+        small_eval = vmap(dlu.eval_basis)(basis, coeffs)
         return fill(small_eval, self.corners, npixels)
 
     def calc_transmission(self, npixels=1024):
@@ -200,10 +204,15 @@ class BaseApertureMask(dl.OpticalLayer, zdx.Module):
             return 1 + self.eval_basis(self.amp_basis, self.amp_coeffs, npixels)
         return np.ones((npixels, npixels))
 
-    def calc_aberrations(self, npixels=1024):
-        if self.abb_basis is not None:
-            return self.eval_basis(self.abb_basis, self.abb_coeffs, npixels)
-        return np.zeros((npixels, npixels))
+    @property
+    def opd(self):
+        """Total OPD in metres on the fixed (hole, row, column) windows."""
+        return sum_opds(self.opds, (len(self.corners), self.size, self.size))
+
+    def calc_aberrations(self, npixels=None):
+        """Paste the total OPD stamps into a dense pupil for propagation."""
+        npixels = self.npixels if npixels is None else npixels
+        return fill(self.opd, self.corners, npixels)
 
 
 class StaticApertureMask(BaseApertureMask, dl.TransmissiveLayer):
@@ -235,11 +244,13 @@ class StaticApertureMask(BaseApertureMask, dl.TransmissiveLayer):
         self.normalise = aperture.normalise
         self.size = aperture.size
         # Freeze geometry only; preserve the existing amplitude and OPD state.
-        for name in ("corners", "amp_basis", "amp_coeffs", "abb_basis",
-                     "abb_coeffs"):
+        for name in ("corners", "amp_basis", "amp_coeffs", "opds"):
             setattr(self, name, getattr(aperture, name))
         self.npixels = aperture.npixels
         self.diameter = aperture.diameter
+        # Geometry is frozen; retain aliases to the live OPD/amplitude inputs.
+        self.alias = {name: path for name, path in (aperture.alias or ())
+                      if path.split(".")[0] in {"opds", "amp_basis", "amp_coeffs"}}
 
     def calc_transmission(self):
         mask = self.transmission
@@ -266,13 +277,10 @@ class StaticApertureMask(BaseApertureMask, dl.TransmissiveLayer):
         if mask.ndim == 2:
             mask = crop_windows(mask, self.corners, self.size)
 
-        if self.abb_basis is not None:
-            opd = eval_small_basis(self.abb_basis, self.abb_coeffs)
-        else:
-            opd = np.zeros_like(mask)
+        opd = self.opd
 
         if self.amp_basis is not None:
-            amp = eval_small_basis(self.amp_basis, self.amp_coeffs)
+            amp = vmap(dlu.eval_basis)(self.amp_basis, self.amp_coeffs)
         else:
             amp = np.zeros_like(mask)
 
@@ -386,6 +394,8 @@ class DynamicApertureMask(BaseApertureMask, dl.OpticalLayer):
         polike=False,
         size=180,
         oversample=3,
+        opds=None,
+        alias=None,
     ):
         if holes is None:
             holes = get_initial_holes(diameter, npixels)
@@ -407,7 +417,7 @@ class DynamicApertureMask(BaseApertureMask, dl.OpticalLayer):
                 raise ValueError("positions must match the reduced coordinates in holes.x")
             hole_map = hole_map.set("x", positions)
         self.holes = hole_map
-        self.alias = {"positions": "holes.x"}
+        self.alias = {"positions": "holes.x", **dict(alias or ())}
         self.distortion = AffineDistortion(n_holes=len(holes)) if distortion is None else distortion
 
         self.f2f = np.asarray(f2f, float)
@@ -415,7 +425,7 @@ class DynamicApertureMask(BaseApertureMask, dl.OpticalLayer):
         self.size, self.npixels = size, npixels
         self.diameter, self.oversample = float(diameter), oversample
 
-        # Keep the existing amplitude/OPD bases and window construction.
+        # Build fixed windows and optional amplitude/OPD components.
         coords = dlu.pixel_coords(npixels, diameter)
         hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, holes)
         super().__init__(
@@ -427,6 +437,7 @@ class DynamicApertureMask(BaseApertureMask, dl.OpticalLayer):
             amplitude_orders=amplitude_orders,
             polike=polike,
             small_npix=size,
+            opds=opds,
         )
         if np.any(self.corners < 0) or np.any(self.corners + size > npixels):
             raise ValueError("Aperture windows extend outside the pupil")
@@ -474,13 +485,10 @@ class DynamicApertureMask(BaseApertureMask, dl.OpticalLayer):
         """
         mask = self.sparse_apertures(npixels, diameter, oversample)
 
-        if self.abb_basis is not None:
-            opd = eval_small_basis(self.abb_basis, self.abb_coeffs)
-        else:
-            opd = np.zeros_like(mask)
+        opd = self.opd
 
         if self.amp_basis is not None:
-            amp = eval_small_basis(self.amp_basis, self.amp_coeffs)
+            amp = vmap(dlu.eval_basis)(self.amp_basis, self.amp_coeffs)
         else:
             amp = np.zeros_like(mask)
 

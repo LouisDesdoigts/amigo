@@ -30,7 +30,7 @@ class TestDLuxCompatibility(TestCase):
                 centers[:, axis, None, None] + local[axis], atol=1e-15,
             )
 
-    def test_dynamic_dense_and_sparse_pupils_include_fitted_opd(self):
+    def test_dynamic_dense_and_sparse_pupils_include_reference_opd(self):
         holes = jnp.array([[-1., -1.], [1., 1.]])
         # An empty aberration basis must still give valid window corners.
         mask = DynamicApertureMask(holes=holes, npixels=64, size=16,
@@ -45,8 +45,7 @@ class TestDLuxCompatibility(TestCase):
         np.testing.assert_array_equal(opd, 0.)
         np.testing.assert_array_equal(amp, 0.)
         reference = jnp.broadcast_to(jnp.linspace(-1e-8, 1e-8, 16), (2, 16, 16))
-        mask = mask.set(['abb_basis', 'abb_coeffs'],
-                        [reference[:, None, :, :], jnp.ones((2, 1))])
+        mask = mask.set('opds', {'reference': reference})
         _, opd, _, _ = mask.sparse_fields(64, 6.603464)
         np.testing.assert_allclose(opd, reference)
         dense = mask(wf)

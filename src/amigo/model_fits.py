@@ -96,13 +96,14 @@ class Exposure(zdx.Base):
         # Log flux (1.6 is the ~ gain)
         log_flux = np.log10((80**2) * 1.61 * np.nanmean(im))
 
-        # Initialise flat WF
-        abb = np.zeros_like(optics.pupil_mask.abb_coeffs)
+        # The exposure fitter uses the aperture's chosen coefficient alias.
+        if hasattr(optics.pupil_mask, "aberrations"):
+            abb = np.zeros_like(optics.pupil_mask.aberrations)
+            params["aberrations"] = (self.get_key("aberrations"), abb)
 
         # positions
         params["positions"] = (self.get_key("positions"), pos)
         params["fluxes"] = (self.get_key("fluxes"), log_flux)
-        params["aberrations"] = (self.get_key("aberrations"), abb)
         params["spectra"] = (self.get_key("spectra"), np.array(0.0))
         params["defocus"] = (self.get_key("defocus"), np.array(0.01))
 
@@ -294,18 +295,20 @@ class ModelFit(Exposure):
         return param
 
     def update_optics(self, model):
+        """Apply the supplied optical state, retaining its derivatives.
+
+        Fit parameter selection and wavefront gauge belong to the caller's
+        coordinates. The exposure's science/calibrator role does not change
+        the derivative of the same forward model.
+        """
         optics = model.optics
         if "aberrations" in model.params.keys():
             coefficients = model.aberrations[self.get_key("aberrations")]
-
-            # Nuke the piston gradient to prevent degeneracy
-            fixed_piston = lax.stop_gradient(coefficients[0, 0])
-            coefficients = coefficients.at[0, 0].set(fixed_piston)
-
-            # Stop gradient for science targets
-            if not self.calibrator:
-                coefficients = lax.stop_gradient(coefficients)
-            optics = optics.set("pupil_mask.abb_coeffs", coefficients)
+            optics = optics.set("pupil_mask.aberrations", coefficients)
+        if "reference_opd" in model.params:
+            opds = dict(optics.pupil_mask.opds or {})
+            opds["reference"] = model.reference_opd[self.get_key("aberrations")]
+            optics = optics.set("pupil_mask.opds", opds)
 
         if hasattr(model, "reflectivity"):
             coefficients = model.reflectivity[self.get_key("reflectivity")]

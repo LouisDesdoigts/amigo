@@ -243,14 +243,7 @@ def summarise_fit(
 
     if aberrations:
         # Get the AMI mask and applied mask
-        pupil_mask = model.optics.pupil_mask
-        pupil_mask = pupil_mask.set(
-            "abb_coeffs", model.aberrations[exposure.get_key("aberrations")]
-        )
-        if hasattr(model, "reflectivity"):
-            pupil_mask = pupil_mask.set(
-                "amp_coeffs", model.reflectivity[exposure.get_key("reflectivity")]
-            )
+        pupil_mask = exposure.update_optics(model).pupil_mask
 
         optics = model.optics
         amp = pupil_mask.calc_transmission()
