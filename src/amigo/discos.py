@@ -62,7 +62,9 @@ class _VisReference(zdx.Base):
     positions: np.ndarray
 
 
-def vis_jac(optics, vis_model, filt, params, *, spectra, positions=None, nbatches=1, checkpoint=False):
+def vis_jac(
+    optics, vis_model, filt, params, *, spectra, positions=None, nbatches=1, checkpoint=False
+):
     """Differentiate optical coefficients at one explicit, exposure-free reference.
 
     params selects paths within optics, plus "spectra" and "positions" for the
@@ -92,7 +94,18 @@ def vis_jac(optics, vis_model, filt, params, *, spectra, positions=None, nbatche
     return model_jac(reference, paths, coefficients, nbatches=nbatches, checkpoint=checkpoint)
 
 
-def vis_null(optics, vis_model, filt, null_params, *, spectra, positions=None, nbatches=1, checkpoint=False, return_info=False):
+def vis_null(
+    optics,
+    vis_model,
+    filt,
+    null_params,
+    *,
+    spectra,
+    positions=None,
+    nbatches=1,
+    checkpoint=False,
+    return_info=False,
+):
     """Build one Fourier null to reuse for all data in this visibility basis.
 
     Choose a common optical state and spectrum explicitly. Do not regenerate K
@@ -137,7 +150,9 @@ def image_jacs(model, exp, null_params, *, nbatches=1, checkpoint=False):
     return vis_jac, null_jac
 
 
-def image_null(model, exp, null_params, *, weighting=None, nbatches=1, checkpoint=False, return_info=False):
+def image_null(
+    model, exp, null_params, *, weighting=None, nbatches=1, checkpoint=False, return_info=False
+):
     """Build one image-overlap null from a deliberately selected reference.
 
     Reuse K for all measurements in the same visibility basis. exp selects the
@@ -196,8 +211,13 @@ def null_space(null_jac):
     left, singular, _ = np.linalg.svd(scaled, full_matrices=True)
     rank = int(np.sum(singular > _RANK_RTOL * singular.max(initial=0)))
     kernel = left[:, rank:].T
-    return kernel, dict(response=response, singular_values=singular, rank=rank,
-                        column_scale=peak * norms, leakage=kernel @ scaled)
+    return kernel, dict(
+        response=response,
+        singular_values=singular,
+        rank=rank,
+        column_scale=peak * norms,
+        leakage=kernel @ scaled,
+    )
 
 
 def vis_kernel(null_jac):

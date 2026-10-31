@@ -231,8 +231,14 @@ class Coordinates(zdx.Base):
                 metric = block.metric
                 if metric is None:
                     metric = _objective_information(
-                        model, layout, None, residuals.least_squares, "residual",
-                        nbatches, checkpoint, diagonal=block.scaling == "diagonal",
+                        model,
+                        layout,
+                        None,
+                        residuals.least_squares,
+                        "residual",
+                        nbatches,
+                        checkpoint,
+                        diagonal=block.scaling == "diagonal",
                     )
                     factor = 1.0
                 else:
@@ -291,10 +297,17 @@ def save_information(path, metric, *, context):
     if type(metric) not in kinds:
         raise TypeError("Information must be a Fisher, Hessian or diagonal TreeVector")
     values = metric.vector if isinstance(metric, zdx.TreeVector) else metric.matrix
-    zdx.save(path, dict(schema="amigo-information-v1", kind=kinds[type(metric)],
-                        values=values, paths=list(metric.layout.paths),
-                        shapes=[list(shape) for shape in metric.layout.shapes],
-                        context=json.dumps(context, sort_keys=True)))
+    zdx.save(
+        path,
+        dict(
+            schema="amigo-information-v1",
+            kind=kinds[type(metric)],
+            values=values,
+            paths=list(metric.layout.paths),
+            shapes=[list(shape) for shape in metric.layout.shapes],
+            context=json.dumps(context, sort_keys=True),
+        ),
+    )
 
 
 def load_information(path, *, context, scale=1.0):
@@ -314,7 +327,9 @@ def load_information(path, *, context, scale=1.0):
     if cached["schema"] != "amigo-information-v1":
         raise ValueError("Unknown information record schema")
     layout = zdx.TreeLayout(tuple(cached["paths"]), tuple(tuple(s) for s in cached["shapes"]))
-    cls = {"fisher": zdx.Fisher, "hessian": zdx.Hessian, "diagonal": zdx.TreeVector}[cached["kind"]]
+    cls = {"fisher": zdx.Fisher, "hessian": zdx.Hessian, "diagonal": zdx.TreeVector}[
+        cached["kind"]
+    ]
     values = np.asarray(cached["values"]) * scale
     if not np.all(np.isfinite(values)):
         raise ValueError("Cached information is nonfinite")
@@ -542,9 +557,15 @@ def _groups(model, parameters, exposures):
             for path in candidates:
                 if exposures and path.split(".")[-1] in ("FF", "non_linearity"):
                     from .model_fits import ModelFit, FlatFit
-                    if any(isinstance(exp, ModelFit) and not isinstance(exp, FlatFit) for exp in exposures):
-                        raise ValueError(f"{path} has stopped derivatives in point-source fits; "
-                                         "use the flat calibration model for pixel calibration")
+
+                    if any(
+                        isinstance(exp, ModelFit) and not isinstance(exp, FlatFit)
+                        for exp in exposures
+                    ):
+                        raise ValueError(
+                            f"{path} has stopped derivatives in point-source fits; "
+                            "use the flat calibration model for pixel calibration"
+                        )
                 value = model.get(path)
                 if isinstance(value, Mapping):
                     leaves = zdx.TreeLayout.from_tree(value).paths
