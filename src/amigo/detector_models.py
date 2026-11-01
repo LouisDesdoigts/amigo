@@ -38,10 +38,17 @@ class AsymmetricJitterJWST(ApplyJitter):
         # Converting jitter sigma into pixels, assuming an oversample of 3
         sigma_pixels = self.sigma / (0.065524085 / 3)  # arcsec / (arcsec/pixel)
 
+        # dlu.gaussian samples linspace(-extent, extent, npixels) in the units of std (pixels here),
+        # and its default extent of 5 does not put the samples 1/oversample pixels apart, so the
+        # kernel came out stretched by (npixels - 1) / (10 * oversample) (1.08 for 11 x 5). This
+        # extent spaces them correctly. States fitted before this fix need sigma x that factor
+        # (dorito_notebooks/convert_state_sigma.py).
+        npixels = self.kernel_size * self.oversample
         kernel = dlu.gaussian(
             mean=np.array([0.0, 0.0]),
             std=np.broadcast_to(sigma_pixels, (2,)),  # (x, y)
-            npixels=self.kernel_size * self.oversample,
+            npixels=npixels,
+            extent=(npixels - 1) / (2 * self.oversample),
         )
         return dlu.downsample(kernel, self.oversample, mean=False)
 
