@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A pipeline for interferometric fitting of AMI data from JWST"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {file = "LICENSE.md"}
+license = {file = "LICENSE"}
 authors = [
   {name = "Louis Desdoigts", email = "louis.desdoigts@sydney.edu.au"},
 ]
@@ -40,6 +40,9 @@ requires = [
     "setuptools-scm>=8.0",
     "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+amigo = ["data/*.npy", "data/filters/*.dat"]
 
 [project.optional-dependencies]
 dev = ["pytest", "black", "ruff", "pre-commit"]
