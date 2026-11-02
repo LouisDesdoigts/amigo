@@ -3,7 +3,7 @@ from importlib import resources
 from copy import copy
 import equinox as eqx
 import zodiax as zdx
-from jax import Array, vmap
+from jax import Array, vmap, lax
 import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
@@ -563,6 +563,7 @@ class AMIOptics(dl.AngularOpticalSystem):
     corners: np.ndarray
     psf_upsample: int
     psf_interpolation: str
+    wavelength_batch_size: int = eqx.field(static=True)
     opd_coefficients: dict
     opd_fits: tuple = eqx.field(static=True)
     opd_selected: bool
@@ -600,6 +601,7 @@ class AMIOptics(dl.AngularOpticalSystem):
         fit_filter_opd=False,
         fit_ptt=True,
         calibrated=None,
+        wavelength_batch_size=1,
     ):
         # A calibration supplies the exact reference geometry and basis mappings.
         self.opd_coefficients = {}
@@ -621,6 +623,11 @@ class AMIOptics(dl.AngularOpticalSystem):
 
         self.sparse = bool(sparse)
         self.psf_upsample = psf_upsample
+        if (isinstance(wavelength_batch_size, bool)
+                or not isinstance(wavelength_batch_size, int)
+                or wavelength_batch_size < 1):
+            raise ValueError("wavelength_batch_size must be a positive integer")
+        self.wavelength_batch_size = wavelength_batch_size
         if psf_interpolation not in ("intensity", "phasor"):
             raise ValueError("psf_interpolation must be 'intensity' or 'phasor'")
         self.psf_interpolation = psf_interpolation
@@ -811,6 +818,7 @@ class AMIOptics(dl.AngularOpticalSystem):
 
         Set at most one return flag. Fields precede subpixel intensity averaging;
         Intensity retains the wavelength axis for visibility modelling.
+        wavelength_batch_size limits concurrent monochromatic propagations.
         """
         if sum((return_wf, return_psf, return_intensity)) > 1:
             raise ValueError("Set at most one of return_wf, return_psf, return_intensity")
@@ -823,9 +831,13 @@ class AMIOptics(dl.AngularOpticalSystem):
         if offset.shape != (2,):
             raise ValueError("Offset must have shape (2,) in radians")
 
-        result = eqx.filter_vmap(
-            lambda wavelength: self.propagate_mono(wavelength, offset, return_wf=return_wf)
-        )(wavelengths)
+        # Bound field-interpolation workspace without changing spectral sampling.
+        # The wavelength axis and its final weighted sum retain their ordering.
+        result = lax.map(
+            lambda wavelength: self.propagate_mono(wavelength, offset, return_wf=return_wf),
+            wavelengths,
+            batch_size=self.wavelength_batch_size,
+        )
         if return_wf:
             return result.multiply("phasor", np.sqrt(weights)[:, None, None])
         intensity = Intensity(

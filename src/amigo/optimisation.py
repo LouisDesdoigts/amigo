@@ -1090,6 +1090,11 @@ class Trainer(zdx.Base):
         value, gradient = eqx.filter_jit(jax.value_and_grad(objective))(solution.value)
         score = np.max(np.abs(gradient))
         initial = objective(coordinates.zero)
+        # GD may already be at the minimum. Allow floating-point roundoff in
+        # the refinement loss; solver success and the gradient gate still apply.
+        loss_roundoff = 64 * np.finfo(value.dtype).eps * np.maximum(
+            1.0, np.maximum(np.abs(initial), np.abs(value))
+        )
         finite = bool(np.isfinite(value) & np.isfinite(score) & np.isfinite(initial))
         successful = bool(solution.result == optx.RESULTS.successful)
         capped = bool(
@@ -1106,7 +1111,7 @@ class Trainer(zdx.Base):
             status = "max_steps"
         elif not successful:
             status = "solver_error"
-        elif value > initial:
+        elif value - initial > loss_roundoff:
             status = "objective_increased"
         elif tolerance is None:
             status, accepted = "solver_converged", True

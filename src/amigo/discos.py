@@ -16,7 +16,7 @@ from .misc import spectral_weights
 # Shared parameter selection and differentiation
 
 
-def model_jac(model, params, fn, *, nbatches=1, checkpoint=False):
+def model_jac(model, params, fn, *, nbatches=1, checkpoint=False, forward=False):
     """Return the unweighted Jacobian of ``fn(model)``.
 
     ``params`` contains explicit model paths, with no default selection.
@@ -24,6 +24,7 @@ def model_jac(model, params, fn, *, nbatches=1, checkpoint=False):
     The real array returned by ``fn`` is flattened in C order into rows.
     Other model params remain at their reference values. Existing gradient
     stops in the forward model are respected.
+    forward=True uses forward mode even for a single, unbatched block.
 
     Returns a Zodiax Jacobian labelled with the selected model paths. Use
     ``result.matrix`` when passing responses to the nulling functions.
@@ -40,8 +41,17 @@ def model_jac(model, params, fn, *, nbatches=1, checkpoint=False):
         reference = model.set(paths, list(selected))
         return np.asarray(fn(reference)).reshape(-1)
 
-    result = zdx.jacobian(output, values, nbatches=nbatches, checkpoint=checkpoint)
-    return zdx.Jacobian(result.matrix, layout)
+    # Zodiax batches forward columns, but its single-block path uses reverse
+    # mode. Optical nulls have few inputs and many outputs: use forward there.
+    if forward and nbatches == 1:
+        function = jax.checkpoint(output) if checkpoint else output
+        columns = jax.jacfwd(jax.jit(function))(values)
+        matrix = np.concatenate(
+            [column.reshape(column.shape[0], -1) for column in columns], axis=1
+        )
+    else:
+        matrix = zdx.jacobian(output, values, nbatches=nbatches, checkpoint=checkpoint).matrix
+    return zdx.Jacobian(matrix, layout)
 
 
 def _check_null_jac(jac):
@@ -91,7 +101,8 @@ def vis_jac(
         )
         return vis_model.intensity_to_latent(intensity, filt)
 
-    return model_jac(reference, paths, coefficients, nbatches=nbatches, checkpoint=checkpoint)
+    return model_jac(reference, paths, coefficients, nbatches=nbatches,
+                     checkpoint=checkpoint, forward=True)
 
 
 def vis_null(
