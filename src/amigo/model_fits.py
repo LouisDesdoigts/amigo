@@ -42,8 +42,24 @@ class Exposure(zdx.Base):
     act_id: str = eqx.field(static=True)
     visit: str = eqx.field(static=True)
     dither: str = eqx.field(static=True)
+    detector_to_sky_arcsec: tuple | None = eqx.field(default=None, kw_only=True, static=True)
 
     def __init__(self, file):
+        # Display geometry only: retain the FITS tangent-plane Jacobian, including
+        # parity. Do not substitute ROLL_REF (V3 orientation) for detector WCS.
+        header = file[0].header
+        self.detector_to_sky_arcsec = None
+        if (str(header.get('CTYPE1', '')).startswith('RA---') and
+                str(header.get('CTYPE2', '')).startswith('DEC--')):
+            if any(header.get(f'CUNIT{i}', 'deg').lower() != 'deg' for i in (1, 2)):
+                raise ValueError('Detector WCS must use degrees')
+            if all(f'CD{i}_{j}' in header for i in (1, 2) for j in (1, 2)):
+                self.detector_to_sky_arcsec = tuple(tuple(3600*float(header[f'CD{i}_{j}'])
+                    for j in (1, 2)) for i in (1, 2))
+            elif all(f'CDELT{i}' in header for i in (1, 2)):
+                self.detector_to_sky_arcsec = tuple(tuple(3600*float(header[f'CDELT{i}']) *
+                    float(header.get(f'PC{i}_{j}', float(i == j)))
+                    for j in (1, 2)) for i in (1, 2))
         self.slopes = np.array(file["SLOPE"].data, float)
         self.cov = np.array(file["SLOPE_COV"].data, float)
         self.ramp = np.asarray(file["RAMP"].data, float)
