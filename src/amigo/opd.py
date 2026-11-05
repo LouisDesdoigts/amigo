@@ -246,7 +246,7 @@ def ptt_defocus(coords):
 class OPDSetup(zdx.Base):
     """Construction settings consumed by the aperture, not runtime fit state."""
 
-    sharing: tuple = eqx.field(default=("program", "filter"), kw_only=True, static=True)
+    sharing: tuple = eqx.field(default=(), kw_only=True, static=True)
     weighting: str = eqx.field(default="intensity", kw_only=True, static=True)
     references: tuple | None = eqx.field(default=None, kw_only=True)
     rtol: float | None = eqx.field(default=None, kw_only=True, static=True)
@@ -286,7 +286,10 @@ class PTT(OPDSetup):
 
     Every hole uses the same three polynomials; only its coefficients differ.
     Construction mixes those coefficients into reduced, RMS-normalised modes.
+    One correction is shared by all filters within an observing program.
     """
+
+    sharing: tuple = eqx.field(default=("program",), kw_only=True, static=True)
 
     def component(self, aperture):
         local = dlu.pixel_coords(aperture.size, 2)
@@ -413,7 +416,7 @@ def standard_opds(aperture, fourier_modes=5, filter_modes=DEFAULT_FILTER_MODES):
     opds = {"fourier": fourier, "filter": global_opd, "ptt": ptt}
     aliases = {name + "_coeffs": f"opds.{name}.x.x" for name in opds}
     sharing = (("fourier_coeffs", ()), ("filter_coeffs", ("filter",)),
-               ("ptt_coeffs", ("program", "filter")))
+               ("ptt_coeffs", ("program",)))
     # Alias/sharing metadata are static Equinox fields, not fitted leaves.
     result = copy(aperture)
     object.__setattr__(result, "opds", opds)

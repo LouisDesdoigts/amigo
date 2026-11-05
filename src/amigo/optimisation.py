@@ -118,13 +118,16 @@ def prepare(exposures):
 # Reference information and parameter normalization
 
 
-def information(residuals, model, paths, *, nbatches=1, checkpoint=False):
+def information(residuals, model, paths, *, nbatches=None, checkpoint=False):
     """Sum unscaled residual JTJ by exposure using Zodiax.
 
     Optimizer curvature for mean(r**2) is 2*JTJ/N. Recalculate JTJ at the fitted
     endpoint for uncertainty work; an optimizer reference is not a covariance.
+    By default use at most 16 derivative columns per batch, as in normalization.
     """
     layout = zdx.TreeLayout.from_paths(model, paths)
+    if nbatches is None:
+        nbatches = (layout.size + 15) // 16
     origin = layout.flatten(model)
 
     def inject(values):
@@ -212,7 +215,7 @@ class Coordinates(zdx.Base):
     transforms: tuple
     size: int = eqx.field(static=True)
 
-    def __init__(self, model, blocks, residuals, *, nbatches=1, checkpoint=False, rank_rtol=1e-12):
+    def __init__(self, model, blocks, residuals, *, nbatches=None, checkpoint=False, rank_rtol=1e-12):
         blocks = tuple(blocks)
         paths = [p for block in blocks for p in block.paths]
         if not paths:
@@ -236,7 +239,7 @@ class Coordinates(zdx.Base):
                         None,
                         residuals.least_squares,
                         "residual",
-                        nbatches,
+                        (layout.size + 15) // 16 if nbatches is None else nbatches,
                         checkpoint,
                         diagonal=block.scaling == "diagonal",
                     )
@@ -648,9 +651,12 @@ def _objective_information(
                 origin,
             )
         if diagonal:
-            values = _residual_diagonal(
-                lambda x: residual(inject(x)), origin, nbatches, checkpoint
-            )
+            # Stage linearisation and column reduction together. Eager linearize
+            # materialises optical intermediates that the later scan captures as
+            # huge compilation constants (and can exhaust host RAM).
+            values = jax.jit(lambda x: _residual_diagonal(
+                lambda v: residual(inject(v)), x, nbatches, checkpoint
+            ))(origin)
             return zdx.TreeVector(values, layout)
         result = zdx.gauss_newton(
             lambda x: residual(inject(x)), origin, nbatches=nbatches, checkpoint=checkpoint
@@ -813,7 +819,7 @@ class Trainer(zdx.Base):
         preconditioner=None,
         source=None,
         check=False,
-        nbatches=1,
+        nbatches=None,
         checkpoint=False,
         rank_rtol=1e-12,
     ):
@@ -824,6 +830,8 @@ class Trainer(zdx.Base):
         JTJ or scalar Hessian; custom losses default to Hessian, others to JTJ.
         Diagonal residual scaling calculates only squared Jacobian column norms;
         full scaling and scalar Hessians retain the full matrix calculation.
+        With nbatches=None, all objective scaling uses at most 16 columns
+        per batch. Explicit nbatches overrides this; checkpointing defaults off.
 
         preconditioner={group: metric} supplies APPROXIMATE cached information in
         objective-curvature units. Missing groups are calculated from the objective.
@@ -863,7 +871,7 @@ class Trainer(zdx.Base):
                     loss,
                     residual,
                     source,
-                    nbatches,
+                    (layout.size + 15) // 16 if nbatches is None else nbatches,
                     checkpoint,
                     check_loss=self.loss_fn is not None,
                     diagonal=methods[name] == "diagonal",

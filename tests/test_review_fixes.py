@@ -32,7 +32,7 @@ class ReviewTests(TestCase):
         optics = AMIOptics(pupil_mask=pupil, wf_npixels=64, filters=["F380M"],
                            nwavels=1, psf_npixels=8)
         optics = optics.set(["opd_coefficients", "opd_selected"],
-                            [{"ptt_coeffs": {"001:F380M": pupil.ptt_coeffs}}, True])
+                            [{"ptt_coeffs": {"001": pupil.ptt_coeffs}}, True])
         with patch.object(AMIOptics, "for_filter", side_effect=AssertionError("reference reset")), \
              patch.object(AMIOptics, "propagate", return_value=None), \
              patch("amigo.vis_models.visibility_jtj", return_value=np.eye(8)):

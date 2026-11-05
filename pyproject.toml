@@ -3,7 +3,7 @@ name = "amigo"
 version = "0.1.0"
 description = "A pipeline for interferometric fitting of AMI data from JWST"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {file = "LICENSE"}
 authors = [
   {name = "Louis Desdoigts", email = "louis.desdoigts@sydney.edu.au"},
