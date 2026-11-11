@@ -130,21 +130,25 @@ def information(residuals, model, paths, *, nbatches=None, checkpoint=False):
         nbatches = (layout.size + 15) // 16
     origin = layout.flatten(model)
 
-    def inject(values):
-        leaves = layout.unflatten(values)
-        return model.set(list(layout.paths), [leaves[p] for p in layout.paths])
-
     # Evaluate each exposure separately without storing a full residual Jacobian.
     matrix = np.zeros((layout.size, layout.size), dtype=origin.dtype)
 
     for exp, data, lower in zip(residuals.exposures, residuals.data, residuals.cholesky):
-        part = Residuals((exp,), (data,), (lower,), data.size, 0.0)
-        result = zdx.gauss_newton(
-            lambda x: part(inject(x)), origin, nbatches=nbatches, checkpoint=checkpoint
-        )
-        matrix += result.matrix
+        matrix += _exposure_information(model, layout, exp, data, lower, nbatches, checkpoint)
 
     return zdx.Fisher(matrix, layout)
+
+
+@eqx.filter_jit
+def _exposure_information(model, layout, exp, data, lower, nbatches, checkpoint):
+    # Keep each exposure in its own compiled call and pass its arrays explicitly.
+    def inject(values):
+        leaves = layout.unflatten(values)
+        return model.set(list(layout.paths), [leaves[p] for p in layout.paths])
+    part = Residuals((exp,), (data,), (lower,), data.size, 0.0)
+    result = zdx.gauss_newton(lambda x: part(inject(x)), layout.flatten(model),
+                             nbatches=nbatches, checkpoint=checkpoint)
+    return result.matrix
 
 
 class Block(zdx.Base):
@@ -422,8 +426,39 @@ def _line_search(
 
 def armijo(residuals, coordinates, **kwargs):
     """Low-level Armijo fit for the canonical prepared residual objective."""
-    objective = lambda z: residuals.loss(coordinates(z))
+    objective = eqx.Partial(_prepared_coordinate_loss, residuals, coordinates)
     return _descent(objective, coordinates, **kwargs)
+
+
+def _prepared_coordinate_loss(residuals, coordinates, z):
+    return residuals.loss(coordinates(z))
+
+
+def _coordinate_loss(loss, coordinates, z):
+    return loss(coordinates(z))[0]
+
+
+def _coordinate_residual(residual, coordinates, z):
+    return residual(coordinates(z))
+
+
+def _squared_loss(residual, z):
+    return 0.5 * np.sum(residual(z) ** 2)
+
+
+def _solver_objective(objective, z, args):
+    return objective(z)
+
+
+@eqx.filter_jit
+def _value_gradient(z, objective):
+    # The callable is a PyTree: its arrays are runtime operands, not constants.
+    return jax.value_and_grad(objective)(z)
+
+
+@eqx.filter_jit
+def _value_only(z, objective):
+    return objective(z)
 
 
 def _descent(
@@ -456,8 +491,8 @@ def _descent(
         raise ValueError("Armijo contraction and decrease must lie between zero and one")
 
     # Compile evaluations in the fixed optimizer coordinates.
-    value_gradient = eqx.filter_jit(jax.value_and_grad(objective))
-    value_only = eqx.filter_jit(objective)
+    value_gradient = lambda z: _value_gradient(z, objective)
+    value_only = lambda z: _value_only(z, objective)
 
     z = coordinates.zero if start is None else np.asarray(start)
     value, gradient = value_gradient(z)
@@ -635,6 +670,25 @@ def _objective_information(
     model, layout, loss, residual, source, nbatches, checkpoint, check_loss=False, diagonal=False
 ):
     """Calculate reference curvature in physical parameter coordinates."""
+    if source == "residual" and residual is None:
+        raise ValueError("Residual information requires residual_fn")
+    if source == "residual" and check_loss:
+        origin = layout.flatten(model)
+        def inject(values):
+            leaves = layout.unflatten(values)
+            return model.set(list(layout.paths), [leaves[p] for p in layout.paths])
+        _check_objectives(lambda x: loss(inject(x))[0],
+                          lambda x: 0.5 * np.sum(residual(inject(x)) ** 2), origin)
+    return _objective_information_impl(
+        model, layout, loss, residual, source, nbatches, checkpoint, diagonal
+    )
+
+
+@eqx.filter_jit
+def _objective_information_impl(model, layout, loss, residual, source, nbatches,
+                                checkpoint, diagonal):
+    # Stage the whole derivative calculation with model and objective arrays as
+    # explicit operands, including inner linearisation/column-reduction JITs.
     origin = layout.flatten(model)
 
     def inject(values):
@@ -644,12 +698,6 @@ def _objective_information(
     if source == "residual":
         if residual is None:
             raise ValueError("Residual information requires residual_fn")
-        if check_loss:
-            _check_objectives(
-                lambda x: loss(inject(x))[0],
-                lambda x: 0.5 * np.sum(residual(inject(x)) ** 2),
-                origin,
-            )
         if diagonal:
             # Stage linearisation and column reduction together. Eager linearize
             # materialises optical intermediates that the later scan captures as
@@ -722,6 +770,39 @@ def _check_batches(exposures, batches):
         raise ValueError("Batches omit stored exposures")
 
 
+def _prepared_loss(prepared, model, *, scale=1.0):
+    return prepared.loss(model) * scale, ()
+
+
+def _prepared_least_squares(prepared, model):
+    return prepared.least_squares(model)
+
+
+def _custom_residual(function, exposures, args, model):
+    if not exposures:
+        return np.asarray(function(model, args)).reshape(-1)
+    return np.concatenate([np.asarray(function(model, exp, args)).reshape(-1)
+                           for exp in exposures])
+
+
+def _custom_loss(function, residual, exposures, args, model):
+    if function is None:
+        values = residual(model)
+        return 0.5 * np.vdot(values, values), ()
+    if not exposures:
+        return _loss_output(function(model, args))
+    outputs = [_loss_output(function(model, exp, args)) for exp in exposures]
+    return (sum(item[0] for item in outputs),
+            {exp.key: item[1] for exp, item in zip(exposures, outputs)})
+
+
+@eqx.filter_jit
+def _batch_value_gradient(values, loss, coordinates, names):
+    def objective(values):
+        return loss(coordinates(np.concatenate([values[name] for name in names])))
+    return jax.value_and_grad(objective, has_aux=True)(values)
+
+
 class Trainer(zdx.Base):
     """Custom objectives and optimizers sharing explicit parameter normalization.
 
@@ -733,6 +814,10 @@ class Trainer(zdx.Base):
     With neither function, prepare the standard Cholesky objective from supplied
     exposures. These exposures and args are reused by normalization and every fit.
     Custom loss+residual pairs must describe the same objective for LM.
+
+    Exposures, prepared covariance factors and args are passed as runtime arrays
+    through compilation. For custom objectives, put data in args or exposures
+    rather than closing over array-valued globals in the user function.
     """
 
     loss_fn: object
@@ -775,39 +860,17 @@ class Trainer(zdx.Base):
     def _objective(self, exposures=None):
         """Adapt the stored objective; an internal subset supports training batches."""
         exposures = self.exposures if exposures is None else tuple(exposures)
-        args = self.args
-
         if self.loss_fn is None and self.residual_fn is None:
             prepared = self.prepared
             if prepared is None or not eqx.tree_equal(prepared.exposures, exposures):
                 prepared = prepare(exposures)
-            return lambda model: (prepared.loss(model), ()), prepared.least_squares
+            return (eqx.Partial(_prepared_loss, prepared),
+                    eqx.Partial(_prepared_least_squares, prepared))
 
-        residual = None
-        if self.residual_fn is not None:
-
-            def residual(model):
-                if not exposures:
-                    return np.asarray(self.residual_fn(model, args)).reshape(-1)
-                return np.concatenate(
-                    [
-                        np.asarray(self.residual_fn(model, exp, args)).reshape(-1)
-                        for exp in exposures
-                    ]
-                )
-
-        def loss(model):
-            if self.loss_fn is None:
-                values = residual(model)
-                return 0.5 * np.vdot(values, values), ()
-            if not exposures:
-                return _loss_output(self.loss_fn(model, args))
-
-            outputs = [_loss_output(self.loss_fn(model, exp, args)) for exp in exposures]
-            value = sum(item[0] for item in outputs)
-            aux = {exp.key: item[1] for exp, item in zip(exposures, outputs)}
-            return value, aux
-
+        residual = None if self.residual_fn is None else eqx.Partial(
+            _custom_residual, self.residual_fn, exposures, self.args
+        )
+        loss = eqx.Partial(_custom_loss, self.loss_fn, residual, exposures, self.args)
         return loss, residual
 
     def normalise(
@@ -984,7 +1047,7 @@ class Trainer(zdx.Base):
         """
         _, coordinates = self._coordinates(model, parameters)
         loss, _ = self._objective()
-        objective = lambda z: loss(coordinates(z))[0]
+        objective = eqx.Partial(_coordinate_loss, loss, coordinates)
 
         result = _descent(
             objective,
@@ -1066,19 +1129,20 @@ class Trainer(zdx.Base):
 
         _, coordinates = self._coordinates(model, parameters)
         loss, residual = self._objective()
-        objective = lambda z: loss(coordinates(z))[0]
+        objective = eqx.Partial(_coordinate_loss, loss, coordinates)
 
         if method == "lm":
             if residual is None:
                 raise ValueError("LM requires residual_fn, or the default Cholesky objective")
             # LM optimizes the residual objective. A supplied scalar loss is not
             # silently substituted for it or assumed to be globally equivalent.
-            residual_objective = lambda z: 0.5 * np.sum(residual(coordinates(z)) ** 2)
+            coordinate_residual = eqx.Partial(_coordinate_residual, residual, coordinates)
+            residual_objective = eqx.Partial(_squared_loss, coordinate_residual)
             if self.loss_fn is not None:
                 _check_objectives(objective, residual_objective, coordinates.zero)
             objective = residual_objective
             solution = optx.least_squares(
-                lambda z, _: residual(coordinates(z)),
+                eqx.Partial(_solver_objective, coordinate_residual),
                 solver,
                 coordinates.zero,
                 options=options,
@@ -1087,7 +1151,7 @@ class Trainer(zdx.Base):
             )
         else:
             solution = optx.minimise(
-                lambda z, _: objective(z),
+                eqx.Partial(_solver_objective, objective),
                 solver,
                 coordinates.zero,
                 options=options,
@@ -1095,7 +1159,7 @@ class Trainer(zdx.Base):
                 throw=False,
             )
 
-        value, gradient = eqx.filter_jit(jax.value_and_grad(objective))(solution.value)
+        value, gradient = _value_gradient(solution.value, objective)
         score = np.max(np.abs(gradient))
         initial = objective(coordinates.zero)
         # GD may already be at the minimum. Allow floating-point roundoff in
@@ -1199,7 +1263,7 @@ class Trainer(zdx.Base):
             prepared = [prepare(batch) for batch in batch_values]
             size = sum(part.size for part in prepared)
             losses = [
-                lambda m, part=part: (part.loss(m) * part.size / size, ()) for part in prepared
+                eqx.Partial(_prepared_loss, part, scale=part.size / size) for part in prepared
             ]
         else:
             losses = [self._objective(batch)[0] for batch in batch_values]
@@ -1208,8 +1272,8 @@ class Trainer(zdx.Base):
             total = np.asarray(0.0)
             gradient = jax.tree.map(np.zeros_like, values)
             aux = []
-            for fn in evaluations:
-                (value, extra), grads = fn(values)
+            for loss in losses:
+                (value, extra), grads = _batch_value_gradient(values, loss, coordinates, names)
                 total += value
                 gradient = jax.tree.map(np.add, gradient, grads)
                 aux.append(extra)
@@ -1223,12 +1287,6 @@ class Trainer(zdx.Base):
             return total, aux, gradient
 
         # Compile each batch separately, then accumulate before updating Optax.
-        evaluations = [
-            eqx.filter_jit(
-                jax.value_and_grad(lambda values, fn=fn: fn(model_fn(values)), has_aux=True)
-            )
-            for fn in losses
-        ]
         optimizer = optax.multi_transform(dict(optimisers), {name: name for name in names})
         state = optimizer.init(initial)
         update = eqx.filter_jit(optimizer.update)
