@@ -13,4 +13,14 @@ We also have some publications that are currently available on arxiv:
 
 If you have any questions or need help, feel free to open an issue on the GitHub repository or reach out to the community.
 
+## Virgil integration and tests
+
+Install `amigo[virgil]` to use `amigo.discos.to_virgil`. Virgil remains optional
+for extraction-only use. For a source checkout, `pip install -e '.[dev]'`
+includes Virgil because the test suite exercises the native handoff:
+
+```sh
+python -m pytest tests/test_disco.py -k native_virgil_handoff
+```
+
 ![AMIGO](media/amigo.jpg)
