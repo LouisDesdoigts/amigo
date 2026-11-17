@@ -42,8 +42,14 @@ class AmigoModel(BaseModeller):
     read: None
 
     def __init__(
-        self, exposures, optics, detector, ramp_model, read,
-        state=None, vis_model=None,
+        self,
+        exposures,
+        optics,
+        detector,
+        ramp_model,
+        read,
+        state=None,
+        vis_model=None,
     ):
         if state is not None:
             optics = optics.set("transmission", state["transmission"])
@@ -74,10 +80,12 @@ class AmigoModel(BaseModeller):
 
         if opd_sharing is not None:
             params.pop("aberrations", None)
-            active = tuple((name, fields) for name, fields in opd_sharing
-                           if name in optics.opd_fits)
-            params["opds"] = init_opds(optics.pupil_mask, exposures, active,
-                                       optics.opd_coefficients)
+            active = tuple(
+                (name, fields) for name, fields in opd_sharing if name in optics.opd_fits
+            )
+            params["opds"] = init_opds(
+                optics.pupil_mask, exposures, active, optics.opd_coefficients
+            )
 
         if state is not None:
             params["defocus"] = state["defocus"]
@@ -108,7 +116,9 @@ class AmigoModel(BaseModeller):
     def opd_calibration(self):
         """Export bases, mappings and latest fixed/fitted coefficient groups together."""
         coefficients = {**self.optics.opd_coefficients, **self.params.get("opds", {})}
-        return OPDCalibration(self.optics.pupil_mask, coefficients, filters=tuple(self.optics.filters))
+        return OPDCalibration(
+            self.optics.pupil_mask, coefficients, filters=tuple(self.optics.filters)
+        )
 
     def __getattr__(self, key):
         if key in self.params:
@@ -205,7 +215,6 @@ class ModelParams(BaseModeller):
 
     def combine(self, params2):
         return ModelParams({**self.params, **params2.params})
-
 
 
 import numpy as onp

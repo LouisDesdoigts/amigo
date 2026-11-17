@@ -101,8 +101,9 @@ def vis_jac(
         )
         return vis_model.intensity_to_latent(intensity, filt)
 
-    return model_jac(reference, paths, coefficients, nbatches=nbatches,
-                     checkpoint=checkpoint, forward=True)
+    return model_jac(
+        reference, paths, coefficients, nbatches=nbatches, checkpoint=checkpoint, forward=True
+    )
 
 
 def vis_null(

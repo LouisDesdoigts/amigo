@@ -223,13 +223,13 @@ def reference_pupil(aperture):
     else:
         transmission = aperture.sparse_apertures()
     if aperture.amp_basis is not None:
-        transmission = transmission * (1 + vmap(dlu.eval_basis)(
-            aperture.amp_basis, aperture.amp_coeffs))
+        transmission = transmission * (
+            1 + vmap(dlu.eval_basis)(aperture.amp_basis, aperture.amp_coeffs)
+        )
 
     pixel_scale = aperture.diameter / aperture.npixels
     local = dlu.pixel_coords(aperture.size, aperture.size * pixel_scale)
-    centers = window_centers(aperture.corners, aperture.size,
-                             aperture.npixels, aperture.diameter)
+    centers = window_centers(aperture.corners, aperture.size, aperture.npixels, aperture.diameter)
     return transmission, local[None] + centers[:, :, None, None]
 
 
@@ -240,7 +240,7 @@ def ptt_defocus(coords):
     in the propagator. A local-plane basis removes only its projected overlap.
     """
     ptt = piston_tip_tilt(coords)
-    return np.concatenate([ptt, (coords ** 2).sum(axis=1)[None]])
+    return np.concatenate([ptt, (coords**2).sum(axis=1)[None]])
 
 
 class OPDSetup(zdx.Base):
@@ -257,13 +257,16 @@ class OPDSetup(zdx.Base):
         references = (aperture,) if self.references is None else self.references
         weights = []
         for reference in references:
-            if (reference.size != aperture.size or reference.npixels != aperture.npixels
-                    or reference.diameter != aperture.diameter
-                    or not bool(np.array_equal(reference.corners, aperture.corners))):
+            if (
+                reference.size != aperture.size
+                or reference.npixels != aperture.npixels
+                or reference.diameter != aperture.diameter
+                or not bool(np.array_equal(reference.corners, aperture.corners))
+            ):
                 raise ValueError("OPD reference apertures must share fixed pupil windows")
             amplitude, _ = reference_pupil(reference)
             if self.weighting == "intensity":
-                weights.append(amplitude ** 2)
+                weights.append(amplitude**2)
             elif self.weighting == "uniform":
                 weights.append((amplitude != 0).astype(float))
             else:
@@ -327,8 +330,10 @@ def build_opds(aperture, sharing=None):
             groups[alias] = component.sharing
     if sharing is not None:
         groups.update(sharing)
-    groups = tuple((name, (fields,) if isinstance(fields, str) else tuple(fields))
-                   for name, fields in groups.items())
+    groups = tuple(
+        (name, (fields,) if isinstance(fields, str) else tuple(fields))
+        for name, fields in groups.items()
+    )
     return opds or None, aliases or None, groups or (() if sharing is not None else None)
 
 
@@ -398,10 +403,14 @@ def standard_opds(aperture, fourier_modes=5, filter_modes=DEFAULT_FILTER_MODES):
     span as well as global PTT/defocus. Residual PTT only excludes global
     PTT/defocus: it is intended for fitting after the calibration is fixed.
     """
-    if not filter_modes or any(j < 5 for j in filter_modes) or len(set(filter_modes)) != len(filter_modes):
+    if (
+        not filter_modes
+        or any(j < 5 for j in filter_modes)
+        or len(set(filter_modes)) != len(filter_modes)
+    ):
         raise ValueError("filter_modes must contain distinct Noll indices >= 5")
     amplitude, coords = reference_pupil(aperture)
-    weights = amplitude ** 2
+    weights = amplitude**2
 
     # Sparse pupils break the full-circle orthogonality of ordinary Zernikes.
     # Remove global gauge patterns from the shapes before normalising the span.
@@ -415,12 +424,17 @@ def standard_opds(aperture, fourier_modes=5, filter_modes=DEFAULT_FILTER_MODES):
     ptt = PTT().build(aperture)
     opds = {"fourier": fourier, "filter": global_opd, "ptt": ptt}
     aliases = {name + "_coeffs": f"opds.{name}.x.x" for name in opds}
-    sharing = (("fourier_coeffs", ()), ("filter_coeffs", ("filter",)),
-               ("ptt_coeffs", ("program",)))
+    sharing = (
+        ("fourier_coeffs", ()),
+        ("filter_coeffs", ("filter",)),
+        ("ptt_coeffs", ("program",)),
+    )
     # Alias/sharing metadata are static Equinox fields, not fitted leaves.
     result = copy(aperture)
     object.__setattr__(result, "opds", opds)
-    object.__setattr__(result, "alias", tuple(sorted({**dict(aperture.alias or ()), **aliases}.items())))
+    object.__setattr__(
+        result, "alias", tuple(sorted({**dict(aperture.alias or ()), **aliases}.items()))
+    )
     object.__setattr__(result, "opd_sharing", sharing)
     result.validate_aliases()
     return result
@@ -450,7 +464,9 @@ def opd_key(exp, fields):
     if not fields:
         return "shared"
     try:
-        values = [str(exp[field] if isinstance(exp, dict) else getattr(exp, field)) for field in fields]
+        values = [
+            str(exp[field] if isinstance(exp, dict) else getattr(exp, field)) for field in fields
+        ]
     except (KeyError, AttributeError) as error:
         raise ValueError(f"Selecting this OPD requires exposure fields {fields}") from error
     if any("." in value or ":" in value for value in values):
@@ -468,15 +484,19 @@ def init_opds(aperture, exposures, groups, coefficients=None):
         if name not in aliases or not aliases[name].startswith("opds."):
             raise ValueError(f"{name!r} must be an alias to an OPD coefficient input")
         target = aliases[name]
-        if any(target == other or target.startswith(other + ".") or other.startswith(target + ".")
-               for other in targets):
+        if any(
+            target == other or target.startswith(other + ".") or other.startswith(target + ".")
+            for other in targets
+        ):
             raise ValueError("OPD fit aliases must select distinct coefficient inputs")
         targets.append(target)
         value = aperture.get(name)
         if not isinstance(value, Array):
             raise ValueError(f"{name!r} must select a coefficient array")
-        values[name] = {opd_key(exp, fields): coefficient_value(aperture, name, coefficients, exp)
-                        for exp in exposures}
+        values[name] = {
+            opd_key(exp, fields): coefficient_value(aperture, name, coefficients, exp)
+            for exp in exposures
+        }
     return values
 
 

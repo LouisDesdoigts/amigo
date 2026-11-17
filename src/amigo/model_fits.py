@@ -49,17 +49,25 @@ class Exposure(zdx.Base):
         # parity. Do not substitute ROLL_REF (V3 orientation) for detector WCS.
         header = file[0].header
         self.detector_to_sky_arcsec = None
-        if (str(header.get('CTYPE1', '')).startswith('RA---') and
-                str(header.get('CTYPE2', '')).startswith('DEC--')):
-            if any(header.get(f'CUNIT{i}', 'deg').lower() != 'deg' for i in (1, 2)):
-                raise ValueError('Detector WCS must use degrees')
-            if all(f'CD{i}_{j}' in header for i in (1, 2) for j in (1, 2)):
-                self.detector_to_sky_arcsec = tuple(tuple(3600*float(header[f'CD{i}_{j}'])
-                    for j in (1, 2)) for i in (1, 2))
-            elif all(f'CDELT{i}' in header for i in (1, 2)):
-                self.detector_to_sky_arcsec = tuple(tuple(3600*float(header[f'CDELT{i}']) *
-                    float(header.get(f'PC{i}_{j}', float(i == j)))
-                    for j in (1, 2)) for i in (1, 2))
+        if str(header.get("CTYPE1", "")).startswith("RA---") and str(
+            header.get("CTYPE2", "")
+        ).startswith("DEC--"):
+            if any(header.get(f"CUNIT{i}", "deg").lower() != "deg" for i in (1, 2)):
+                raise ValueError("Detector WCS must use degrees")
+            if all(f"CD{i}_{j}" in header for i in (1, 2) for j in (1, 2)):
+                self.detector_to_sky_arcsec = tuple(
+                    tuple(3600 * float(header[f"CD{i}_{j}"]) for j in (1, 2)) for i in (1, 2)
+                )
+            elif all(f"CDELT{i}" in header for i in (1, 2)):
+                self.detector_to_sky_arcsec = tuple(
+                    tuple(
+                        3600
+                        * float(header[f"CDELT{i}"])
+                        * float(header.get(f"PC{i}_{j}", float(i == j)))
+                        for j in (1, 2)
+                    )
+                    for i in (1, 2)
+                )
         self.slopes = np.array(file["SLOPE"].data, float)
         self.cov = np.array(file["SLOPE_COV"].data, float)
         self.ramp = np.asarray(file["RAMP"].data, float)
@@ -321,8 +329,9 @@ class ModelFit(Exposure):
         optics = model.optics
         if optics.pupil_mask.opd_sharing is not None:
             coefficients = {**optics.opd_coefficients, **model.params.get("opds", {})}
-            aperture = apply_opds(optics.pupil_mask, coefficients,
-                                 optics.pupil_mask.opd_sharing, self)
+            aperture = apply_opds(
+                optics.pupil_mask, coefficients, optics.pupil_mask.opd_sharing, self
+            )
             optics = optics.set(["pupil_mask", "opd_selected"], [aperture, True])
         elif "aberrations" in model.params.keys():
             coefficients = model.aberrations[self.get_key("aberrations")]

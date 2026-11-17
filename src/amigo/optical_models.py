@@ -623,9 +623,11 @@ class AMIOptics(dl.AngularOpticalSystem):
 
         self.sparse = bool(sparse)
         self.psf_upsample = psf_upsample
-        if (isinstance(wavelength_batch_size, bool)
-                or not isinstance(wavelength_batch_size, int)
-                or wavelength_batch_size < 1):
+        if (
+            isinstance(wavelength_batch_size, bool)
+            or not isinstance(wavelength_batch_size, int)
+            or wavelength_batch_size < 1
+        ):
             raise ValueError("wavelength_batch_size must be a positive integer")
         self.wavelength_batch_size = wavelength_batch_size
         if psf_interpolation not in ("intensity", "phasor"):

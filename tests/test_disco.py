@@ -1,4 +1,5 @@
 """DISCO representation and explicit Virgil log-visibility projection."""
+
 from unittest import TestCase
 
 import equinox as eqx
@@ -14,12 +15,13 @@ jax.config.update("jax_enable_x64", True)
 class TestDisco(TestCase):
     def test_projection_is_real_linear_and_differentiable(self):
         operator = np.array([[1 + 2j, 3 - 4j]])
-        disco = Disco([.4], [.2], operator, [[1., 2.], [-.5, .5]], 4.3e-6)
-        vis = np.array([.8 + .3j, 1 - .1j])
+        disco = Disco([0.4], [0.2], operator, [[1.0, 2.0], [-0.5, 0.5]], 4.3e-6)
+        vis = np.array([0.8 + 0.3j, 1 - 0.1j])
         expected = operator.real @ vis.real + operator.imag @ vis.imag
         npt.assert_allclose(eqx.filter_jit(disco.project)(vis), expected)
-        npt.assert_allclose(jax.jacfwd(lambda x: disco.project(x + 1j * vis.imag))(vis.real),
-                            operator.real)
+        npt.assert_allclose(
+            jax.jacfwd(lambda x: disco.project(x + 1j * vis.imag))(vis.real), operator.real
+        )
 
     def test_native_virgil_handoff(self):
         from amigo.discos import to_virgil
@@ -27,23 +29,32 @@ class TestDisco(TestCase):
         from virgil.likelihood import model_loglike, whitened_residuals
         from jax.scipy.stats import norm
 
-        disco = Disco([.1], [.2], [[1 + 2j, 3 - 4j]], [[1., 2.], [-.5, .5]],
-                      np.array([4.3e-6, 4.8e-6]), transform=[[0., -1.], [-1., 0.]])
+        disco = Disco(
+            [0.1],
+            [0.2],
+            [[1 + 2j, 3 - 4j]],
+            [[1.0, 2.0], [-0.5, 0.5]],
+            np.array([4.3e-6, 4.8e-6]),
+            transform=[[0.0, -1.0], [-1.0, 0.0]],
+        )
         data = to_virgil(disco)
-        model = BinaryModelCartesian(70., -30., .02)
+        model = BinaryModelCartesian(70.0, -30.0, 0.02)
         prediction = disco.model(model)
         npt.assert_allclose(data.model(model), prediction)
-        npt.assert_allclose(whitened_residuals(model, data),
-                            (prediction-disco.data)/disco.uncertainty)
-        npt.assert_allclose(model_loglike(model, data),
-                            norm.logpdf(prediction, disco.data, disco.uncertainty).sum())
+        npt.assert_allclose(
+            whitened_residuals(model, data), (prediction - disco.data) / disco.uncertainty
+        )
+        npt.assert_allclose(
+            model_loglike(model, data),
+            norm.logpdf(prediction, disco.data, disco.uncertainty).sum(),
+        )
         npt.assert_allclose(whitened_residuals(model, data.with_model(model)), 0, atol=1e-15)
 
     def test_coordinate_map_preserves_fourier_phase(self):
-        uv = np.array([[1., 2.], [-.5, .5]])
-        transform = np.array([[.8, .3], [.2, -1.1]])
-        disco = Disco([0.], [.1], [[1j, 2.]], uv, 4.3e-6, transform)
-        optical_position = np.array([.03, -.04])
+        uv = np.array([[1.0, 2.0], [-0.5, 0.5]])
+        transform = np.array([[0.8, 0.3], [0.2, -1.1]])
+        disco = Disco([0.0], [0.1], [[1j, 2.0]], uv, 4.3e-6, transform)
+        optical_position = np.array([0.03, -0.04])
         sky_position = transform @ optical_position
         npt.assert_allclose(disco.sky_uv.T @ sky_position, uv.T @ optical_position)
         # Geometry remains differentiable for calibration experiments.
@@ -53,9 +64,10 @@ class TestDisco(TestCase):
     def test_combine_matches_stacked_generalized_least_squares(self):
         from amigo.discos import combine
 
-        values = np.array([[1., -2.], [3., .5], [-1., 2.]])
-        cov = np.array([[[2., .7], [.7, 1.]], [[1., -.4], [-.4, 3.]],
-                        [[4., 1.], [1., 2.]]])
+        values = np.array([[1.0, -2.0], [3.0, 0.5], [-1.0, 2.0]])
+        cov = np.array(
+            [[[2.0, 0.7], [0.7, 1.0]], [[1.0, -0.4], [-0.4, 3.0]], [[4.0, 1.0], [1.0, 2.0]]]
+        )
         mean, covariance = jax.jit(combine)(values, cov)
         # Independent reference: solve one stacked, whitened observation problem.
         lower = np.linalg.cholesky(cov)
@@ -71,18 +83,18 @@ class TestDisco(TestCase):
         from amigo.discos import calibrate
         from amigo.stats import orthogonalise, build_disco
 
-        basis = np.array([[1+2j, 0.], [0., 2-1j], [1., 1j]])
-        null = np.array([[1., -1., 0.], [0., 1., 2.]])
-        vis = np.array([.1+.2j, -.3+.1j])
-        cal = np.array([.3, -.2, .1])
+        basis = np.array([[1 + 2j, 0.0], [0.0, 2 - 1j], [1.0, 1j]])
+        null = np.array([[1.0, -1.0, 0.0], [0.0, 1.0, 2.0]])
+        vis = np.array([0.1 + 0.2j, -0.3 + 0.1j])
+        cal = np.array([0.3, -0.2, 0.1])
         science = cal + np.real(basis @ np.conj(vis))
-        science_cov = np.array([[2., .4, .2], [.4, 3., -.3], [.2, -.3, 1.]])
-        cal_cov = np.eye(3)*.2
+        science_cov = np.array([[2.0, 0.4, 0.2], [0.4, 3.0, -0.3], [0.2, -0.3, 1.0]])
+        cal_cov = np.eye(3) * 0.2
         c, C = calibrate(science, science_cov, cal, cal_cov)
         data, covariance, rotation, variance = orthogonalise(null @ c, null @ C @ null.T)
         operator = build_disco(basis, null, rotation)
-        disco = Disco(data, np.sqrt(variance), operator, [[1., 2.], [0., 1.]], 4.3e-6)
+        disco = Disco(data, np.sqrt(variance), operator, [[1.0, 2.0], [0.0, 1.0]], 4.3e-6)
         npt.assert_allclose(disco.project(vis), data, atol=1e-14)
         npt.assert_allclose(covariance, np.diag(variance), atol=1e-14)
         expected_chi2 = (null @ c) @ np.linalg.solve(null @ C @ null.T, null @ c)
-        npt.assert_allclose(np.sum((data / disco.uncertainty)**2), expected_chi2)
+        npt.assert_allclose(np.sum((data / disco.uncertainty) ** 2), expected_chi2)
