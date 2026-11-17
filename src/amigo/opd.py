@@ -243,7 +243,7 @@ def ptt_defocus(coords):
     return np.concatenate([ptt, (coords**2).sum(axis=1)[None]])
 
 
-class OPDSetup(zdx.Base):
+class OPDRecipe(zdx.Base):
     """Construction settings consumed by the aperture, not runtime fit state."""
 
     sharing: tuple = eqx.field(default=(), kw_only=True, static=True)
@@ -284,7 +284,7 @@ class OPDSetup(zdx.Base):
         return component.set("x", mapping)
 
 
-class PTT(OPDSetup):
+class PTTRecipe(OPDRecipe):
     """Residual-fit local planes, excluding global piston/tip/tilt/defocus.
 
     Every hole uses the same three polynomials; only its coefficients differ.
@@ -300,7 +300,7 @@ class PTT(OPDSetup):
         return BasisOPD(basis), (len(aperture.corners), 3)
 
 
-class Fourier(OPDSetup):
+class FourierRecipe(OPDRecipe):
     """Calibration Fourier modes excluding global piston/tip/tilt/defocus.
 
     This is an alternative to the residual PTT fit, not a joint PTT+Fourier
@@ -320,7 +320,7 @@ def build_opds(aperture, sharing=None):
     aliases = dict(aperture.alias or ())
     groups = {}
     for name, component in opds.items():
-        if isinstance(component, OPDSetup):
+        if isinstance(component, OPDRecipe):
             opds[name] = component.build(aperture)
             alias = name + "_coeffs"
             target = f"opds.{name}.x.x"
@@ -420,8 +420,8 @@ def standard_opds(aperture, fourier_modes=5, filter_modes=DEFAULT_FILTER_MODES):
     global_opd = zdx.Map(x=mapping, M=global_basis)
 
     # Both calibration terms then occupy disjoint spaces in the same metric.
-    fourier = Fourier(n_modes=fourier_modes).build(aperture, extra_null=global_basis)
-    ptt = PTT().build(aperture)
+    fourier = FourierRecipe(n_modes=fourier_modes).build(aperture, extra_null=global_basis)
+    ptt = PTTRecipe().build(aperture)
     opds = {"fourier": fourier, "filter": global_opd, "ptt": ptt}
     aliases = {name + "_coeffs": f"opds.{name}.x.x" for name in opds}
     sharing = (

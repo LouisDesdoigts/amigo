@@ -22,8 +22,9 @@ from .opd import opd_key
 class Residuals(zdx.Base):
     """Prepared data and fixed covariance factors for a collection of exposures.
 
-    Construct with prepare(exposures). Covariance parameters are not fitted by
-    this object: a variable-covariance likelihood needs its own normalization.
+    Construct with Residuals.from_exposures(exposures). Covariance parameters
+    are not fitted by this object: a variable-covariance likelihood needs its
+    own normalization.
     """
 
     exposures: tuple
@@ -38,6 +39,28 @@ class Residuals(zdx.Base):
         self.cholesky = tuple(cholesky)
         self.size = int(size)
         self.logdet = np.asarray(logdet, float)
+
+    @classmethod
+    def from_exposures(cls, exposures):
+        """Select valid pixels and cache their covariance factors once per fit."""
+        exposures = tuple(exposures)
+        if not exposures:
+            raise ValueError("Select at least one exposure")
+
+        data, factors = [], []
+        size, logdet = 0, np.asarray(0.0)
+
+        for exp in exposures:
+            values = np.asarray(exp.to_vec(exp.slopes), float)
+            covariance = np.asarray(exp.to_vec(exp.cov), float)
+            lower = _cholesky(values, covariance)
+
+            data.append(values)
+            factors.append(lower)
+            size += values.size
+            logdet += 2 * np.log(np.diagonal(lower, axis1=-2, axis2=-1)).sum()
+
+        return cls(exposures, data, factors, size, logdet)
 
     def parts(self, model):
         """Yield whitened residuals in pixel/group order, one exposure at a time."""
@@ -93,32 +116,10 @@ def _cholesky(data, covariance):
     return lower
 
 
-def prepare(exposures):
-    """Select valid pixels and cache their covariance factors once per fit."""
-    exposures = tuple(exposures)
-    if not exposures:
-        raise ValueError("Select at least one exposure")
-
-    data, factors = [], []
-    size, logdet = 0, np.asarray(0.0)
-
-    for exp in exposures:
-        values = np.asarray(exp.to_vec(exp.slopes), float)
-        covariance = np.asarray(exp.to_vec(exp.cov), float)
-        lower = _cholesky(values, covariance)
-
-        data.append(values)
-        factors.append(lower)
-        size += values.size
-        logdet += 2 * np.log(np.diagonal(lower, axis1=-2, axis2=-1)).sum()
-
-    return Residuals(exposures, data, factors, size, logdet)
-
-
 # Reference information and parameter normalization
 
 
-def information(residuals, model, paths, *, nbatches=None, checkpoint=False):
+def fisher_info(residuals, model, paths, *, nbatches=None, checkpoint=False):
     """Sum unscaled residual JTJ by exposure using Zodiax.
 
     Optimizer curvature for mean(r**2) is 2*JTJ/N. Recalculate JTJ at the fitted
@@ -294,7 +295,7 @@ def save_information(path, metric, *, context):
 
     context identifies optical state, spectrum, basis, sampling, weighting,
     objective convention and code/data versions. Trainer.normalise expects
-    objective-curvature units; information() returns unscaled statistical JTJ.
+    objective-curvature units; fisher_info() returns unscaled statistical JTJ.
     No unit conversion or reference equivalence is inferred when loading.
     """
     if not context:
@@ -426,11 +427,11 @@ def _line_search(
 
 def armijo(residuals, coordinates, **kwargs):
     """Low-level Armijo fit for the canonical prepared residual objective."""
-    objective = eqx.Partial(_prepared_coordinate_loss, residuals, coordinates)
+    objective = eqx.Partial(_residuals_coordinate_loss, residuals, coordinates)
     return _descent(objective, coordinates, **kwargs)
 
 
-def _prepared_coordinate_loss(residuals, coordinates, z):
+def _residuals_coordinate_loss(residuals, coordinates, z):
     return residuals.loss(coordinates(z))
 
 
@@ -770,12 +771,12 @@ def _check_batches(exposures, batches):
         raise ValueError("Batches omit stored exposures")
 
 
-def _prepared_loss(prepared, model, *, scale=1.0):
-    return prepared.loss(model) * scale, ()
+def _residuals_loss(residuals, model, *, scale=1.0):
+    return residuals.loss(model) * scale, ()
 
 
-def _prepared_least_squares(prepared, model):
-    return prepared.least_squares(model)
+def _residuals_least_squares(residuals, model):
+    return residuals.least_squares(model)
 
 
 def _custom_residual(function, exposures, args, model):
@@ -832,7 +833,7 @@ class Trainer(zdx.Base):
     reference_exposures: tuple
     reference_args: object
     reference_functions: tuple
-    prepared: Residuals | None
+    residuals: Residuals | None
     information: dict
     transforms: dict
     layouts: dict
@@ -850,9 +851,9 @@ class Trainer(zdx.Base):
         self.reference_exposures = ()
         self.reference_args = None
         self.reference_functions = ()
-        self.prepared = None
+        self.residuals = None
         if loss_fn is None and residual_fn is None and self.exposures:
-            self.prepared = prepare(self.exposures)
+            self.residuals = Residuals.from_exposures(self.exposures)
         self.information = {}
         self.transforms = {}
         self.layouts = {}
@@ -861,11 +862,11 @@ class Trainer(zdx.Base):
         """Adapt the stored objective; an internal subset supports training batches."""
         exposures = self.exposures if exposures is None else tuple(exposures)
         if self.loss_fn is None and self.residual_fn is None:
-            prepared = self.prepared
-            if prepared is None or not eqx.tree_equal(prepared.exposures, exposures):
-                prepared = prepare(exposures)
-            return (eqx.Partial(_prepared_loss, prepared),
-                    eqx.Partial(_prepared_least_squares, prepared))
+            residuals = self.residuals
+            if residuals is None or not eqx.tree_equal(residuals.exposures, exposures):
+                residuals = Residuals.from_exposures(exposures)
+            return (eqx.Partial(_residuals_loss, residuals),
+                    eqx.Partial(_residuals_least_squares, residuals))
 
         residual = None if self.residual_fn is None else eqx.Partial(
             _custom_residual, self.residual_fn, exposures, self.args
@@ -1260,10 +1261,10 @@ class Trainer(zdx.Base):
 
         # Canonical MSE uses one global sample count, regardless of batch partition.
         if self.loss_fn is None and self.residual_fn is None:
-            prepared = [prepare(batch) for batch in batch_values]
-            size = sum(part.size for part in prepared)
+            parts = [Residuals.from_exposures(batch) for batch in batch_values]
+            size = sum(part.size for part in parts)
             losses = [
-                eqx.Partial(_prepared_loss, part, scale=part.size / size) for part in prepared
+                eqx.Partial(_residuals_loss, part, scale=part.size / size) for part in parts
             ]
         else:
             losses = [self._objective(batch)[0] for batch in batch_values]

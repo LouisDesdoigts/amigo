@@ -332,7 +332,7 @@ class ModelFit(Exposure):
             aperture = apply_opds(
                 optics.pupil_mask, coefficients, optics.pupil_mask.opd_sharing, self
             )
-            optics = optics.set(["pupil_mask", "opd_selected"], [aperture, True])
+            optics = optics.set(["pupil_mask", "opds_applied"], [aperture, True])
         elif "aberrations" in model.params.keys():
             coefficients = model.aberrations[self.get_key("aberrations")]
             optics = optics.set("pupil_mask.aberrations", coefficients)
@@ -451,7 +451,7 @@ class SplineVisFit(PointFit):
         )
         if vis_model is None:
             raise ValueError("vis_model must be provided for SplineVisFit")
-        n = vis_model.n_basis
+        n = vis_model.n_modes
         params["vis"] = (self.get_key("vis"), np.zeros(n))
         return params
 

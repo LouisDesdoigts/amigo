@@ -12,7 +12,7 @@ import numpy.testing as npt
 from amigo.discos import null_space, image_kernel
 from amigo.model_fits import Exposure
 from amigo.optical_models import DynamicApertureMask, AMIOptics
-from amigo.opd import PTT
+from amigo.opd import PTTRecipe
 
 
 class ReviewTests(TestCase):
@@ -29,13 +29,16 @@ class ReviewTests(TestCase):
 
     def test_basis_keeps_exposure_selected_optics(self):
         pupil = DynamicApertureMask(
-            holes=np.array([[-1.0, -1.0], [1.0, 1.0]]), npixels=64, size=16, opds={"ptt": PTT()}
+            holes=np.array([[-1.0, -1.0], [1.0, 1.0]]),
+            npixels=64,
+            size=16,
+            opds={"ptt": PTTRecipe()},
         )
         optics = AMIOptics(
             pupil_mask=pupil, wf_npixels=64, filters=["F380M"], nwavels=1, psf_npixels=8
         )
         optics = optics.set(
-            ["opd_coefficients", "opd_selected"], [{"ptt_coeffs": {"001": pupil.ptt_coeffs}}, True]
+            ["opd_coefficients", "opds_applied"], [{"ptt_coeffs": {"001": pupil.ptt_coeffs}}, True]
         )
         with (
             patch.object(AMIOptics, "for_filter", side_effect=AssertionError("reference reset")),
@@ -43,7 +46,7 @@ class ReviewTests(TestCase):
             patch("amigo.vis_models.visibility_jtj", return_value=np.eye(8)),
         ):
             basis = optics.visibility_model("F380M", n_knots=3, n_modes=2)
-        self.assertEqual(basis.n_basis, 2)
+        self.assertEqual(basis.n_modes, 2)
 
     def test_support_uses_final_bad_pixel_mask(self):
         header = dict(

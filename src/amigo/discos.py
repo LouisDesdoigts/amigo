@@ -354,12 +354,12 @@ class Disco(zdx.Base):
     """Independent real measurements and a complex projection operator.
 
     Rows of ``operator`` correspond to measurements; columns correspond to
-    optical-frame ``uv`` samples (metres). ``wavel`` is in metres, either one
+    optical-frame ``uv`` samples (metres). ``wavelength`` is in metres, either one
     effective wavelength or one per column. No band integration is implied.
 
     ``transform`` maps optical angular offsets to sky East/North offsets.
     It includes rotation and parity. Sky baselines use its inverse transpose,
-    preserving the Fourier phase with convention exp(-2 pi i uv.theta / wavel).
+    preserving the Fourier phase with convention exp(-2 pi i uv.theta / wavelength).
     If UV coordinates are already on sky, use the identity transform.
     """
 
@@ -367,15 +367,15 @@ class Disco(zdx.Base):
     uncertainty: jax.Array
     operator: jax.Array
     uv: jax.Array
-    wavel: jax.Array
+    wavelength: jax.Array
     transform: jax.Array
 
-    def __init__(self, data, uncertainty, operator, uv, wavel, transform=None):
+    def __init__(self, data, uncertainty, operator, uv, wavelength, transform=None):
         self.data = np.asarray(data, dtype=float)
         self.uncertainty = np.asarray(uncertainty, dtype=float)
         self.operator = np.asarray(operator, dtype=complex)
         self.uv = np.asarray(uv, dtype=float)
-        self.wavel = np.asarray(wavel, dtype=float)
+        self.wavelength = np.asarray(wavelength, dtype=float)
         self.transform = np.eye(2) if transform is None else np.asarray(transform, dtype=float)
 
         if self.data.ndim != 1 or self.uncertainty.shape != self.data.shape:
@@ -386,10 +386,10 @@ class Disco(zdx.Base):
             raise ValueError("uncertainty must be positive")
         if self.uv.shape != (2, self.operator.shape[1]):
             raise ValueError("uv must have shape (2, number of operator columns)")
-        if self.wavel.shape not in ((), (self.operator.shape[1],)) or not bool(
-            np.all(self.wavel > 0)
+        if self.wavelength.shape not in ((), (self.operator.shape[1],)) or not bool(
+            np.all(self.wavelength > 0)
         ):
-            raise ValueError("wavel must be positive and scalar or one value per column")
+            raise ValueError("wavelength must be positive and scalar or one value per column")
         if self.transform.shape != (2, 2) or not bool(np.all(np.isfinite(self.transform))):
             raise ValueError("transform must be a finite 2x2 matrix")
         if not bool(np.abs(np.linalg.det(self.transform)) > 0):
@@ -401,9 +401,9 @@ class Disco(zdx.Base):
         return np.linalg.solve(self.transform.T, self.uv)
 
     def model(self, source):
-        """Project log visibility from a sky source with model(u, v, wavel)."""
+        """Project log visibility from a sky source with model(u, v, wavelength)."""
         u, v = self.sky_uv
-        return self.project(np.log(source.model(u, v, self.wavel)))
+        return self.project(np.log(source.model(u, v, self.wavelength)))
 
     def project(self, vis):
         """Return Re(operator @ conj(vis)), a real-linear projection."""
@@ -413,7 +413,7 @@ class Disco(zdx.Base):
 def to_virgil(disco):
     """Build a native Virgil observation of projected log-complex visibility.
 
-    Geometry comes from disco.sky_uv and disco.wavel. Virgil performs log(V)
+    Geometry comes from disco.sky_uv and disco.wavelength. Virgil performs log(V)
     before projection, matching disco.model(source). Other forward mappings
     need their own observation adapter.
     """
@@ -426,7 +426,7 @@ def to_virgil(disco):
         dict(
             u=-np.asarray(u),
             v=-np.asarray(v),
-            wavelength_m=disco.wavel,
+            wavelength_m=disco.wavelength,
             disco_coefficients=disco.data,
             disco_sigma=disco.uncertainty,
             disco_logamp_model_operator=disco.operator.real,
