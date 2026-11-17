@@ -14,9 +14,9 @@ def fft_coords(wl, npix, pscale, pad=2):
 
 def intensity_fft_coords(intensity, pad=2):
     """Fourier coordinates per wavelength, in metres of baseline."""
-    return vmap(lambda wl: fft_coords(
-        wl, intensity.npixels, intensity.pixel_scale[0], pad=pad
-    ))(intensity.wavelength)
+    return vmap(lambda wl: fft_coords(wl, intensity.npixels, intensity.pixel_scale[0], pad=pad))(
+        intensity.wavelength
+    )
 
 
 def vis_to_im(log_visibility, shape):
@@ -24,10 +24,13 @@ def vis_to_im(log_visibility, shape):
 
     Zero at the central knot fixes the DC multiplier to one.
     """
-    return np.concatenate([
-        log_visibility, np.zeros(1, dtype=log_visibility.dtype),
-        np.conj(log_visibility[::-1]),
-    ]).reshape(shape)
+    return np.concatenate(
+        [
+            log_visibility,
+            np.zeros(1, dtype=log_visibility.dtype),
+            np.conj(log_visibility[::-1]),
+        ]
+    ).reshape(shape)
 
 
 def inject_vis(intensity, log_visibility, otf_coords, *, pad=2):
@@ -38,19 +41,23 @@ def inject_vis(intensity, log_visibility, otf_coords, *, pad=2):
     """
     log_visibility = vis_to_im(log_visibility, otf_coords.shape[1:])
     uv_coords = intensity_fft_coords(intensity, pad=pad)
-    sampled = vmap(lambda uv: interp(
-        log_visibility, otf_coords, uv, method="linear", fill=0.0
-    ))(uv_coords)
+    sampled = vmap(lambda uv: interp(log_visibility, otf_coords, uv, method="linear", fill=0.0))(
+        uv_coords
+    )
 
     size = intensity.npixels
     extra = (pad - 1) * size
     before, after = extra // 2, extra - extra // 2
-    to_uv = vmap(lambda image: np.fft.fftshift(
-        np.fft.fft2(np.pad(image, ((before, after), (before, after))))
-    ))
-    from_uv = vmap(lambda spectrum: np.fft.ifft2(
-        np.fft.ifftshift(spectrum)
-    )[before:before + size, before:before + size])
+    to_uv = vmap(
+        lambda image: np.fft.fftshift(
+            np.fft.fft2(np.pad(image, ((before, after), (before, after))))
+        )
+    )
+    from_uv = vmap(
+        lambda spectrum: np.fft.ifft2(np.fft.ifftshift(spectrum))[
+            before : before + size, before : before + size
+        ]
+    )
     spectrum = to_uv(intensity.data) * np.exp(sampled)
     # Recover intensity without folding negative predictions positive.
     return np.real(from_uv(spectrum)).sum(0)
@@ -122,14 +129,35 @@ class LogVisModel(zdx.Base):
 
     def intensity_to_latent(self, intensity, filter):
         vis = self.intensity_to_otf(intensity)
-        return self.to_latent(np.log(vis.flatten()[:vis.size // 2]), filter)
+        return self.to_latent(np.log(vis.flatten()[: vis.size // 2]), filter)
+
+
+class PlaceholderVisModel(zdx.Base):
+    """
+    No visibility modulation: placeholder for initialising the AmigoModel with
+    a vis_model but if no visibility modulation is (yet) required. For example,
+    use in amigo_pipeline for 1.instrument and 2.reference stages, before the
+    relevant vis_basis is calculated.
+    """
+
+    n_basis = 0
+
+    def model_vis(self, intensity, coefficients, filter):
+        return dl.PSF(intensity.data.sum(0), intensity.pixel_scale.mean(0))
 
 
 def visibility_jtj(
-    intensity, knot_modes, coords, *, pad=2, downsample=1,
-    batch_size=8, checkpoint=True,
+    intensity,
+    knot_modes,
+    coords,
+    *,
+    pad=2,
+    downsample=1,
+    batch_size=8,
+    checkpoint=True,
 ):
     """Calculate unweighted image J.T @ J at zero visibility coefficients."""
+
     def image(coefficients):
         result = inject_vis(intensity, coefficients @ knot_modes, coords, pad=pad)
         return dlu.downsample(result, downsample, mean=False).reshape(-1)
@@ -137,7 +165,8 @@ def visibility_jtj(
     # Differentiate the image directly, without noise or PSF weighting.
     dimension = len(knot_modes)
     jtj = zdx.gauss_newton(
-        image, np.zeros(dimension),
+        image,
+        np.zeros(dimension),
         nbatches=(dimension + batch_size - 1) // batch_size,
         checkpoint=checkpoint,
     ).matrix
@@ -150,7 +179,11 @@ def select_visibility_modes(jtj, knot_modes, *, n_modes=None, retained_trace=0.9
     """Return leading complex modes and the full descending JTJ spectrum."""
     dimension = len(knot_modes)
     if n_modes is not None:
-        if isinstance(n_modes, bool) or not isinstance(n_modes, int) or not 1 <= n_modes <= dimension:
+        if (
+            isinstance(n_modes, bool)
+            or not isinstance(n_modes, int)
+            or not 1 <= n_modes <= dimension
+        ):
             raise ValueError(f"n_modes must be between 1 and {dimension}")
     elif not 0 < retained_trace <= 1:
         raise ValueError("retained_trace must lie in (0, 1]")
