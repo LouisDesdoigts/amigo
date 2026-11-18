@@ -1,3 +1,5 @@
+import warnings
+
 import jax
 import equinox as eqx
 import zodiax as zdx
@@ -176,12 +178,31 @@ class Exposure(zdx.Base):
         return (fill * np.ones((80, 80))).at[*self.support].set(vec)
 
 
+COVARIANCES = ("full", "banded", "diagonal")
+
+
+def _covariance_option(covariance, use_cov, only_diag):
+    """Resolve the deprecated use_cov/only_diag aliases to a covariance mode."""
+    if use_cov is None and only_diag is None:
+        return covariance
+    if covariance != "full":
+        raise ValueError("Pass covariance, not covariance with use_cov/only_diag")
+    warnings.warn(
+        "use_cov and only_diag are deprecated: use covariance='full', 'banded', 'diagonal'",
+        FutureWarning,
+        stacklevel=3,
+    )
+    if use_cov is not None and not use_cov:
+        return "diagonal"
+    return "banded" if only_diag else "full"
+
+
 class ModelFit(Exposure):
     fit_one_on_fs: bool = eqx.field(static=True)
     fit_reflectivity: bool = eqx.field(static=True)
     fit_bias: bool = eqx.field(static=True)
     validator: bool = eqx.field(static=True)
-    use_cov: bool = eqx.field(static=True)
+    covariance: str = eqx.field(static=True)
 
     def __init__(
         self,
@@ -190,21 +211,31 @@ class ModelFit(Exposure):
         fit_one_on_fs=False,
         fit_bias=False,
         validator=False,
-        use_cov=True,
-        only_diag=False,
+        covariance="full",
+        use_cov=None,
+        only_diag=None,
         **kwargs,
     ):
+        """
+        covariance sets how much of each exposure's slope covariance is used:
+        "full" uses all of it, "banded" keeps the main diagonal and the two
+        neighbouring ones, and "diagonal" treats every slope as independent.
+        use_cov and only_diag are deprecated aliases for it.
+        """
+        covariance = _covariance_option(covariance, use_cov, only_diag)
+        if covariance not in COVARIANCES:
+            raise ValueError(f"covariance must be one of {COVARIANCES}, got {covariance!r}")
         self.fit_one_on_fs = fit_one_on_fs
         self.fit_reflectivity = fit_reflectivity
         self.fit_bias = fit_bias
         self.validator = bool(validator)
-        self.use_cov = bool(use_cov)
+        self.covariance = covariance
         super().__init__(*args, **kwargs)
 
-        if not bool(use_cov):
+        if covariance == "diagonal":
             self.cov = self.cov * np.eye(len(self.slopes))[..., None, None]
 
-        if only_diag:
+        if covariance == "banded":
             n = self.nslopes
             mask = np.eye(n, dtype=bool)
             mask |= np.eye(n, k=1, dtype=bool)
@@ -437,11 +468,21 @@ class PointFit(ModelFit):
 
 
 class SplineVisFit(PointFit):
-    joint_fit: bool = eqx.field(static=True)
+    share_vis: bool = eqx.field(static=True)
     vis_key: str | None = eqx.field(static=True, default=None)
 
-    def __init__(self, *args, joint_fit=False, vis_key=None, **kwargs):
-        self.joint_fit = bool(joint_fit)
+    def __init__(self, *args, share_vis=False, vis_key=None, joint_fit=None, **kwargs):
+        """
+        vis_key names the group of exposures that share one visibility vector, and
+        takes precedence. Without it, share_vis=True shares by star and filter and
+        False gives each exposure its own. joint_fit is a deprecated alias.
+        """
+        if joint_fit is not None:
+            if share_vis:
+                raise ValueError("Pass share_vis, not both share_vis and joint_fit")
+            warnings.warn("joint_fit is deprecated: use share_vis", FutureWarning, stacklevel=2)
+            share_vis = joint_fit
+        self.share_vis = bool(share_vis)
         self.vis_key = vis_key
         super().__init__(*args, **kwargs)
 
@@ -461,7 +502,7 @@ class SplineVisFit(PointFit):
             return self.vis_key
 
         # Return the per exposure key if not joint fitting
-        if not self.joint_fit:
+        if not self.share_vis:
             if param in ["amplitudes", "phases", "vis"]:
                 return self.key
 
