@@ -91,17 +91,19 @@ class AmigoModel(BaseModeller):
             elif jitter is not None:
                 params["sigmas"] = {key: np.asarray(jitter, float) for key in params["sigmas"]}
 
-            abb = {}
-            for key in params["aberrations"].keys():
-                prog, filt = key.split("_")
-                # Keep the model's own initial coefficients if the state's were
-                # fitted with a different basis (e.g. Zernike vs eigenbasis)
-                if np.shape(state["aberrations"][filt]) != np.shape(params["aberrations"][key]):
-                    abb[key] = params["aberrations"][key]
-                    continue
-                abb[key] = state["aberrations"][filt]
+            # the state's per-filter aberrations, on an aperture with the legacy per-hole Zernike set
+            if "aberrations" in params:
+                abb = {}
+                for key in params["aberrations"].keys():
+                    prog, filt = key.split("_")
+                    # Keep the model's own initial coefficients if the state's were
+                    # fitted with a different basis (e.g. Zernike vs eigenbasis)
+                    if np.shape(state["aberrations"][filt]) != np.shape(params["aberrations"][key]):
+                        abb[key] = params["aberrations"][key]
+                        continue
+                    abb[key] = state["aberrations"][filt]
 
-            params["aberrations"] = abb  # jtu.map(lambda x: abb, params["aberrations"])
+                params["aberrations"] = abb  # jtu.map(lambda x: abb, params["aberrations"])
 
         # This seems to fix some recompile issues
         def fn(x):

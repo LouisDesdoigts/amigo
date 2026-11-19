@@ -26,6 +26,11 @@ from .stats import mv_zscore, loglike
 # structure, not just whether the loss goes down.
 ALLOW_CAL_PIXEL_GRADS = False
 
+# The aperture's wavefront coefficients, each fitted under the name of the aperture alias it sets: the legacy
+# per-hole Zernikes ("aberrations", radial_orders), or the three parts of opd.standard_opds (Fourier and Zernike
+# shared, piston/tip/tilt per key). A parameter exists only for the aliases the aperture has.
+WF_PARAMS = ("aberrations", "fourier_coeffs", "zernike_coeffs", "ptt_coeffs")
+
 
 class Exposure(zdx.Base):
     """
@@ -111,18 +116,13 @@ class Exposure(zdx.Base):
         # Log flux (1.6 is the ~ gain)
         log_flux = np.log10((80**2) * 1.61 * np.nanmean(im))
 
-        # Initialise flat WF
-        abb = np.zeros_like(optics.pupil_mask.aberrations)
-
         # positions
         params["positions"] = (self.get_key("positions"), pos)
         params["fluxes"] = (self.get_key("fluxes"), log_flux)
-        params["aberrations"] = (self.get_key("aberrations"), abb)
-        # an aperture with the base model's three wavefront parts (opd.standard_opds): "aberrations" is then the
-        # per-key piston/tip/tilt, and the Fourier and filter parts are shared parameters of their own
-        if hasattr(optics.pupil_mask, "fourier_coeffs"):
-            params["fourier_opd"] = (self.get_key("fourier_opd"), np.zeros_like(optics.pupil_mask.fourier_coeffs))
-            params["filter_opd"] = (self.get_key("filter_opd"), np.zeros_like(optics.pupil_mask.filter_coeffs))
+        # Initialise flat WF
+        for param in WF_PARAMS:
+            if hasattr(optics.pupil_mask, param):
+                params[param] = (self.get_key(param), np.zeros_like(getattr(optics.pupil_mask, param)))
         params["spectra"] = (self.get_key("spectra"), np.array(0.0))
         params["defocus"] = (self.get_key("defocus"), np.array(0.01))
         params["sigmas"] = (self.get_key("sigmas"), np.array(0.0214))  # detector blur, arcsec
@@ -271,13 +271,13 @@ class ModelFit(Exposure):
         if param in ["amplitudes", "phases", "vis"]:
             return "_".join([self.star, self.filter])
 
-        if param == "aberrations":
+        if param in ["aberrations", "ptt_coeffs"]:
             return "_".join([self.program, self.filter])
 
-        if param == "fourier_opd":
+        if param == "fourier_coeffs":
             return "shared"
-        
-        if param == "filter_opd":
+
+        if param == "zernike_coeffs":
             return self.filter
 
         if param in ["reflectivity", "defocus", "sigmas"]:
@@ -309,7 +309,7 @@ class ModelFit(Exposure):
             "phases",
             "vis",
             "fluxes",
-            "aberrations",
+            *WF_PARAMS,
             "reflectivity",
             "beam_coeffs",
             "positions",
@@ -323,8 +323,6 @@ class ModelFit(Exposure):
             "defocus",
             "rotations",
             "sigmas",
-            "fourier_opd",
-            "filter_opd",
         ]:
             return f"{param}.{self.get_key(param)}"
 
@@ -333,12 +331,14 @@ class ModelFit(Exposure):
 
     def update_optics(self, model):
         optics = model.optics
-        if "aberrations" in model.params.keys():
-            coefficients = model.aberrations[self.get_key("aberrations")]
+        for param in WF_PARAMS:
+            if param not in model.params.keys():
+                continue
+            coefficients = model.get(self.map_param(param))
 
             # Nuke the piston gradient to prevent degeneracy. Only for per-hole
             # bases, (n_holes, n_modes), where [0, 0] is hole 0's piston; a
-            # pupil-wide eigenbasis, (n_eigen,), has no global piston to fix.
+            # pupil-wide basis, (n_modes,), has no global piston to fix.
             if coefficients.ndim == 2:
                 fixed_piston = lax.stop_gradient(coefficients[0, 0])
                 coefficients = coefficients.at[0, 0].set(fixed_piston)
@@ -346,14 +346,7 @@ class ModelFit(Exposure):
             # Stop gradient for science targets
             if not self.calibrator:
                 coefficients = lax.stop_gradient(coefficients)
-            optics = optics.set("pupil_mask.aberrations", coefficients)
-
-        for param, path in (("fourier_opd", "pupil_mask.fourier_coeffs"), ("filter_opd", "pupil_mask.filter_coeffs")):
-            if param in model.params.keys():
-                coefficients = model.get(self.map_param(param))
-                if not self.calibrator:
-                    coefficients = lax.stop_gradient(coefficients)
-                optics = optics.set(path, coefficients)
+            optics = optics.set(f"pupil_mask.{param}", coefficients)
 
         if hasattr(model, "reflectivity"):
             coefficients = model.reflectivity[self.get_key("reflectivity")]

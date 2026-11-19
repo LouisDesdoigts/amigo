@@ -332,7 +332,7 @@ def build_opds(aperture, sharing=None):
 
 # Default calibration/science components
 
-DEFAULT_FILTER_MODES = (5, 6, 7, 8, 9, 10)
+DEFAULT_ZERNIKE_INDICES = (5, 6, 7, 8, 9, 10)
 
 
 class OPDCalibration(zdx.Base):
@@ -366,16 +366,16 @@ class OPDCalibration(zdx.Base):
         return self._bound("fourier", values)
 
     @property
-    def filter_opds(self):
+    def zernike(self):
         """Per-filter Zernike components with their calibrated coefficients.
 
         The returned components share the exact sampled basis and coefficient
         mapping; each can be evaluated or inspected separately from Fourier.
         """
-        values = self.coefficients.get("filter_coeffs", self.aperture.filter_coeffs)
+        values = self.coefficients.get("zernike_coeffs", self.aperture.zernike_coeffs)
         if not isinstance(values, dict):
             values = {filt: values for filt in self.filters}
-        return {key: self._bound("filter", value) for key, value in values.items()}
+        return {key: self._bound("zernike", value) for key, value in values.items()}
 
 
 def project_opd(basis, null, weights):
@@ -389,7 +389,7 @@ def project_opd(basis, null, weights):
     return (modes - overlap @ patterns).reshape(basis.shape)
 
 
-def standard_opds(aperture, fourier_modes=5, filter_modes=DEFAULT_FILTER_MODES, exclude_hole_ptt=False):
+def standard_opds(aperture, fourier_modes=5, zernike_indices=DEFAULT_ZERNIKE_INDICES, exclude_hole_ptt=False):
     """Construct all three default components once, independent of fit flags.
 
     Global Zernikes own their gauge-removed sampled span. Fourier excludes that
@@ -401,8 +401,8 @@ def standard_opds(aperture, fourier_modes=5, filter_modes=DEFAULT_FILTER_MODES, 
     holds it. The three components are then mutually orthogonal and can be fitted
     together without degenerate directions. The total span is unchanged.
     """
-    if not filter_modes or any(j < 5 for j in filter_modes) or len(set(filter_modes)) != len(filter_modes):
-        raise ValueError("filter_modes must contain distinct Noll indices >= 5")
+    if not zernike_indices or any(j < 5 for j in zernike_indices) or len(set(zernike_indices)) != len(zernike_indices):
+        raise ValueError("zernike_indices must contain distinct Noll indices >= 5")
     amplitude, coords = reference_pupil(aperture)
     weights = amplitude ** 2
     gauge = ptt_defocus(coords)
@@ -413,7 +413,7 @@ def standard_opds(aperture, fourier_modes=5, filter_modes=DEFAULT_FILTER_MODES, 
 
     # Sparse pupils break the full-circle orthogonality of ordinary Zernikes.
     # Remove global gauge patterns from the shapes before normalising the span.
-    global_basis = zernike_opd(coords, filter_modes, aperture.diameter).M
+    global_basis = zernike_opd(coords, zernike_indices, aperture.diameter).M
     global_basis = project_opd(global_basis, gauge, weights)
     mapping = opd_map(global_basis, weights).set("s", np.array(1e-9))
     global_opd = zdx.Map(x=mapping, M=global_basis)
@@ -422,9 +422,9 @@ def standard_opds(aperture, fourier_modes=5, filter_modes=DEFAULT_FILTER_MODES, 
     fourier_null = np.concatenate([hole_ptt, global_basis]) if exclude_hole_ptt else global_basis
     fourier = Fourier(n_modes=fourier_modes).build(aperture, extra_null=fourier_null)
     ptt = PTT().build(aperture)
-    opds = {"fourier": fourier, "filter": global_opd, "ptt": ptt}
+    opds = {"fourier": fourier, "zernike": global_opd, "ptt": ptt}
     aliases = {name + "_coeffs": f"opds.{name}.x.x" for name in opds}
-    sharing = (("fourier_coeffs", ()), ("filter_coeffs", ("filter",)),
+    sharing = (("fourier_coeffs", ()), ("zernike_coeffs", ("filter",)),
                ("ptt_coeffs", ("program", "filter")))
     # Alias/sharing metadata are static Equinox fields, not fitted leaves.
     result = copy(aperture)
@@ -439,14 +439,14 @@ def save_opds(path, opds, **extra):
     """Save standard_opds components' fixed arrays as an npz without pickle, plus
     any `extra` arrays. The modes come from eigendecompositions whose signs can
     differ between devices, so build once and load the same file everywhere."""
-    fourier, filter_opd, ptt = opds["fourier"], opds["filter"], opds["ptt"]
+    fourier, zernike, ptt = opds["fourier"], opds["zernike"], opds["ptt"]
     onp.savez(
         path,
         fourier_n=fourier.kx.shape[1],
         size=fourier.kx.shape[0],
         fourier_M=onp.asarray(fourier.x.M),
-        filter_M=onp.asarray(filter_opd.x.M),
-        filter_shapes=onp.asarray(filter_opd.M),
+        zernike_M=onp.asarray(zernike.x.M),
+        zernike_shapes=onp.asarray(zernike.M),
         ptt_M=onp.asarray(ptt.x.M),
         ptt_planes=onp.asarray(ptt.basis),
         **extra,
@@ -454,12 +454,14 @@ def save_opds(path, opds, **extra):
 
 
 def load_opds(path):
-    """The components saved by save_opds, with zero coefficients."""
+    """The components saved by save_opds, with zero coefficients. Files written before the Zernike
+    component was renamed (2026-11) store it as filter_M / filter_shapes; they load the same."""
     with onp.load(path, allow_pickle=False) as data:
         coeffs = lambda name: zdx.Map(x=np.zeros(len(data[name])), M=np.asarray(data[name]), s=np.array(1e-9))
+        z = "zernike" if "zernike_M" in data.files else "filter"
         return {
             "fourier": FourierOPD(int(data["fourier_n"]), int(data["size"]), x=coeffs("fourier_M")),
-            "filter": zdx.Map(x=coeffs("filter_M"), M=np.asarray(data["filter_shapes"])),
+            "zernike": zdx.Map(x=coeffs(f"{z}_M"), M=np.asarray(data[f"{z}_shapes"])),
             "ptt": BasisOPD(np.asarray(data["ptt_planes"]), x=coeffs("ptt_M")),
         }
 
