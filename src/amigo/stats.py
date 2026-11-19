@@ -41,6 +41,32 @@ def build_cov(var, read_std):
     return slope_cov + read_cov
 
 
+def tridiagonal_covariance(cov):
+    """Read- plus photon-noise model of a slope covariance of shape (slopes, slopes, ...).
+
+    The structure build_cov gives from a read-noise map and model slopes, estimated here from
+    the measured matrix. Per pixel, the read noise is r = max(0, -mean of the first
+    off-diagonal) and slope i's photon noise is p_i = max(0, C_ii - 2 r), giving
+    r * tridiag(-1, 2, -1) + diag(p): the expected covariance of consecutive group differences
+    under read and photon noise. It keeps the measured diagonal wherever p_i is not clipped and
+    is positive definite by construction. Cutting the measured matrix to its tridiagonal band
+    is not: neighbouring slopes in read-noise-dominated pixels are correlated at about -0.45,
+    just inside the -0.5 limit, and sampling noise pushes many pixels past it. A single slope
+    is left unchanged.
+    """
+    n = cov.shape[0]
+    if n < 2:
+        return cov
+    read = np.maximum(0.0, -np.diagonal(cov, 1, 0, 1).mean(-1))
+    photon = np.maximum(0.0, np.diagonal(cov, 0, 0, 1) - 2 * read[..., None])
+    shape = (n, n) + (1,) * (cov.ndim - 2)
+    second_difference = 2 * np.eye(n) - np.eye(n, k=1) - np.eye(n, k=-1)
+    return (
+        read * second_difference.reshape(shape)
+        + np.eye(n).reshape(shape) * np.moveaxis(photon, -1, 0)[None]
+    )
+
+
 def check_symmetric(mat):
     """Checks if a matrix is symmetric"""
     return np.allclose(mat, mat.T)
