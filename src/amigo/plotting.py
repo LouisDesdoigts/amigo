@@ -3,6 +3,7 @@ from jax import numpy as np, random as jr, scipy as jsp
 import dLux.utils as dlu
 import matplotlib.pyplot as plt
 from matplotlib import colormaps, colors
+from .model_fits import WF_PARAMS
 
 # from .stats import posterior
 
@@ -38,6 +39,7 @@ def summarise_fit(
     model,
     exposure,
     residuals=False,
+    top_group=False,
     histograms=False,
     flat_field=False,
     up_the_ramp=False,
@@ -55,7 +57,8 @@ def summarise_fit(
     inferno = colormaps["inferno"]
     seismic = colormaps["seismic"]
 
-    slopes = exposure(model)
+    ramp = exposure(model, return_slopes=False)
+    slopes = np.diff(ramp, axis=0)
     data = exposure.slopes
     residual = data - slopes
 
@@ -72,7 +75,19 @@ def summarise_fit(
     norm_res_vec = norm_res_vec[~np.isnan(norm_res_vec)]
     norm_res_vec = norm_res_vec[~np.isinf(norm_res_vec)]
 
-    x = np.nanmax(np.abs(norm_res_vec))
+    # norm_res_vec can come back empty (nanmax then errors on a zero-size array,
+    # not just returning nan): seen with use_cov=True, where loglike_im -- unlike
+    # mv_zscore, still always uses the full covariance matrix regardless of
+    # use_cov -- came back NaN for every pixel of a flat exposure, most likely a
+    # near-singular/non-positive-definite SLOPE_COV for that exposure rather than
+    # anything use_cov=True itself does wrong. This is a diagnostic plot, not the
+    # training loss, so fall back to a fixed range rather than crashing the run
+    # over one exposure's plot; the empty-residuals case is still visible in the
+    # printed "sigma" text below reading as nan.
+    if norm_res_vec.size == 0:
+        x = 5.0
+    else:
+        x = np.nanmax(np.abs(norm_res_vec))
     xs = np.linspace(-x, x, 200)
     ys = jsp.stats.norm.pdf(xs)
 
@@ -121,6 +136,35 @@ def summarise_fit(
         else:
             plt.show()
 
+        if top_group:
+            fig, ax = plt.subplots(1, 3, figsize=(12, 2.5))
+            data_top_group = np.where(exposure.badpix, np.nan, exposure.ramp[-1])
+            im = ax[0].imshow(data_top_group, inferno, norm=colors.PowerNorm(pow))
+            ax[0].set(title=f"Top group ({exposure.ngroups}) of data ramp")
+            fig.colorbar(im)
+                              
+            im = ax[1].imshow(ramp[-1], inferno, norm=colors.PowerNorm(pow))
+            ax[1].set(title=f"Top group ({exposure.ngroups}) of model ramp")
+            fig.colorbar(im)
+
+            hist_kwargs = {"bins":100, "log":True}
+            ax[2].hist(data_top_group.ravel(), label="Data", **hist_kwargs)
+            ax[2].hist(ramp[-1].ravel(), label="Model", **hist_kwargs)
+            ax[2].set(
+                title="Top group histograms",
+                xlim=(0, 2**16),
+            )
+            peak = np.nanmax(data_top_group)
+            ax[2].axvline(peak, color='k', linestyle='--', label=f"Peak: {peak:.0f}")
+            ax[2].legend()
+            
+            plt.tight_layout()
+            if save_path is not None:
+                plt.savefig(os.path.join(save_path, f"topgroup_{exposure.key}.png"))
+                plt.close()
+            else:
+                plt.show()
+        
         if residuals:
             norm = colors.PowerNorm(gamma=pow, vmin=-vmin, vmax=vmax)
 
@@ -244,17 +288,22 @@ def summarise_fit(
     if aberrations:
         # Get the AMI mask and applied mask
         pupil_mask = model.optics.pupil_mask
-        pupil_mask = pupil_mask.set(
-            "abb_coeffs", model.aberrations[exposure.get_key("aberrations")]
-        )
+        # every wavefront part the model fits (model_fits.WF_PARAMS), at this exposure's values
+        for param in WF_PARAMS:
+            if param in model.params.keys():
+                pupil_mask = pupil_mask.set(param, model.get(exposure.map_param(param)))
         if hasattr(model, "reflectivity"):
             pupil_mask = pupil_mask.set(
                 "amp_coeffs", model.reflectivity[exposure.get_key("reflectivity")]
             )
 
         optics = model.optics
-        amp = pupil_mask.calc_transmission()
-        mask = pupil_mask.calc_mask(optics.wf_npixels, optics.diameter)
+        if hasattr(pupil_mask, "calc_mask"):
+            amp = pupil_mask.calc_transmission(optics.wf_npixels)
+            mask = pupil_mask.calc_mask(optics.wf_npixels, optics.diameter)
+        else:  # a static mask's transmission already includes the hole shapes
+            mask = pupil_mask.calc_transmission()
+            amp = np.ones_like(mask)
         abb = pupil_mask.calc_aberrations()
         # mask, amp, abb = pupil_mask.calculate(optics.wf_npixels, optics.diameter)
         amp_in = np.where(mask < 1.0, np.nan, mask * amp)
@@ -333,8 +382,11 @@ def summarise_fit(
         else:
             plt.show()
 
-
-def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_path=None):
+def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_path=None,
+         stride=1, full_res_keys=("nn_weights",)):
+    """`stride` is the Trainer's history_stride: strided params are recorded every
+    `stride` epochs, so their x-axis is scaled to real epochs. `full_res_keys` are
+    recorded every epoch regardless (see Trainer.history_full_res_keys)."""
 
     if save_path is not None:
         os.makedirs(save_path, exist_ok=True)
@@ -349,7 +401,8 @@ def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_
 
         param = params_in[i]
         leaf = history.params[param]
-        _plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end)
+        _plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end,
+                 x_scale=1 if param in full_res_keys else stride)
 
         ax = plt.subplot(1, 2, 2)
         if i + 1 == len(params_in):
@@ -362,7 +415,8 @@ def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_
 
         param = params_in[i + 1]
         leaf = history.params[param]
-        _plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end)
+        _plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end,
+                 x_scale=1 if param in full_res_keys else stride)
 
         plt.tight_layout()
         if save_path is not None:
@@ -404,7 +458,7 @@ def _get_styles(n):
     return color_list, linestyle_list
 
 
-def _plot_ax(leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, end=-1):
+def _plot_ax(leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, end=-1, x_scale=1):
 
     if exposures is not None:
         keys = [exp.key for exp in exposures]
@@ -423,20 +477,20 @@ def _plot_ax(leaf, ax, param, exposures=None, key_fn=lambda x: x.key, start=0, e
 
         for val, c, ls, label in zip(values, colors, linestyles, labels):
             kwargs = {"c": c, "ls": ls}
-            _plot_param(ax, val, param, start=start, end=end, **kwargs)
+            _plot_param(ax, val, param, start=start, end=end, x_scale=x_scale, **kwargs)
             ax.plot([], label=label, **kwargs)
 
         # plt.legend()
 
     else:
         arr = _format_leaf(leaf)
-        _plot_param(ax, arr, param, start=start, end=end)
+        _plot_param(ax, arr, param, start=start, end=end, x_scale=x_scale)
 
 
-def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
+def _plot_param(ax, arr, param, start=0, end=-1, x_scale=1, **kwargs):
     """This is the ugly gross function that is necessary"""
     arr = arr[start:end]
-    epochs = np.arange(len(arr))
+    epochs = x_scale * np.arange(len(arr))
     ax.set(xlabel="Epochs", title=param)
 
     match param:
@@ -453,7 +507,7 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.plot(epochs, norm_flux, **kwargs)
             ax.set(ylabel="$\Delta$ Flux (log)")
 
-        case "aberrations":
+        case "aberrations" | "ptt_coeffs":
             norm_ab = arr - arr[0]
             ax.plot(epochs, norm_ab, alpha=0.4, **kwargs)
             ax.set(ylabel="$\Delta$ Aberrations (nm)")
@@ -511,12 +565,14 @@ def _plot_param(ax, arr, param, start=0, end=-1, **kwargs):
             ax.set(ylabel="$\Delta$ Hole position (cm)")
 
         case "dark_current":
-            ax.plot(epochs, arr, **kwargs)
-            ax.set(ylabel="Dark Current")
+            norm_arr = arr - arr[0]
+            ax.plot(epochs, norm_arr, **kwargs)
+            ax.set(ylabel="$\Delta$ Dark Current")
 
         case "defocus":
-            ax.plot(epochs, arr, **kwargs)
-            ax.set(ylabel="Defocus")
+            norm_arr = arr - arr[0]
+            ax.plot(epochs, norm_arr, **kwargs)
+            ax.set(ylabel="$\Delta$ Defocus")
 
         case "jitter.r":
             ax.plot(epochs, 1e3 * arr, **kwargs)
