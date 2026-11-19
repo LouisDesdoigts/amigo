@@ -35,7 +35,7 @@ class DarkCurrent(ReadLayer):
             assert self.dark_current.shape == (80, 80)
         elif not self.per_pixel:
             assert self.dark_current.shape == ()
-        
+
     def apply(self, ramp):
         group_range = np.arange(len(ramp.data)) + 1
         if self.per_pixel:
@@ -75,9 +75,7 @@ class PixelNonLinearity(ReadLayer):
         # coeffs = self.non_linearity.at[-1].add(np.ones_like(data[0]))
 
         shape = (1, *electrons.shape[-2:])
-        coeffs = np.concatenate(
-            [self.non_linearity, np.ones(shape), np.zeros(shape)], axis=0
-        )
+        coeffs = np.concatenate([self.non_linearity, np.ones(shape), np.zeros(shape)], axis=0)
         # coeffs = np.concatenate([coeffs, np.zeros((1, *data.shape[-2:]))], axis=0)
         counts = np.polyval(coeffs, electrons)
         return ramp.set("data", (counts * 2**16) / self.gain)
@@ -179,4 +177,4 @@ class ReadModel(LayeredDetector):
 #         if self.bias is None:
 #             return ramp
 #         return ramp.add("data", self.bias)
-# 
+#

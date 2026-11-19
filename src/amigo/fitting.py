@@ -271,8 +271,10 @@ class Trainer(zdx.Base):
         self.cache = cache
 
         if summarise_fn is None:
+
             def summarise_fn(result, save_path):
                 pass
+
         self.summarise_fn = summarise_fn
         self.intermediate_prints = intermediate_prints
         self.save_path = save_path
@@ -513,7 +515,6 @@ class Trainer(zdx.Base):
                 # Append the mean batch loss to the loss dictionary and update aux dict
                 loss_dict[batch_key].append(loss / len(batch))
 
-
                 #
                 if self.aux_fn is not None:
                     aux_dict = self.aux_fn(batch_key, aux_dict, aux)
@@ -522,7 +523,15 @@ class Trainer(zdx.Base):
                 if np.isnan(loss):
                     print(f"Loss is NaN on epoch {epoch}, exiting fit")
                     return self.finalise(
-                        t0, model, loss_dict, aux_dict, model_params, combined_history(), lrs, epochs, False
+                        t0,
+                        model,
+                        loss_dict,
+                        aux_dict,
+                        model_params,
+                        combined_history(),
+                        lrs,
+                        epochs,
+                        False,
                     )
 
             # Update the regular parameters and append to history
@@ -545,15 +554,30 @@ class Trainer(zdx.Base):
             if epoch == 1:
                 self.second_print(t1, epochs)
             if epoch in self.intermediate_prints:
-                intermediate_result = self.finalise(t0, model, loss_dict, aux_dict, model_params, combined_history(), lrs, epoch, True)
-                intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
+                intermediate_result = self.finalise(
+                    t0,
+                    model,
+                    loss_dict,
+                    aux_dict,
+                    model_params,
+                    combined_history(),
+                    lrs,
+                    epoch,
+                    True,
+                )
+                intermediate_save_dir = (
+                    os.path.join(self.save_path, f"epoch_{epoch:06d}")
+                    if self.save_path is not None
+                    else None
+                )
                 if intermediate_save_dir is not None:
                     os.mkdir(intermediate_save_dir)
                 self.summarise_fn(intermediate_result, intermediate_save_dir, **summarise_kwargs)
 
         # Print the runtime stats and return Result object
-        return self.finalise(t0, model, loss_dict, aux_dict, model_params, combined_history(), lrs, epochs, True)
-        
+        return self.finalise(
+            t0, model, loss_dict, aux_dict, model_params, combined_history(), lrs, epochs, True
+        )
 
 
 class Result(zdx.Base):

@@ -98,7 +98,9 @@ class AmigoModel(BaseModeller):
                     prog, filt = key.split("_")
                     # Keep the model's own initial coefficients if the state's were
                     # fitted with a different basis (e.g. Zernike vs eigenbasis)
-                    if np.shape(state["aberrations"][filt]) != np.shape(params["aberrations"][key]):
+                    if np.shape(state["aberrations"][filt]) != np.shape(
+                        params["aberrations"][key]
+                    ):
                         abb[key] = params["aberrations"][key]
                         continue
                     abb[key] = state["aberrations"][filt]

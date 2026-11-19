@@ -21,7 +21,6 @@ from .fitting import (
 )
 
 
-
 def mv_zscore(x, mu, cov):
     """Multivariate z-score, return identical gradients to normal log-likelihood"""
     return -0.5 * np.dot(x - mu, np.dot(np.linalg.inv(cov), x - mu))
@@ -355,8 +354,6 @@ class ValBatchedTrainer(Trainer):
                                 grad_params[param] = value * 0
                     grads = grads.set("params", grad_params)
 
-                    
-
                 # Split the gradients into regular and batched, accumulate gradients
                 batch_grads, new_grads = grads.partition(batch_params)
                 reg_grads += new_grads
@@ -375,7 +372,9 @@ class ValBatchedTrainer(Trainer):
                     # the whole run and is exactly what OOM-killed a long run -- see
                     # batch_history_max_len's docstring on Trainer.__init__.
                     _batch_history = _batch_history.append(batch_params)
-                    batch_history = batch_history.append(batch_params, max_len=self.batch_history_max_len)
+                    batch_history = batch_history.append(
+                        batch_params, max_len=self.batch_history_max_len
+                    )
 
                     model_params = reg_params.combine(batch_params)
 
@@ -421,11 +420,15 @@ class ValBatchedTrainer(Trainer):
                     n_b = len(batches)
                     is_leaf = lambda leaf: isinstance(leaf, list)
                     avg_params = jtu.map(
-                        lambda leaf: onp.array(leaf[-n_b:]).mean(0), _batch_history.params, is_leaf=is_leaf
+                        lambda leaf: onp.array(leaf[-n_b:]).mean(0),
+                        _batch_history.params,
+                        is_leaf=is_leaf,
                     )
                     best_batch = batch_params.set("params", avg_params)
                 except Exception as e:
-                    print(f"best_batch epoch-averaging failed, falling back to the plain snapshot: {e}")
+                    print(
+                        f"best_batch epoch-averaging failed, falling back to the plain snapshot: {e}"
+                    )
                     best_batch = batch_params
                 best_state = model_params
 
@@ -461,12 +464,27 @@ class ValBatchedTrainer(Trainer):
 
             if epoch in self.intermediate_prints:
                 history = reg_history.combine(batch_history)
-                intermediate_result = self.finalise(t1, model, loss_dict, aux_dict, model_params, history, lrs, epochs, True, best_batch, best_state)
-                intermediate_save_dir = os.path.join(self.save_path, f"epoch_{epoch:06d}") if self.save_path is not None else None
+                intermediate_result = self.finalise(
+                    t1,
+                    model,
+                    loss_dict,
+                    aux_dict,
+                    model_params,
+                    history,
+                    lrs,
+                    epochs,
+                    True,
+                    best_batch,
+                    best_state,
+                )
+                intermediate_save_dir = (
+                    os.path.join(self.save_path, f"epoch_{epoch:06d}")
+                    if self.save_path is not None
+                    else None
+                )
                 if intermediate_save_dir is not None:
                     os.mkdir(intermediate_save_dir)
                 self.summarise_fn(intermediate_result, intermediate_save_dir, **summarise_kwargs)
-
 
         # Print the runtime stats and return Result object
         history = reg_history.combine(batch_history)

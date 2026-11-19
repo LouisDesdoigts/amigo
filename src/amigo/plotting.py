@@ -142,12 +142,12 @@ def summarise_fit(
             im = ax[0].imshow(data_top_group, inferno, norm=colors.PowerNorm(pow))
             ax[0].set(title=f"Top group ({exposure.ngroups}) of data ramp")
             fig.colorbar(im)
-                              
+
             im = ax[1].imshow(ramp[-1], inferno, norm=colors.PowerNorm(pow))
             ax[1].set(title=f"Top group ({exposure.ngroups}) of model ramp")
             fig.colorbar(im)
 
-            hist_kwargs = {"bins":100, "log":True}
+            hist_kwargs = {"bins": 100, "log": True}
             ax[2].hist(data_top_group.ravel(), label="Data", **hist_kwargs)
             ax[2].hist(ramp[-1].ravel(), label="Model", **hist_kwargs)
             ax[2].set(
@@ -155,16 +155,16 @@ def summarise_fit(
                 xlim=(0, 2**16),
             )
             peak = np.nanmax(data_top_group)
-            ax[2].axvline(peak, color='k', linestyle='--', label=f"Peak: {peak:.0f}")
+            ax[2].axvline(peak, color="k", linestyle="--", label=f"Peak: {peak:.0f}")
             ax[2].legend()
-            
+
             plt.tight_layout()
             if save_path is not None:
                 plt.savefig(os.path.join(save_path, f"topgroup_{exposure.key}.png"))
                 plt.close()
             else:
                 plt.show()
-        
+
         if residuals:
             norm = colors.PowerNorm(gamma=pow, vmin=-vmin, vmax=vmax)
 
@@ -382,8 +382,18 @@ def summarise_fit(
         else:
             plt.show()
 
-def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_path=None,
-         stride=1, full_res_keys=("nn_weights",)):
+
+def plot(
+    history,
+    exposures=None,
+    key_fn=None,
+    ignore=[],
+    start=0,
+    end=-1,
+    save_path=None,
+    stride=1,
+    full_res_keys=("nn_weights",),
+):
     """`stride` is the Trainer's history_stride: strided params are recorded every
     `stride` epochs, so their x-axis is scaled to real epochs. `full_res_keys` are
     recorded every epoch regardless (see Trainer.history_full_res_keys)."""
@@ -401,8 +411,16 @@ def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_
 
         param = params_in[i]
         leaf = history.params[param]
-        _plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end,
-                 x_scale=1 if param in full_res_keys else stride)
+        _plot_ax(
+            leaf,
+            ax,
+            param,
+            exposures,
+            key_fn,
+            start=start,
+            end=end,
+            x_scale=1 if param in full_res_keys else stride,
+        )
 
         ax = plt.subplot(1, 2, 2)
         if i + 1 == len(params_in):
@@ -415,8 +433,16 @@ def plot(history, exposures=None, key_fn=None, ignore=[], start=0, end=-1, save_
 
         param = params_in[i + 1]
         leaf = history.params[param]
-        _plot_ax(leaf, ax, param, exposures, key_fn, start=start, end=end,
-                 x_scale=1 if param in full_res_keys else stride)
+        _plot_ax(
+            leaf,
+            ax,
+            param,
+            exposures,
+            key_fn,
+            start=start,
+            end=end,
+            x_scale=1 if param in full_res_keys else stride,
+        )
 
         plt.tight_layout()
         if save_path is not None:

@@ -9,7 +9,6 @@ from importlib import resources
 import interpax as ipx
 import equinox as eqx
 
-
 badpix = np.load(resources.files(__package__) / "data" / "badpix.npy")
 
 
@@ -18,6 +17,7 @@ if jax.config.read("jax_enable_x64"):
     BIG = np.finfo(np.float64).max / 1e1
 else:
     BIG = np.finfo(np.float32).max / 1e1
+
 
 def calc_laplacian(arr):
     """Laplacian - ie scalar field divergence (I think)"""
@@ -126,7 +126,7 @@ def get_pos(file, box=5, return_centroid=False):
     dist : float
         Pixel distance to that position (sanity check - should be small)
     """
-    
+
     # Reference pixel locations for each dither position (from your image)
     POS_COORDS = {
         "POS1": (46, 40),
@@ -134,11 +134,11 @@ def get_pos(file, box=5, return_centroid=False):
         "POS3": (18, 25),
         "POS4": (59, 24),
     }
-    
+
     data = np.array(file["SLOPE"].data)
     if data.ndim == 3:
         data = data[-1]  # collapse integrations/frames if needed
-    data = np.where(badpix, 0., np.array(data))
+    data = np.where(badpix, 0.0, np.array(data))
 
     # crude centroid: brightest pixel, refined with a local window
     flat_idx = np.nanargmax(data)

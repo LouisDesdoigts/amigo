@@ -53,7 +53,6 @@ class AsymmetricJitterJWST(ApplyJitter):
         return dlu.downsample(kernel, self.oversample, mean=False)
 
 
-
 class LinearDetector(LayeredDetector):
     def __init__(
         self,
@@ -63,7 +62,7 @@ class LinearDetector(LayeredDetector):
         kernel_size=11,
         kernel_osamp=5,
     ):
-        
+
         super().__init__(
             [
                 ("resampler", Resample(rotation=rot_angle, anisotropy=anisotropy)),

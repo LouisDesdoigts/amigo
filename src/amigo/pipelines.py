@@ -242,11 +242,11 @@ def eval_fourier_counts(data, theta, periods):
     """
     fs = np.zeros_like(data, dtype=float)
     K = periods.size
-    
+
     for k in range(K):
         w = 2.0 * np.pi / periods[k]
-        s_coef = theta[2*k + 0]
-        c_coef = theta[2*k + 1]
+        s_coef = theta[2 * k + 0]
+        c_coef = theta[2 * k + 1]
         arg = w * data
         fs += s_coef * np.sin(arg) + c_coef * np.cos(arg)
 
@@ -267,7 +267,7 @@ def clean_data(ramps, sigma=3.0, correct_ADC=True, flat=False):
     """
     # ADC correction
     if correct_ADC:
-        periods_grid = np.asarray([1024.0/3.0, 1024.0/2.0, 1024.0])
+        periods_grid = np.asarray([1024.0 / 3.0, 1024.0 / 2.0, 1024.0])
         theta = np.load(resources.files(__package__) / "data" / "fourier_series_amplitudes.npy")
         correction = 1.0 + eval_fourier_counts(ramps, theta, periods_grid)
         ramps = ramps / correction

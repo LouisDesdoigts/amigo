@@ -224,13 +224,13 @@ def reference_pupil(aperture):
     else:
         transmission = aperture.sparse_apertures()
     if aperture.amp_basis is not None:
-        transmission = transmission * (1 + vmap(dlu.eval_basis)(
-            aperture.amp_basis, aperture.amp_coeffs))
+        transmission = transmission * (
+            1 + vmap(dlu.eval_basis)(aperture.amp_basis, aperture.amp_coeffs)
+        )
 
     pixel_scale = aperture.diameter / aperture.npixels
     local = dlu.pixel_coords(aperture.size, aperture.size * pixel_scale)
-    centers = window_centers(aperture.corners, aperture.size,
-                             aperture.npixels, aperture.diameter)
+    centers = window_centers(aperture.corners, aperture.size, aperture.npixels, aperture.diameter)
     return transmission, local[None] + centers[:, :, None, None]
 
 
@@ -241,7 +241,7 @@ def ptt_defocus(coords):
     in the propagator. A local-plane basis removes only its projected overlap.
     """
     ptt = piston_tip_tilt(coords)
-    return np.concatenate([ptt, (coords ** 2).sum(axis=1)[None]])
+    return np.concatenate([ptt, (coords**2).sum(axis=1)[None]])
 
 
 class OPDSetup(zdx.Base):
@@ -258,13 +258,16 @@ class OPDSetup(zdx.Base):
         references = (aperture,) if self.references is None else self.references
         weights = []
         for reference in references:
-            if (reference.size != aperture.size or reference.npixels != aperture.npixels
-                    or reference.diameter != aperture.diameter
-                    or not bool(np.array_equal(reference.corners, aperture.corners))):
+            if (
+                reference.size != aperture.size
+                or reference.npixels != aperture.npixels
+                or reference.diameter != aperture.diameter
+                or not bool(np.array_equal(reference.corners, aperture.corners))
+            ):
                 raise ValueError("OPD reference apertures must share fixed pupil windows")
             amplitude, _ = reference_pupil(reference)
             if self.weighting == "intensity":
-                weights.append(amplitude ** 2)
+                weights.append(amplitude**2)
             elif self.weighting == "uniform":
                 weights.append((amplitude != 0).astype(float))
             else:
@@ -325,8 +328,10 @@ def build_opds(aperture, sharing=None):
             groups[alias] = component.sharing
     if sharing is not None:
         groups.update(sharing)
-    groups = tuple((name, (fields,) if isinstance(fields, str) else tuple(fields))
-                   for name, fields in groups.items())
+    groups = tuple(
+        (name, (fields,) if isinstance(fields, str) else tuple(fields))
+        for name, fields in groups.items()
+    )
     return opds or None, aliases or None, groups or (() if sharing is not None else None)
 
 
@@ -389,7 +394,9 @@ def project_opd(basis, null, weights):
     return (modes - overlap @ patterns).reshape(basis.shape)
 
 
-def standard_opds(aperture, fourier_modes=5, zernike_indices=DEFAULT_ZERNIKE_INDICES, exclude_hole_ptt=False):
+def standard_opds(
+    aperture, fourier_modes=5, zernike_indices=DEFAULT_ZERNIKE_INDICES, exclude_hole_ptt=False
+):
     """Construct all three default components once, independent of fit flags.
 
     Global Zernikes own their gauge-removed sampled span. Fourier excludes that
@@ -401,10 +408,14 @@ def standard_opds(aperture, fourier_modes=5, zernike_indices=DEFAULT_ZERNIKE_IND
     holds it. The three components are then mutually orthogonal and can be fitted
     together without degenerate directions. The total span is unchanged.
     """
-    if not zernike_indices or any(j < 5 for j in zernike_indices) or len(set(zernike_indices)) != len(zernike_indices):
+    if (
+        not zernike_indices
+        or any(j < 5 for j in zernike_indices)
+        or len(set(zernike_indices)) != len(zernike_indices)
+    ):
         raise ValueError("zernike_indices must contain distinct Noll indices >= 5")
     amplitude, coords = reference_pupil(aperture)
-    weights = amplitude ** 2
+    weights = amplitude**2
     gauge = ptt_defocus(coords)
     if exclude_hole_ptt:
         # unit-coefficient PTT stamps: each hole's piston/tip/tilt in its own window
@@ -424,12 +435,17 @@ def standard_opds(aperture, fourier_modes=5, zernike_indices=DEFAULT_ZERNIKE_IND
     ptt = PTT().build(aperture)
     opds = {"fourier": fourier, "zernike": global_opd, "ptt": ptt}
     aliases = {name + "_coeffs": f"opds.{name}.x.x" for name in opds}
-    sharing = (("fourier_coeffs", ()), ("zernike_coeffs", ("filter",)),
-               ("ptt_coeffs", ("program", "filter")))
+    sharing = (
+        ("fourier_coeffs", ()),
+        ("zernike_coeffs", ("filter",)),
+        ("ptt_coeffs", ("program", "filter")),
+    )
     # Alias/sharing metadata are static Equinox fields, not fitted leaves.
     result = copy(aperture)
     object.__setattr__(result, "opds", opds)
-    object.__setattr__(result, "alias", tuple(sorted({**dict(aperture.alias or ()), **aliases}.items())))
+    object.__setattr__(
+        result, "alias", tuple(sorted({**dict(aperture.alias or ()), **aliases}.items()))
+    )
     object.__setattr__(result, "opd_sharing", sharing)
     result.validate_aliases()
     return result
@@ -457,10 +473,14 @@ def load_opds(path):
     """The components saved by save_opds, with zero coefficients. Files written before the Zernike
     component was renamed (2026-11) store it as filter_M / filter_shapes; they load the same."""
     with onp.load(path, allow_pickle=False) as data:
-        coeffs = lambda name: zdx.Map(x=np.zeros(len(data[name])), M=np.asarray(data[name]), s=np.array(1e-9))
+        coeffs = lambda name: zdx.Map(
+            x=np.zeros(len(data[name])), M=np.asarray(data[name]), s=np.array(1e-9)
+        )
         z = "zernike" if "zernike_M" in data.files else "filter"
         return {
-            "fourier": FourierOPD(int(data["fourier_n"]), int(data["size"]), x=coeffs("fourier_M")),
+            "fourier": FourierOPD(
+                int(data["fourier_n"]), int(data["size"]), x=coeffs("fourier_M")
+            ),
             "zernike": zdx.Map(x=coeffs(f"{z}_M"), M=np.asarray(data[f"{z}_shapes"])),
             "ptt": BasisOPD(np.asarray(data["ptt_planes"]), x=coeffs("ptt_M")),
         }
@@ -490,7 +510,9 @@ def opd_key(exp, fields):
     if not fields:
         return "shared"
     try:
-        values = [str(exp[field] if isinstance(exp, dict) else getattr(exp, field)) for field in fields]
+        values = [
+            str(exp[field] if isinstance(exp, dict) else getattr(exp, field)) for field in fields
+        ]
     except (KeyError, AttributeError) as error:
         raise ValueError(f"Selecting this OPD requires exposure fields {fields}") from error
     if any("." in value or ":" in value for value in values):
@@ -508,15 +530,19 @@ def init_opds(aperture, exposures, groups, coefficients=None):
         if name not in aliases or not aliases[name].startswith("opds."):
             raise ValueError(f"{name!r} must be an alias to an OPD coefficient input")
         target = aliases[name]
-        if any(target == other or target.startswith(other + ".") or other.startswith(target + ".")
-               for other in targets):
+        if any(
+            target == other or target.startswith(other + ".") or other.startswith(target + ".")
+            for other in targets
+        ):
             raise ValueError("OPD fit aliases must select distinct coefficient inputs")
         targets.append(target)
         value = aperture.get(name)
         if not isinstance(value, Array):
             raise ValueError(f"{name!r} must select a coefficient array")
-        values[name] = {opd_key(exp, fields): coefficient_value(aperture, name, coefficients, exp)
-                        for exp in exposures}
+        values[name] = {
+            opd_key(exp, fields): coefficient_value(aperture, name, coefficients, exp)
+            for exp in exposures
+        }
     return values
 
 

@@ -433,14 +433,16 @@ class PolyKernelModel(zdx.Base):
         # Final layer: hidden_width -> n_features (fixed by distortion polynomial order)
         keys = jr.split(key, n_hidden_layers + 1)
 
-        layers = [Conv2d(in_channels=16, out_channels=hidden_width, key=keys[0]), eqx.nn.Lambda(nn.relu)]
+        layers = [
+            Conv2d(in_channels=16, out_channels=hidden_width, key=keys[0]),
+            eqx.nn.Lambda(nn.relu),
+        ]
         for i in range(1, n_hidden_layers):
             layers += [
                 Conv2d(in_channels=hidden_width, out_channels=hidden_width, key=keys[i]),
                 eqx.nn.Lambda(nn.relu),
             ]
         layers += [Conv2d(in_channels=hidden_width, out_channels=n_features, key=keys[-1])]
-
 
         # Construct the encoder
         self.bleed_encoder = NNWrapper(eqx.nn.Sequential(layers))

@@ -165,13 +165,13 @@ def hessian(f, x, has_aux=False, batch_size=1):
     return np.concatenate([hvp(batch) for batch in basis])
 
 
-def _to_array(leaf : Any):
+def _to_array(leaf: Any):
     if not isinstance(leaf, Array):
         return np.asarray(leaf, dtype=float)
     else:
         return leaf
 
-    
+
 def FIM(
     pytree,
     parameters,

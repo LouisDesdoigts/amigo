@@ -122,7 +122,10 @@ class Exposure(zdx.Base):
         # Initialise flat WF
         for param in WF_PARAMS:
             if hasattr(optics.pupil_mask, param):
-                params[param] = (self.get_key(param), np.zeros_like(getattr(optics.pupil_mask, param)))
+                params[param] = (
+                    self.get_key(param),
+                    np.zeros_like(getattr(optics.pupil_mask, param)),
+                )
         params["spectra"] = (self.get_key("spectra"), np.array(0.0))
         params["defocus"] = (self.get_key("defocus"), np.array(0.01))
         params["sigmas"] = (self.get_key("sigmas"), np.array(0.0214))  # detector blur, arcsec
@@ -390,7 +393,9 @@ class ModelFit(Exposure):
         # This exposure's rotation, on top of the detector's (the NRM sits in the pupil wheel, which
         # does not come back to exactly the same angle between visits), and its filter's blur
         # (mostly charge diffusion, which depends on how deep the photons are absorbed)
-        detector = model.detector.add("layers.resampler.rotation", model.rotations[self.get_key("rotations")])
+        detector = model.detector.add(
+            "layers.resampler.rotation", model.rotations[self.get_key("rotations")]
+        )
         detector = detector.set("layers.convolution.sigma", model.sigmas[self.get_key("sigmas")])
         psf = detector(psf, return_psf=True)
         return psf.multiply("data", flux)
@@ -685,6 +690,7 @@ class DarkFit(ModelFit):
             return ramp.set("data", np.diff(ramp.data, axis=0))
         return ramp
 
+
 class BinaryFit(PointFit):
 
     sub_exps: dict
@@ -739,14 +745,14 @@ class BinaryFit(PointFit):
         total_flux = 10 ** model.fluxes[self.get_key("fluxes")]
 
         pa = model.pas[self.get_key("pas")]  # in degrees, measured from N toward E
-        
+
         separation = model.separations[self.get_key("separations")]
         contrast = model.contrasts[self.get_key("contrasts")]
 
         # Converting position angle from deg to radians
         # and offsetting by JWST Parallactic Angle (ROLL_REF)
-        phi = dlu.deg2rad((90 + pa) - self.parang)      
-    
+        phi = dlu.deg2rad((90 + pa) - self.parang)
+
         # separation vector d (from A to B) in the frame of `positions`. That frame's x is the
         # detector column and its y is minus the row (the optics' InvertY), so x points to
         # PA = parang - 90 and y to parang + 180: position angles run CLOCKWISE in it, hence
@@ -790,14 +796,13 @@ class BinaryFit(PointFit):
             psf = self.model_psf(m)
             return self.model_illuminance(psf, m).data, psf.pixel_scale
 
-        illuminances, pixel_scales = vmap(single_source, in_axes=(0, 0, {k: 0 for k in unique_AB}))(
-            positions_AB, fluxes_AB, unique_AB
-        )
+        illuminances, pixel_scales = vmap(
+            single_source, in_axes=(0, 0, {k: 0 for k in unique_AB})
+        )(positions_AB, fluxes_AB, unique_AB)
 
         illuminance = dl.PSF(illuminances.sum(axis=0), pixel_scales[0])
 
         return illuminance
-
 
     def simulate(self, model, return_slopes: bool = True):
         if not ALLOW_CAL_PIXEL_GRADS:
@@ -809,4 +814,3 @@ class BinaryFit(PointFit):
         if return_slopes:
             return ramp.set("data", np.diff(ramp.data, axis=0))
         return ramp
-
