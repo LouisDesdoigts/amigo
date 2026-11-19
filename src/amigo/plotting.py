@@ -288,7 +288,7 @@ def summarise_fit(
         # Get the AMI mask and applied mask
         pupil_mask = model.optics.pupil_mask
         pupil_mask = pupil_mask.set(
-            "abb_coeffs", model.aberrations[exposure.get_key("aberrations")]
+            "aberrations", model.aberrations[exposure.get_key("aberrations")]
         )
         if hasattr(model, "reflectivity"):
             pupil_mask = pupil_mask.set(
@@ -296,8 +296,12 @@ def summarise_fit(
             )
 
         optics = model.optics
-        amp = pupil_mask.calc_transmission()
-        mask = pupil_mask.calc_mask(optics.wf_npixels, optics.diameter)
+        if hasattr(pupil_mask, "calc_mask"):
+            amp = pupil_mask.calc_transmission(optics.wf_npixels)
+            mask = pupil_mask.calc_mask(optics.wf_npixels, optics.diameter)
+        else:  # a static mask's transmission already includes the hole shapes
+            mask = pupil_mask.calc_transmission()
+            amp = np.ones_like(mask)
         abb = pupil_mask.calc_aberrations()
         # mask, amp, abb = pupil_mask.calculate(optics.wf_npixels, optics.diameter)
         amp_in = np.where(mask < 1.0, np.nan, mask * amp)

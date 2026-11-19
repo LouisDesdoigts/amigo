@@ -112,12 +112,17 @@ class Exposure(zdx.Base):
         log_flux = np.log10((80**2) * 1.61 * np.nanmean(im))
 
         # Initialise flat WF
-        abb = np.zeros_like(optics.pupil_mask.abb_coeffs)
+        abb = np.zeros_like(optics.pupil_mask.aberrations)
 
         # positions
         params["positions"] = (self.get_key("positions"), pos)
         params["fluxes"] = (self.get_key("fluxes"), log_flux)
         params["aberrations"] = (self.get_key("aberrations"), abb)
+        # an aperture with the base model's three wavefront parts (opd.standard_opds): "aberrations" is then the
+        # per-key piston/tip/tilt, and the Fourier and filter parts are shared parameters of their own
+        if hasattr(optics.pupil_mask, "fourier_coeffs"):
+            params["fourier_opd"] = (self.get_key("fourier_opd"), np.zeros_like(optics.pupil_mask.fourier_coeffs))
+            params["filter_opd"] = (self.get_key("filter_opd"), np.zeros_like(optics.pupil_mask.filter_coeffs))
         params["spectra"] = (self.get_key("spectra"), np.array(0.0))
         params["defocus"] = (self.get_key("defocus"), np.array(0.01))
         params["sigmas"] = (self.get_key("sigmas"), np.array(0.0214))  # detector blur, arcsec
@@ -269,6 +274,12 @@ class ModelFit(Exposure):
         if param == "aberrations":
             return "_".join([self.program, self.filter])
 
+        if param == "fourier_opd":
+            return "shared"
+        
+        if param == "filter_opd":
+            return self.filter
+
         if param in ["reflectivity", "defocus", "sigmas"]:
             return self.filter
 
@@ -312,6 +323,8 @@ class ModelFit(Exposure):
             "defocus",
             "rotations",
             "sigmas",
+            "fourier_opd",
+            "filter_opd",
         ]:
             return f"{param}.{self.get_key(param)}"
 
@@ -333,7 +346,14 @@ class ModelFit(Exposure):
             # Stop gradient for science targets
             if not self.calibrator:
                 coefficients = lax.stop_gradient(coefficients)
-            optics = optics.set("pupil_mask.abb_coeffs", coefficients)
+            optics = optics.set("pupil_mask.aberrations", coefficients)
+
+        for param, path in (("fourier_opd", "pupil_mask.fourier_coeffs"), ("filter_opd", "pupil_mask.filter_coeffs")):
+            if param in model.params.keys():
+                coefficients = model.get(self.map_param(param))
+                if not self.calibrator:
+                    coefficients = lax.stop_gradient(coefficients)
+                optics = optics.set(path, coefficients)
 
         if hasattr(model, "reflectivity"):
             coefficients = model.reflectivity[self.get_key("reflectivity")]
@@ -352,7 +372,9 @@ class ModelFit(Exposure):
         weights = np.where(weights < 0, 0.0, weights)
         return wavels, weights / weights.sum()
 
-    def model_wfs(self, model):
+    def model_wfs(self, model, return_wf=True):
+        """Optical fields (before the subpixel intensity averaging), or the spectral Intensity
+        images with return_wf=False, which is what the PSF is built from."""
         # The detector's resampler turns the whole image about the array centre (model_illuminance),
         # but the mask turns the pattern about the star, not the star: so turn the star back by the
         # same angle first, which also keeps the rotation from pulling on the fitted position.
@@ -363,13 +385,12 @@ class ModelFit(Exposure):
         wavels, weights = self.get_spectra(model)
 
         optics = self.update_optics(model)
-        wfs = eqx.filter_jit(optics.propagate)(wavels, pos, weights, return_wf=True)
-
-        return wfs
+        return eqx.filter_jit(optics.propagate)(
+            wavels, pos, weights, return_wf=return_wf, return_intensity=not return_wf
+        )
 
     def model_psf(self, model):
-        wfs = self.model_wfs(model)
-        return dl.PSF(wfs.psf.sum(0), wfs.pixel_scale)
+        return self.model_wfs(model, return_wf=False).to_psf()
 
     def model_illuminance(self, psf, model):
         flux = self.ngroups * 10 ** model.fluxes[self.get_key("fluxes")]
@@ -481,9 +502,8 @@ class SplineVisFit(PointFit):
         return model.vis_model.model_vis(wfs, amps, phases, self.filter)
 
     def model_psf(self, model):
-        wfs = self.model_wfs(model)
-        psf = self.model_vis(wfs, model)
-        return psf
+        intensity = self.model_wfs(model, return_wf=False)
+        return self.model_vis(intensity, model)
 
 
 class FlatFit(ModelFit):

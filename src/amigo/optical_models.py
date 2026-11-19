@@ -1,14 +1,26 @@
 # import pkg_resources as pkg
 from importlib import resources
+from copy import copy
 import equinox as eqx
 import zodiax as zdx
 from jax import Array, vmap
 import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
-from abcdLux import lct
-from .misc import calc_throughput, interp
+from .misc import calc_throughput, interp, spectral_weights
+from .intensity import Intensity
+from .opd import (
+    sum_opds,
+    zernike_opd,
+    build_opds,
+    standard_opds,
+    DEFAULT_FILTER_MODES,
+    OPDCalibration,
+    apply_opds,
+    coefficient_value,
+)
 from jax.lax import dynamic_update_slice, dynamic_slice
+from abcdLux import lct
 
 
 def gen_powers(degree):
@@ -37,60 +49,18 @@ def distort_coords(coords, coeffs, pows):
     return coords + distortion
 
 
-### Fresnel propagators ###
-def _fft(phasor, pad=2):
-    padded = dlu.resize(phasor, phasor.shape[0] * pad)
-    return 1 / padded.shape[0] * np.fft.fft2(padded)
+def resample_intensity(field, factor):
+    """Interpolate a complex field, then average its subpixel intensities.
 
-
-def _ifft(phasor, pad=1):
-    padded = dlu.resize(phasor, phasor.shape[0] * pad)
-    return phasor.shape[0] * np.fft.ifft2(padded)
-
-
-def _fftshift(phasor):
-    return np.fft.fftshift(phasor)
-
-
-def transfer_fn(coords, npixels, wavelength, pscale, distance):
-    rho_sq = (coords**2).sum(0)
-    return _fftshift(np.exp(-1.0j * np.pi * wavelength * distance * rho_sq))
-
-
-def transfer(wf, distance, pad=2):
-    npix = pad * wf.npixels
-    diam = pad * wf.diameter
-    freqs = np.fft.fftshift(np.fft.fftfreq(npix, diam / npix))
-    coords = np.array(np.meshgrid(freqs, freqs))
-    return transfer_fn(coords, wf.npixels, wf.wavelength, pad * wf.pixel_scale, distance)
-
-
-def plane_to_plane(wf, distance, pad=2):
-    fft_wf = _fft(wf.phasor, pad=pad)
-    tf = transfer(wf, distance, pad=pad)
-    phasor = dlu.resize(_ifft(fft_wf * tf), wf.npixels)
-    return wf.set(["amplitude", "phase"], [np.abs(phasor), np.angle(phasor)])
-
-
-class DistortedCoords(zdx.Base):
-    powers: np.ndarray
-    distortion: np.ndarray
-
-    def __init__(self, order=1, distortion=None):
-        self.powers = np.array(gen_powers(order + 1))[:, 1:]
-
-        if distortion is None:
-            distortion = np.zeros_like(self.powers)
-        if distortion is not None and distortion.shape != self.powers.shape:
-            raise ValueError("Distortion shape must match powers shape")
-        self.distortion = distortion
-
-    def calculate(self, npix, diameter):
-        coords = dlu.pixel_coords(npix, diameter)
-        return distort_coords(coords, self.distortion, self.powers)
-
-    def apply(self, coords):
-        return distort_coords(coords, self.distortion, self.powers)
+    The output keeps the input shape and pixel scale. Real and imaginary
+    components are interpolated separately; no optical phase is reconstructed.
+    """
+    npixels = field.shape[-1]
+    knots = dlu.pixel_coords(npixels, 2)
+    samples = dlu.pixel_coords(npixels * factor, 2)
+    real = interp(field.real, knots, samples, "cubic2")
+    imag = interp(field.imag, knots, samples, "cubic2")
+    return dlu.downsample(real**2 + imag**2, factor, mean=True)
 
 
 def get_noll_indices(radial_orders: Array | list = None, noll_indices: Array | list = None):
@@ -121,79 +91,13 @@ def calc_mask(coords, f2f, pixel_scale):
     return vmap(hex_fn)(coords).sum(0)
 
 
-def calc_fourier_dict(coords, f2f, n_modes):
-    """
-    Raw (unmasked) separable Fourier dictionary for one hole -- n_modes**2
-    modes ([DC, cos1, sin1, cos2, ...] per axis, per dlu.fourier_kernels).
-    Reuses dLux's own kernel machinery (the same one dLux.parametric.FourierBasis
-    evaluates with), which is orthogonal over a full square pixel grid but has
-    no notion of the hexagonal aperture -- that's handled by
-    `orthogonalise_fourier_basis` below, not here.
-    """
-    npix = coords.shape[-1]
-    Kx, Ky = dlu.fourier_kernels(n_modes, npix, scale=f2f)
-    return np.einsum("xi,yj->ijxy", Kx, Ky).reshape(n_modes * n_modes, npix, npix)
-
-
-def orthogonalise_fourier_basis(coords, f2f, n_modes, n_modes_keep):
-    """
-    SVD-orthogonalise the Fourier dictionary over the hexagonal aperture, for
-    one hole. Plain Zernikes are only analytically orthogonal over a
-    circle; restricted to AMI's hexagonal holes, plain
-    Zernikes cross-talk (a "zeroed" high-order coefficient can still visibly
-    show up as e.g. tip/tilt). This instead orthogonalises numerically via SVD,
-    so it's exact for whatever aperture shape `dlu.soft_reg_polygon` actually
-    describes, at the cost of the resulting modes no longer being simple named
-    aberrations (they're arbitrary combinations of Fourier modes instead).
-
-    n_modes_keep must be static (fixed ahead of time -- e.g. to match the
-    current Zernike aberration_orders' mode count for a fair
-    comparison) rather than picked via a rank cutoff: the raw dictionary is
-    close to full rank at practical mode counts (smooth singular-value decay,
-    no natural truncation point), so truncating is a real approximation, not
-    free cleanup of redundant modes.
-    """
-    npix = coords.shape[-1]
-    pixel_scale = coords[0, 0, 1] - coords[0, 0, 0]
-    dictionary = calc_fourier_dict(coords, f2f, n_modes)
-    mask = dlu.soft_reg_polygon(coords, f2f / np.sqrt(3), 6, pixel_scale)
-    F = (dictionary * mask[None]).reshape(dictionary.shape[0], -1).T
-    U, s, Vt = np.linalg.svd(F, full_matrices=False)
-    U = U[:, :n_modes_keep]
-
-    # U's columns are orthonormal as sum_pixels(U_i * U_j) = delta_ij over the
-    # WHOLE npix*npix grid, so each mode's RMS within the aperture is
-    # ~1/sqrt(n_valid_pixels) -- ~0.007 here, vs dlu.zernike_basis's
-    # RMS~1-within-the-aperture convention. Left unscaled, that's a ~100x+
-    # mismatch: the same aberration learning rate (tuned for Zernike-scale
-    # coefficients) would move these modes ~100x too slowly, which would look
-    # like "the basis doesn't converge" for a boring normalisation reason, not a
-    # real result about the basis. Rescale to match Zernike's RMS~1
-    # convention instead (giving up exact sum-of-squares=1 orthonormality, which
-    # Zernikes don't have either -- they're only orthogonal, not
-    # orthonormal in this L2 sense, and not even exactly orthogonal here, which
-    # is the whole point of this basis). n_valid uses the same >0.5 threshold as
-    # a hard aperture cut, not the soft mask's fractional edge values.
-    n_valid = np.sum(mask > 0.5)
-    U = U * np.sqrt(n_valid)
-
-    return U.T.reshape(-1, npix, npix)
-
-
-def calc_fourier_basis(coords, f2f, n_modes_keep, n_modes=13):
-    """vmaps orthogonalise_fourier_basis over holes, matching calc_basis's
-    zernike branch's contract: coords (n_holes, 2, npix, npix) ->
-    (n_holes, n_modes_keep, npix, npix)."""
-    basis_fn = lambda c: orthogonalise_fourier_basis(c, f2f, n_modes, n_modes_keep)
-    return vmap(basis_fn)(coords)
-
-
-def calc_basis(coords, f2f, radial_orders, fourier=False, n_modes_keep=28, n_modes=13):
-    if fourier:
-        return calc_fourier_basis(coords, f2f, n_modes_keep, n_modes)
-
+def calc_basis(coords, f2f, radial_orders, polike=False):
     noll_inds = get_noll_indices(np.arange(radial_orders))
-    basis_fn = lambda coords: dlu.zernike_basis(noll_inds, coords, 2 * f2f / np.sqrt(3))
+
+    if polike:
+        basis_fn = lambda coords: dlu.polike_basis(6, noll_inds, coords, 2 * f2f / np.sqrt(3))
+    else:
+        basis_fn = lambda coords: dlu.zernike_basis(noll_inds, coords, 2 * f2f / np.sqrt(3))
     return vmap(basis_fn)(coords)
 
 
@@ -204,47 +108,25 @@ def get_initial_holes(diameter=6.603464, npixels=1024, x_shift=21, y_shift=-13):
     return np.load(file_path) + shift[None, :]
 
 
-def calc_hole_corners(coords, holes, size):
-    """The corner-position half of reduce_basis, split out so it can be reused
-    without needing an already-computed (and possibly expensive-to-compute)
-    full-resolution basis array -- see crop_hole_coords."""
+def reduce_basis(basis, coords, holes, size=180):
     xs = coords[0, 0]
     npixels = len(xs)
     pixel_scale = np.diff(xs, axis=0).mean()
+
+    # # Re-scale the coordinates to pixel units
+    # arr_coords = coords / pixel_scale
 
     # Shift the coordinates to be centred at the corner (ie array indexed)
     cen_pix = npixels / 2
     if npixels % 2 == 0:
         cen_pix -= 0.5
+    # arr_coords = arr_coords + (npixels / 2)
 
     # Get the holes positions in units of pixels
     holes_pix = np.rint((holes / pixel_scale) + cen_pix).astype(int)
 
     # Get the corners of the hole cut outs
-    return holes_pix - size // 2
-
-
-def crop_hole_coords(hole_coords, hole_corners, size):
-    """Crop each hole's own (2, npix, npix) coordinate array down to
-    (2, size, size) at its corresponding corner. The hole_coords analog of
-    crop_windows: there, one shared dense array gets cropped at many corners;
-    here both the array *and* the corner vary per hole together, since
-    hole_coords is already translated per-hole. Used to build a basis directly
-    at the small (post-crop) resolution instead of computing it at full
-    resolution and cropping afterward (see calc_fourier_basis's caller in
-    BaseApertureMask) -- cheap here since coordinates are just 2 channels, not
-    the K-channel basis dictionary reduce_basis is built to crop.
-    """
-
-    def crop_one(coords_i, corner):
-        j, i = corner
-        return dynamic_slice(coords_i, (0, i, j), (2, size, size))
-
-    return vmap(crop_one)(hole_coords, hole_corners)
-
-
-def reduce_basis(basis, coords, holes, size=180):
-    hole_corners = calc_hole_corners(coords, holes, size)
+    hole_corners = holes_pix - size // 2
 
     # Cut out the sections
     small_basis = np.zeros((*basis.shape[:2], size, size))
@@ -254,146 +136,6 @@ def reduce_basis(basis, coords, holes, size=180):
         cut = basis[idx, :, i : i + size, j : j + size]
         small_basis = small_basis.at[idx, :].set(cut)
     return small_basis, hole_corners
-
-
-def eval_small_basis(small_basis, coeffs):
-    # A pupil-wide basis (e.g. the eigenbasis, see load_eigen_basis) has one
-    # coefficient vector shared by every hole: each hole's window holds its own
-    # piece of every mode, so broadcasting the coefficients to every hole gives
-    # exactly the pupil-wide OPD.
-    if coeffs.ndim == 1:
-        coeffs = np.broadcast_to(coeffs, small_basis.shape[:2])
-    return vmap(dlu.eval_basis)(small_basis, coeffs)
-
-
-def crop_windows(arr, corners, size):
-    """
-    Crops a single dense 2d array into per-hole (size, size) windows at the
-    given corners -- the single-array equivalent of `reduce_basis`'s crop,
-    used to pull per-hole content back out of an already-computed dense
-    array (e.g. StaticApertureMask.transmission) for sparse propagation.
-
-    Uses `dynamic_slice` (rather than plain array slicing) since `corners`
-    is a regular (non-static) pytree leaf and so may be a traced value under
-    jit/grad.
-    """
-
-    def crop_one(corner):
-        j, i = corner
-        return dynamic_slice(arr, (i, j), (size, size))
-
-    return vmap(crop_one)(corners)
-
-
-def eigen_support(coords, holes, hole_coords, f2f, size):
-    """
-    Per-hole windows of the nominal eigenbasis support, (n_holes, size, size)
-    bool, and the window corners: each hole's (already oversized, `f2f`) hexagon
-    at its nominal position, soft edge included (> 0).
-
-    This is only one possible support. A basis file carries its own (see
-    file_eigen_support), e.g. the fitted apertures grown by a smaller oversize.
-    """
-    corners = calc_hole_corners(coords, holes, size)
-    small = crop_hole_coords(hole_coords, corners, size)
-    pixel_scale = coords[0, 0, 1] - coords[0, 0, 0]
-    hex_fn = lambda c: dlu.soft_reg_polygon(c, f2f / np.sqrt(3), 6, pixel_scale)
-    return vmap(hex_fn)(small) > 0, corners
-
-
-def file_eigen_support(first_mode, corners, size):
-    """
-    The support a full-pupil eigenbasis file is defined on, read off the file
-    itself (finite pixels of its first mode) and cut into per-hole windows,
-    (n_holes, size, size) bool. The support need not sit at the nominal hole
-    positions, but it must fit inside the windows: every pixel of it has to land
-    in exactly one window, so a mode cut into them loses nothing and counts
-    nothing twice.
-    """
-    import numpy as onp
-
-    footprint = onp.isfinite(onp.asarray(first_mode))
-    support = onp.stack([footprint[i : i + size, j : j + size] for j, i in onp.asarray(corners)])
-    count = onp.zeros(footprint.shape, int)
-    for h, (j, i) in enumerate(onp.asarray(corners)):
-        count[i : i + size, j : j + size] += support[h]
-    if not (count == footprint).all():
-        raise ValueError("eigenbasis support doesn't fit inside the per-hole windows")
-    return support
-
-
-def crop_eigen_windows(full, corners, support):
-    """
-    Cut a full-pupil eigenbasis, (n_modes, npix, npix) with NaN outside its
-    support, into per-hole windows, (n_holes, n_modes, size, size), zero outside
-    each hole's own support. Plain numpy, one mode at a time, so a memory-mapped
-    `full` is never loaded all at once.
-    """
-    import numpy as onp
-
-    size = support.shape[-1]
-    support = onp.asarray(support)
-    windows = onp.zeros((len(corners), full.shape[0], size, size))
-    for k in range(full.shape[0]):
-        mode = onp.nan_to_num(onp.asarray(full[k]))
-        for h, (j, i) in enumerate(onp.asarray(corners)):
-            windows[h, k] = mode[i : i + size, j : j + size] * support[h]
-    return windows
-
-
-def save_eigen_windows(full_path, out_path, diameter=6.603464, npixels=1024, size=180):
-    """
-    One-off conversion of a full-pupil eigenbasis file into the per-hole
-    windows file load_eigen_basis reads fast: (n_holes, n_modes, size, size),
-    in the original (unit sum-of-squares) normalisation.
-    """
-    import numpy as onp
-
-    coords = dlu.pixel_coords(npixels, diameter)
-    corners = calc_hole_corners(coords, get_initial_holes(diameter, npixels), size)
-    full = onp.load(full_path, mmap_mode="r")
-    support = file_eigen_support(full[0], corners, size)
-    windows = crop_eigen_windows(full, corners, support)
-    total = onp.array([(onp.nan_to_num(onp.asarray(full[k])) ** 2).sum() for k in range(full.shape[0])])
-    if not onp.allclose((windows**2).sum((0, 2, 3)), total, rtol=1e-10, atol=0):
-        raise ValueError("windows lost or double-counted part of the eigenbasis")
-    onp.save(out_path, windows)
-    return windows
-
-
-def load_eigen_basis(eigen_basis, coords, holes, hole_coords, f2f, size, n_eigen=None):
-    """
-    A pupil-wide eigenbasis as per-hole windows, (n_holes, n_eigen, size, size),
-    rescaled to RMS 1 over its support like the other aberration bases (the
-    caller applies the 1e-9, so coefficients are in nm), and the window corners.
-
-    Each eigenmode spans every hole at once, so a model using it has a single
-    coefficient vector (n_eigen,) shared by all holes -- see eval_small_basis.
-
-    `eigen_basis` is a windows file from save_eigen_windows (fast), a
-    full-pupil file (n_modes, npix, npix) with NaN outside the support, or an
-    array in either layout.
-
-    The support is whatever the file was built on (see file_eigen_support), not
-    recomputed from `f2f`: it can be the oversized hexagons at the nominal hole
-    positions, or apertures at the fitted positions with a smaller oversize. It
-    is up to the basis to cover the model's aperture -- the OPD is zero wherever
-    the aperture transmits outside the support.
-    """
-    import numpy as onp
-
-    corners = calc_hole_corners(coords, holes, size)
-    raw = onp.load(eigen_basis, mmap_mode="r") if isinstance(eigen_basis, str) else onp.asarray(eigen_basis)
-
-    if raw.ndim == 4:
-        if raw.shape[0] != len(corners) or raw.shape[-1] != size:
-            raise ValueError("eigenbasis windows don't match this model's holes / window size")
-        support = (onp.asarray(raw[:, :3]) != 0).any(1)
-        windows = onp.asarray(raw[:, :n_eigen])
-    else:
-        support = file_eigen_support(raw[0], corners, size)
-        windows = crop_eigen_windows(raw[:n_eigen], corners, support)
-    return np.asarray(windows * onp.sqrt(support.sum())), corners
 
 
 # Fill in the full array
@@ -407,11 +149,17 @@ def fill(arr, indices, npix):
     return vmap(expand, (0, 0, None))(arr, indices, npix).sum(0)
 
 
-class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
-    abb_basis: Array
-    abb_coeffs: Array
-    amp_basis: Array
-    amp_coeffs: Array
+class BaseApertureMask(dl.OpticalLayer, zdx.Module):
+    """AMIGO pupil coefficients retain their dLux 0.14 OPD sign convention.
+
+    dLux 0.15 reverses the Fourier sign, so negate OPD when applying it to
+    the complex field. The fitted coefficients and reference OPD stay unchanged.
+    """
+
+    opds: dict | None = eqx.field(default=None, kw_only=True)
+    opd_sharing: tuple | None = eqx.field(default=None, kw_only=True, static=True)
+    amp_basis: Array | None = eqx.field(default=None, kw_only=True)
+    amp_coeffs: Array | None = eqx.field(default=None, kw_only=True)
     corners: Array
 
     def __init__(
@@ -422,71 +170,45 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
         f2f,
         aberration_orders=None,
         amplitude_orders=None,
-        fourier=False,
-        n_modes_keep=28,
-        n_modes=13,
+        polike=False,
         small_npix=180,
-        eigen_basis=None,
-        n_eigen=None,
+        opds=None,
     ):
-        if eigen_basis is not None and fourier:
-            raise ValueError("eigen_basis replaces the aberration basis, don't combine it with fourier")
 
-        # The fourier basis is built by SVD-orthogonalising a dictionary over
-        # every pixel of each hole's window -- cheap at the small (post-crop)
-        # resolution reduce_basis normally crops down to, but expensive (an SVD
-        # of a full 1024x1024-per-hole dictionary) at the full pupil resolution
-        # zernike_basis is evaluated at. So unlike those, build it
-        # directly at small_npix: crop the (cheap, just 2 channels) coordinates
-        # first, then run the SVD only on that small window -- never touching a
-        # full-resolution dictionary at all. `corners` matches exactly what
-        # reduce_basis would return (same calc_hole_corners call), just computed
-        # up front here since fourier's path never gets there via reduce_basis.
-        if fourier and (aberration_orders is not None or amplitude_orders is not None):
-            hole_corners = calc_hole_corners(coords, holes, small_npix)
-            small_hole_coords = crop_hole_coords(hole_coords, hole_corners, small_npix)
+        pixel_scale = np.diff(coords[0, 0]).mean()
+        corners = calc_corners(holes, coords.shape[-1], pixel_scale * coords.shape[-1], small_npix)
 
-        # Calculate the aberration basis functions. A pupil-wide eigenbasis has
-        # one coefficient vector shared by all holes, (n_eigen,), rather than
-        # one per hole, (n_holes, n_modes) -- see eval_small_basis.
-        if eigen_basis is not None:
-            abb_basis, corners = load_eigen_basis(
-                eigen_basis, coords, holes, hole_coords, f2f, small_npix, n_eigen
+        # The old radial-order input is a convenience builder, not a second
+        # representation. Coefficients retain their existing nanometre units.
+        if opds is not None and aberration_orders is not None:
+            raise ValueError("Supply opds or aberration_orders, not both")
+        self.opds = opds
+        if aberration_orders is not None:
+            local = np.stack([crop_windows(axis, corners, small_npix) for axis in coords], axis=1)
+            local = local - holes[:, :, None, None]
+            indices = get_noll_indices(np.arange(aberration_orders))
+            zernikes = zernike_opd(
+                local, indices, 2 * f2f / np.sqrt(3), per_hole=True, polike=polike
             )
-            self.abb_basis = 1e-9 * abb_basis
-            self.abb_coeffs = np.zeros(self.abb_basis.shape[1])
-        elif aberration_orders is not None:
-            if fourier:
-                abb_basis = 1e-9 * calc_fourier_basis(small_hole_coords, f2f, n_modes_keep, n_modes)
-                corners = hole_corners
-            else:
-                abb_basis = 1e-9 * calc_basis(hole_coords, f2f, aberration_orders)
-                abb_basis, corners = reduce_basis(abb_basis, coords, holes, size=small_npix)
-            self.abb_basis = abb_basis
-            self.abb_coeffs = np.zeros(self.abb_basis.shape[:-2])
-        else:
-            self.abb_basis = None
-            self.abb_coeffs = None
+            zernikes = zernikes.set("x", zdx.Map(x=zernikes.x, s=1e-9))
+            self.opds = {"zernikes": zernikes}
+            aliases = dict(self.alias or ())
+            aliases.setdefault("aberrations", "opds.zernikes.x.x")
+            self.alias = aliases
 
         # Calculate the amplitude basis functions
         if amplitude_orders is not None:
-            if fourier:
-                amp_basis = calc_fourier_basis(small_hole_coords, f2f, n_modes_keep, n_modes)
-                corners = hole_corners
-            else:
-                amp_basis = calc_basis(hole_coords, f2f, amplitude_orders)
-                amp_basis, corners = reduce_basis(amp_basis, coords, holes, size=small_npix)
-            self.amp_basis = amp_basis
+            amp_basis = calc_basis(hole_coords, f2f, amplitude_orders, polike)
+            self.amp_basis, corners = reduce_basis(amp_basis, coords, holes, size=small_npix)
             self.amp_coeffs = np.zeros(self.amp_basis.shape[:-2])
         else:
             self.amp_basis = None
             self.amp_coeffs = None
 
         self.corners = corners
-        # self.corners = np.array(corners, dtype=float)
 
     def eval_basis(self, basis, coeffs, npixels=1024):
-        small_eval = eval_small_basis(basis, coeffs)
+        small_eval = vmap(dlu.eval_basis)(basis, coeffs)
         return fill(small_eval, self.corners, npixels)
 
     def calc_transmission(self, npixels=1024):
@@ -494,92 +216,101 @@ class BaseApertureMask(dl.layers.optical_layers.OpticalLayer):
             return 1 + self.eval_basis(self.amp_basis, self.amp_coeffs, npixels)
         return np.ones((npixels, npixels))
 
-    def calc_aberrations(self, npixels=1024):
-        if self.abb_basis is not None:
-            return self.eval_basis(self.abb_basis, self.abb_coeffs, npixels)
-        return np.zeros((npixels, npixels))
+    @property
+    def opd(self):
+        """Total OPD in metres on the fixed (hole, row, column) windows."""
+        return sum_opds(self.opds, (len(self.corners), self.size, self.size))
+
+    def calc_aberrations(self, npixels=None):
+        """Paste the total OPD stamps into a dense pupil for propagation."""
+        npixels = self.npixels if npixels is None else npixels
+        return fill(self.opd, self.corners, npixels)
 
 
-class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.TransmissiveLayer):
+class StaticApertureMask(BaseApertureMask, dl.TransmissiveLayer):
     size: int = eqx.field(static=True)
+    npixels: int = eqx.field(static=True)
+    diameter: float = eqx.field(static=True)
 
-    def __init__(
-        self,
-        holes=None,
-        f2f=0.80,
-        diameter=6.603464,
-        npixels=1024,
-        transformation=None,
-        normalise=True,
-        aberration_orders=None,
-        amplitude_orders=None,
-        oversize=1.1,
-        fourier=False,
-        n_modes_keep=28,
-        n_modes=13,
-        small_npix=180,
-        eigen_basis=None,
-        n_eigen=None,
-    ):
-        # Get distorted coordinates
-        coords = dlu.pixel_coords(npixels, diameter)
-        if transformation is not None:
-            coords = transformation.apply(coords)
+    def __init__(self, *, transmission=None, aperture=None, **geometry):
+        """Freeze per-hole amplitude transmission on fixed pupil windows.
 
-        # Get the holes coordinates
-        if holes is None:
-            holes = get_initial_holes(diameter, npixels)
-        hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, holes)
+        Supply transmission as (holes, size, size) stamps or a full pupil image.
+        Geometry keywords are the same as DynamicApertureMask. Alternatively,
+        aperture supplies an existing dynamic mask at its current values.
+        """
+        if aperture is not None and geometry:
+            raise ValueError("Supply an aperture or geometry keywords, not both")
+        # Build recipes against the final static transmission, not an interim mask.
+        pending_opds = geometry.pop("opds", None) if aperture is None else None
+        pending_alias = geometry.pop("alias", None) if pending_opds is not None else None
+        sharing = geometry.pop("opd_sharing", None) if aperture is None else None
+        if aperture is None:
+            geometry.setdefault("oversize", 1.1)  # Preserve the static OPD basis extent.
+            aperture = DynamicApertureMask(**geometry)
+        if transmission is None:
+            transmission = aperture.sparse_apertures()
+        transmission = np.asarray(transmission, float)
+        stamps = (len(aperture.corners), aperture.size, aperture.size)
+        full = (aperture.npixels, aperture.npixels)
+        if transmission.shape not in (stamps, full):
+            raise ValueError("Transmission must match the hole windows or full pupil")
 
-        # Calculate the transmission mask
-        self.transmission = calc_mask(hole_coords, f2f, diameter / npixels)
-        self.normalise = bool(normalise)
-        self.size = small_npix
-
-        super().__init__(
-            coords=coords,
-            holes=holes,
-            hole_coords=hole_coords,
-            f2f=f2f * oversize,  # Oversize the aberrations to avoid edge effects
-            aberration_orders=aberration_orders,
-            amplitude_orders=amplitude_orders,
-            fourier=fourier,
-            n_modes_keep=n_modes_keep,
-            n_modes=n_modes,
-            small_npix=small_npix,
-            eigen_basis=eigen_basis,
-            n_eigen=n_eigen,
-        )
+        self.transmission = transmission
+        self.normalise = aperture.normalise
+        self.size = aperture.size
+        # Freeze geometry only; preserve the existing amplitude and OPD state.
+        for name in ("corners", "amp_basis", "amp_coeffs", "opds", "opd_sharing"):
+            setattr(self, name, getattr(aperture, name))
+        self.npixels = aperture.npixels
+        self.diameter = aperture.diameter
+        # Geometry is frozen; retain aliases to the live OPD/amplitude inputs.
+        self.alias = {
+            name: path
+            for name, path in (aperture.alias or ())
+            if path.split(".")[0] in {"opds", "amp_basis", "amp_coeffs"}
+        }
+        if pending_opds is not None:
+            if self.opds is not None:
+                raise ValueError("Supply opds or aberration_orders, not both")
+            self.opds = pending_opds
+            self.alias = {**dict(self.alias or ()), **dict(pending_alias or ())}
+            self.opds, self.alias, self.opd_sharing = build_opds(self, sharing)
+        elif sharing is not None:
+            self.opds, self.alias, self.opd_sharing = build_opds(self, sharing)
 
     def calc_transmission(self):
-        if self.amp_basis is not None:
-            return self.transmission * super().calc_transmission(
-                npixels=self.transmission.shape[0]
-            )
-        return self.transmission
+        mask = self.transmission
+        if mask.ndim == 3:
+            mask = fill(mask, self.corners, self.npixels)
+        return mask * super().calc_transmission(self.npixels)
 
     def sparse_fields(self, npixels, diameter):
         """
-        Per-hole mask, OPD (nm), and amplitude-perturbation arrays -- each
+        Per-hole mask, OPD (metres), and amplitude-perturbation arrays -- each
         shape (n_holes, size, size) -- plus the physical (x, y) centre of
         each hole's local window. Sparse-propagation equivalent of
         `calc_transmission` + `calc_aberrations`, without ever assembling a
         dense (npixels, npixels) array.
 
-        Note: `self.transmission` can be overwritten wholesale after
-        construction (e.g. `optics.set("transmission", ...)` when restoring a
-        fitted/measured aperture), so the per-hole windows are cropped fresh
-        from it on every call rather than cached at `__init__` time.
+        Transmission may be stored as hole stamps or a full pupil image.
+        Full images are cropped on evaluation so restoring a calibrated
+        transmission image also updates the sparse propagation path.
         """
-        mask = crop_windows(self.transmission, self.corners, self.size)
+        if npixels != self.npixels:
+            raise ValueError("Aperture sampling must match its fixed pupil windows")
+        mask = eqx.error_if(
+            self.transmission,
+            diameter != self.diameter,
+            "Aperture diameter must match its fixed pupil windows",
+        )
+        if mask.ndim == 2:
+            mask = crop_windows(mask, self.corners, self.size)
 
-        if self.abb_basis is not None:
-            opd = eval_small_basis(self.abb_basis, self.abb_coeffs)
-        else:
-            opd = np.zeros_like(mask)
+        opd = self.opd
 
         if self.amp_basis is not None:
-            amp = eval_small_basis(self.amp_basis, self.amp_coeffs)
+            amp = vmap(dlu.eval_basis)(self.amp_basis, self.amp_coeffs)
         else:
             amp = np.zeros_like(mask)
 
@@ -588,22 +319,17 @@ class StaticApertureMask(BaseApertureMask, dl.layers.optical_layers.Transmissive
 
     def __call__(self, wavefront):
         wavefront *= self.calc_transmission()
-        wavefront = wavefront.add_opd(self.calc_aberrations())
+        wavefront = wavefront.add_opd(-self.calc_aberrations(wavefront.npixels))
         if self.normalise:
             return wavefront.normalise()
         return wavefront
 
 
-def _cen_pix(n):
-    cen_pix = n / 2
-    if n % 2 == 0:
-        cen_pix -= 0.5
-    return cen_pix
-
-
 def calc_corners(holes, npixels, diameter, size):
     # Shift the coordinates to be centred at the corner (ie array indexed)
-    cen_pix = _cen_pix(npixels)
+    cen_pix = npixels / 2
+    if npixels % 2 == 0:
+        cen_pix -= 0.5
 
     # Get the corners of the hole cut outs
     pixel_scale = diameter / npixels
@@ -612,32 +338,78 @@ def calc_corners(holes, npixels, diameter, size):
     return corners
 
 
+def crop_windows(arr, corners, size):
+    """Crop the pupil windows using (x, y) corners and array (y, x) indexing."""
+    return vmap(lambda corner: dynamic_slice(arr, (corner[1], corner[0]), (size, size)))(corners)
+
+
 def window_centers(corners, size, npixels, diameter):
+    """Physical (x, y) centres of the windows pasted into the full pupil."""
+    return (corners + (size - npixels) / 2) * (diameter / npixels)
+
+
+class PolynomialDistortion(zdx.Base):
+    """Local per-hole coordinate distortions, without translation terms.
+
+    Coordinates and coefficients are dimensionless. Zero coefficients give
+    the identity map; order includes both linear and higher-order terms.
     """
-    Physical (x, y) coordinates of the centre of each hole's local cut-out
-    window (as pasted by `calc_corners`/`dynamic_update_slice`), for use as
-    the per-hole coordinate offset in sparse propagation.
+
+    powers: Array
+    coefficients: Array
+
+    def __init__(self, order=3, n_holes=7, coefficients=None):
+        if not isinstance(order, int) or order < 1:
+            raise ValueError("Polynomial order must be a positive integer")
+        self.powers = np.array(gen_powers(order + 1))[:, 1:]
+        if coefficients is None:
+            coefficients = np.zeros((n_holes, *self.powers.shape))
+        coefficients = np.asarray(coefficients, float)
+        if coefficients.ndim != 3 or coefficients.shape[1:] != self.powers.shape:
+            raise ValueError("Coefficients must have shape (holes, 2, polynomial terms)")
+        self.coefficients = coefficients
+
+    def apply(self, coords):
+        """Transform coordinates with shape (holes, 2, rows, columns)."""
+        return vmap(distort_coords, (0, 0, None))(coords, self.coefficients, self.powers)
+
+
+class AffineDistortion(PolynomialDistortion):
+    """Four linear coefficients per hole; positions supply all translations."""
+
+    def __init__(self, n_holes=7, coefficients=None):
+        super().__init__(order=1, n_holes=n_holes, coefficients=coefficients)
+
+
+def relative_positions(n_holes):
+    """Orthonormal map from n-1 offsets to n zero-mean hole displacements.
+
+    Apply the same map to x and y. No rotation or scale direction is removed.
     """
-    pixel_scale = diameter / npixels
-    pix_offset = _cen_pix(size) - _cen_pix(npixels)
-    return (corners + pix_offset) * pixel_scale
+    row = np.arange(n_holes)[:, None]
+    column = np.arange(1, n_holes)[None, :]
+    values = np.where(row < column, 1, np.where(row == column, -column, 0))
+    return values / np.sqrt(column * (column + 1))
 
 
-def calc_mask_hole(coeffs, coords, hole_cen, powers, ap_fn, oversample=3):
-    coords += hole_cen[:, None, None]
-    coords = distort_coords(coords, coeffs, powers)
-    return dlu.downsample(ap_fn(coords), oversample, mean=True)
+class DynamicApertureMask(BaseApertureMask, dl.OpticalLayer):
+    """Relative hole positions and local shapes inside fixed pupil windows.
 
+    holes is a Zodiax Map from 2*(n_holes-1) fitted coordinates to physical
+    positions in metres. The positions alias selects holes.x for fitting.
+    distortion applies a local coordinate map; AffineDistortion is the default.
+    Custom maps implement apply(coords) and should omit translations. f2f is
+    the nominal hole size; local affine terms already allow size changes.
+    """
 
-class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLayer):
-    holes: Array
+    holes: zdx.Map
+    distortion: zdx.Base
     f2f: Array
     normalise: bool
-    transformation: None
-    primary_beam: Array
-    primary_powers: Array
-    corners: Array
     size: int = eqx.field(static=True)
+    npixels: int = eqx.field(static=True)
+    diameter: float = eqx.field(static=True)
+    oversample: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -645,113 +417,105 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         f2f=0.80,
         diameter=6.603464,
         npixels=1024,
-        distortion_orders=None,
+        positions=None,
+        distortion=None,
         normalise=True,
         aberration_orders=None,
         amplitude_orders=None,
         oversize=1.2,
-        fourier=False,
-        n_modes_keep=28,
-        n_modes=13,
+        polike=False,
         size=180,
-        eigen_basis=None,
-        n_eigen=None,
+        oversample=3,
+        opds=None,
+        alias=None,
+        opd_sharing=None,
     ):
         if holes is None:
             holes = get_initial_holes(diameter, npixels)
-        self.holes = holes
+        hole_map = holes if isinstance(holes, zdx.Map) else None
+        holes = np.asarray(zdx.resolve(holes), float)
+        if holes.ndim != 2 or holes.shape[1] != 2 or len(holes) < 2:
+            raise ValueError("holes must resolve to shape (n_holes, 2), with at least two holes")
+        if oversample < 1:
+            raise ValueError("Oversampling must be positive")
+
+        # Bind the reduced coordinates and nominal positions in one leaf.
+        if hole_map is None:
+            basis = np.einsum("hi,ab->ibha", relative_positions(len(holes)), np.eye(2))
+            basis = basis.reshape(2 * (len(holes) - 1), len(holes), 2)
+            hole_map = zdx.Map(x=np.zeros(basis.shape[0]), M=basis, b=holes)
+        if positions is not None:
+            positions = np.asarray(positions, float)
+            if positions.shape != hole_map.x.shape:
+                raise ValueError("positions must match the reduced coordinates in holes.x")
+            hole_map = hole_map.set("x", positions)
+        self.holes = hole_map
+        self.alias = {"positions": "holes.x", **dict(alias or ())}
+        self.distortion = (
+            AffineDistortion(n_holes=len(holes)) if distortion is None else distortion
+        )
+
         self.f2f = np.asarray(f2f, float)
-        self.transformation = DistortedCoords(distortion_orders)
         self.normalise = bool(normalise)
+        self.size, self.npixels = size, npixels
+        self.diameter, self.oversample = float(diameter), oversample
 
-        #
-        # self.softness = np.array(softness, float)
-        self.primary_powers = np.array(gen_powers(4))[:, 1:]
-        self.primary_beam = np.zeros((7, *self.primary_powers.shape))
-        self.corners = calc_corners(holes, npixels, diameter, size)
-        self.size = size
-
-        # Get undistorted coordinates for aberrations
+        # Build fixed windows and optional amplitude/OPD components.
         coords = dlu.pixel_coords(npixels, diameter)
         hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, holes)
-
         super().__init__(
             coords=coords,
             holes=holes,
             hole_coords=hole_coords,
-            f2f=f2f * oversize,  # Oversize the aberrations to avoid edge effects
+            f2f=f2f * oversize,
             aberration_orders=aberration_orders,
             amplitude_orders=amplitude_orders,
-            fourier=fourier,
-            n_modes_keep=n_modes_keep,
-            n_modes=n_modes,
-            eigen_basis=eigen_basis,
-            n_eigen=n_eigen,
+            polike=polike,
+            small_npix=size,
+            opds=opds,
         )
+        if np.any(self.corners < 0) or np.any(self.corners + size > npixels):
+            raise ValueError("Aperture windows extend outside the pupil")
+        self.opds, self.alias, self.opd_sharing = build_opds(self, opd_sharing)
 
-    def calc_mask(self, npixels, diameter, oversample=3):
-        pixel_scale = diameter / npixels
+    def to_static(self):
+        """Freeze the current geometry, retaining the same windows and OPD state."""
+        return StaticApertureMask(aperture=self)
 
-        # Get the oversample sub-array coordinates
-        npix = npixels * oversample
-        full_size = self.size * oversample
-        full_pixel_scale = diameter / npix
-        small_diam = full_size * full_pixel_scale
-        coords = dlu.pixel_coords(full_size, small_diam)
+    def calc_mask(self, npixels=None, diameter=None, oversample=None):
+        stamps = self.sparse_apertures(npixels, diameter, oversample)
+        return fill(stamps, self.corners, self.npixels)
 
-        # Calculate the offset
-        distort_fn = lambda coords: distort_coords(coords, self.distortion, self.primary_powers)
-        holes = distort_fn(self.holes.T[..., None])[..., 0].T
-        offset = holes - (pixel_scale * (2 * self.corners + self.size) - diameter) / 2
+    def sparse_apertures(self, npixels=None, diameter=None, oversample=None):
+        """Evaluate hole shapes on fixed windows, shifting masks within them."""
+        if npixels is not None and npixels != self.npixels:
+            raise ValueError("Aperture sampling must match its fixed pupil windows")
+        oversample = self.oversample if oversample is None else oversample
+        pixel_scale = np.asarray(self.diameter / self.npixels)
+        if diameter is not None:
+            pixel_scale = eqx.error_if(
+                pixel_scale,
+                diameter != self.diameter,
+                "Aperture diameter must match its fixed pupil windows",
+            )
+        grid = dlu.pixel_coords(self.size * oversample, self.size * pixel_scale)
+        centers = window_centers(self.corners, self.size, self.npixels, self.diameter)
 
-        # Calculate the individual apertures
-        ap_fn = lambda coords: dlu.soft_reg_polygon(
-            coords, self.f2f / np.sqrt(3), 6, 0.25 * pixel_scale
-        )
-        mask_fn = lambda coeffs, cen: calc_mask_hole(
-            coeffs, coords, cen, self.primary_powers, ap_fn
-        )
-        apertures = vmap(mask_fn)(self.primary_beam, offset)
+        # Centre coordinates on each fitted hole; shape maps cannot translate it.
+        local = grid[None] - (zdx.resolve(self.holes) - centers)[:, :, None, None]
+        local = local / self.f2f
+        warped = self.distortion.apply(local)
 
-        # Paste into the full array
-        full = np.zeros((1024, 1024))
-        for ind, (j, i) in enumerate(self.corners):
-            full = dynamic_update_slice(full, apertures[ind], (i, j))
-        return full
+        # Integrate the softened hexagon over each pupil pixel.
+        def render(coords):
+            mask = dlu.soft_reg_polygon(coords, 1 / np.sqrt(3), 6, 0.25 * pixel_scale / self.f2f)
+            return dlu.downsample(mask, oversample, mean=True)
 
-    def sparse_apertures(self, npixels, diameter, oversample=3):
+        return vmap(render)(warped)
+
+    def sparse_fields(self, npixels, diameter, oversample=None):
         """
-        Per-hole hexagonal transmission masks, shape (n_holes, size, size),
-        each evaluated on its own local coordinate window -- the same
-        per-hole content computed by `calc_mask`, without pasting it into a
-        dense (npixels, npixels) array.
-        """
-        pixel_scale = diameter / npixels
-
-        # Get the oversample sub-array coordinates
-        npix = npixels * oversample
-        full_size = self.size * oversample
-        full_pixel_scale = diameter / npix
-        small_diam = full_size * full_pixel_scale
-        coords = dlu.pixel_coords(full_size, small_diam)
-
-        # Calculate the offset
-        distort_fn = lambda coords: distort_coords(coords, self.distortion, self.primary_powers)
-        holes = distort_fn(self.holes.T[..., None])[..., 0].T
-        offset = holes - (pixel_scale * (2 * self.corners + self.size) - diameter) / 2
-
-        # Calculate the individual apertures
-        ap_fn = lambda coords: dlu.soft_reg_polygon(
-            coords, self.f2f / np.sqrt(3), 6, 0.25 * pixel_scale
-        )
-        mask_fn = lambda coeffs, cen: calc_mask_hole(
-            coeffs, coords, cen, self.primary_powers, ap_fn, oversample
-        )
-        return vmap(mask_fn)(self.primary_beam, offset)
-
-    def sparse_fields(self, npixels, diameter, oversample=3):
-        """
-        Per-hole mask, OPD (nm), and amplitude-perturbation arrays -- each
+        Per-hole mask, OPD (metres), and amplitude-perturbation arrays -- each
         shape (n_holes, size, size) -- plus the physical (x, y) centre of
         each hole's local window. This is the sparse-propagation equivalent
         of `calc_mask` + `calc_transmission` + `calc_aberrations`, without
@@ -759,151 +523,205 @@ class DynamicApertureMask(BaseApertureMask, dl.layers.optical_layers.OpticalLaye
         """
         mask = self.sparse_apertures(npixels, diameter, oversample)
 
-        if self.abb_basis is not None:
-            opd = eval_small_basis(self.abb_basis, self.abb_coeffs)
-        else:
-            opd = np.zeros_like(mask)
+        opd = self.opd
 
         if self.amp_basis is not None:
-            amp = eval_small_basis(self.amp_basis, self.amp_coeffs)
+            amp = vmap(dlu.eval_basis)(self.amp_basis, self.amp_coeffs)
         else:
             amp = np.zeros_like(mask)
 
         centers = window_centers(self.corners, self.size, npixels, diameter)
         return mask, opd, amp, centers
 
-    # def calc_mask(self, npixels, diameter, oversample=3):
-    #     # npix = npixels * oversample
-    #     # coords = self.transformation.apply(dlu.pixel_coords(npixels, diameter))
-
-    #     # Distort the hole coordinates
-    # distort_fn = lambda coords: distort_coords(coords, self.distortion, self.primary_powers)
-    # holes = distort_fn(self.holes.T[..., None])[..., 0].T
-    # holes = distort_coords(self.holes.T[..., None], self.distortion, powers)[..., 0].T
-
-    #     # Apply the per-hole primary-beam distortion
-    #     npix = oversample * npixels
-    #     coords = dlu.pixel_coords(npix, diameter)
-    #     distort_fn = lambda coeffs: distort_coords(coords, coeffs, self.primary_powers)
-    #     coords = vmap(distort_fn)(self.primary_beam)
-    #     # coords = distort_coords(coords, self.primary_beam, self.primary_powers)
-
-    #     # Shift to the hole positions
-    #     hole_coords = vmap(dlu.translate_coords)(coords, holes)
-    #     # hole_coords = vmap(dlu.translate_coords, (None, 0))(coords, self.holes)
-    #     # mask = calc_mask(hole_coords, self.f2f, self.softness * diameter / npixels)
-    #     mask = calc_mask(hole_coords, self.f2f, 0.5 * diameter / npix)
-    #     return dlu.downsample(mask, oversample, mean=True)
-
     def __call__(self, wavefront):
         wavefront *= self.calc_transmission(npixels=wavefront.npixels)
         wavefront *= self.calc_mask(wavefront.npixels, wavefront.diameter)
-        wavefront = wavefront.add_opd(self.calc_aberrations())
+        wavefront = wavefront.add_opd(-self.calc_aberrations(wavefront.npixels))
         if self.normalise:
             return wavefront.normalise()
         return wavefront
 
-    def __getattr__(self, key):
-        if hasattr(self.transformation, key):
-            return getattr(self.transformation, key)
-        raise AttributeError(f"{self.__class__.__name__} has no attribute " f"{key}.")
-
 
 class AMIOptics(dl.AngularOpticalSystem):
+    """NIRISS optics using the retrain branch's ABCD dense/sparse propagators.
+
+    ``defocus`` is the physical axial displacement in micrometres; it is not
+    numerically interchangeable with the former angular-grid FFT parameter.
+    ``sparse=True`` propagates the aperture windows separately, then adds their
+    complex fields. The dense path is the default, matching retrain.
+
+    By default construct Fourier (5 modes per axis), per-filter global Zernikes
+    (Noll 5--10), and residual PTT. Only PTT is fitted by default. fit_fourier,
+    fit_filter_opd and fit_ptt select fitted groups; false retains fixed values.
+    calibrated accepts model.opd_calibration(), preserving reference geometry,
+    basis arrays and coefficient mappings. No basis is rebuilt on this path.
+    """
+
     filters: dict
+    sparse: bool
     defocus: np.ndarray
     corners: np.ndarray
     psf_upsample: int
-    sparse: bool = eqx.field(static=True)
+    psf_interpolation: str
+    opd_coefficients: dict
+    opd_fits: tuple = eqx.field(static=True)
+    opd_selected: bool
 
     def __init__(
         self,
         nwavels=9,
         filters=["F380M", "F430M", "F480M"],
-        radial_orders=4,
-        distortion_orders=3,
+        radial_orders=None,
+        aperture_distortion=None,
         coherence_orders=4,
         oversample=3,
         psf_upsample=3,
         pupil_mask=None,
         normalise=True,
         psf_npixels=80,
-        psf_pixel_scale=0.065524085,  # mas/pixel?
+        psf_pixel_scale=0.065524085,
         diameter=6.603464,
         wf_npixels=1024,
         f2f=0.80,
         oversize=1.2,
         defocus=0.01,
-        fourier=False,
-        n_modes_keep=28,
-        n_modes=13,
-        eigen_basis=None,
-        n_eigen=None,
+        polike=False,
         static=True,
+        psf_interpolation="phasor",
         sparse=False,
+        opds=None,
+        opd_sharing=None,
+        fourier_modes=None,
+        filter_modes=None,
+        fourier_coeffs=None,
+        filter_coeffs=None,
+        ptt_coeffs=None,
+        fit_fourier=False,
+        fit_filter_opd=False,
+        fit_ptt=True,
+        calibrated=None,
     ):
+        # A calibration supplies the exact reference geometry and basis mappings.
+        self.opd_coefficients = {}
+        self.opd_selected = False
+        if calibrated is not None:
+            if not isinstance(calibrated, OPDCalibration):
+                raise TypeError(
+                    "calibrated must be an OPDCalibration from model.opd_calibration()"
+                )
+            if pupil_mask is not None or opds is not None or radial_orders is not None:
+                raise ValueError("A calibrated OPD already supplies its reference aperture")
+            if fourier_modes is not None or filter_modes is not None:
+                raise ValueError(
+                    "A calibration retains its basis definitions; do not supply new modes"
+                )
+            pupil_mask = calibrated.aperture
+            wf_npixels, diameter = pupil_mask.npixels, pupil_mask.diameter
+            self.opd_coefficients = dict(calibrated.coefficients)
+
         self.sparse = bool(sparse)
+        self.psf_upsample = psf_upsample
+        if psf_interpolation not in ("intensity", "phasor"):
+            raise ValueError("psf_interpolation must be 'intensity' or 'phasor'")
+        self.psf_interpolation = psf_interpolation
+        self.defocus = np.array(defocus, float)
+        self.filters = dict([(filt, calc_throughput(filt, nwavels=nwavels)) for filt in filters])
 
-        # Instantiate pupil mask layer
+        layers = []
+
+        layers += [("InvertY", dl.Flip(0))]
+
+        if pupil_mask is not None and opds is not None:
+            raise ValueError("Supply a pupil_mask or opds, not both")
         if pupil_mask is None:
-            if not static:
-                pupil_mask = DynamicApertureMask(
-                    distortion_orders=distortion_orders,
-                    diameter=diameter,
-                    npixels=wf_npixels,
-                    f2f=f2f,
-                    normalise=normalise,
-                    aberration_orders=radial_orders,
-                    amplitude_orders=coherence_orders,
-                    oversize=oversize,
-                    fourier=fourier,
-                    n_modes_keep=n_modes_keep,
-                    n_modes=n_modes,
-                    eigen_basis=eigen_basis,
-                    n_eigen=n_eigen,
-                )
-            else:
-                pupil_mask = StaticApertureMask(
-                    diameter=diameter,
-                    npixels=wf_npixels,
-                    f2f=f2f,
-                    normalise=normalise,
-                    aberration_orders=radial_orders,
-                    amplitude_orders=coherence_orders,
-                    oversize=oversize,
-                    fourier=fourier,
-                    n_modes_keep=n_modes_keep,
-                    n_modes=n_modes,
-                    eigen_basis=eigen_basis,
-                    n_eigen=n_eigen,
-                )
+            mask_type = StaticApertureMask if static else DynamicApertureMask
+            pupil_mask = mask_type(
+                distortion=aperture_distortion,
+                diameter=diameter,
+                npixels=wf_npixels,
+                f2f=f2f,
+                normalise=normalise,
+                aberration_orders=radial_orders if opds is None else None,
+                opds=opds,
+                amplitude_orders=coherence_orders,
+                oversize=oversize,
+                polike=polike,
+            )
+        if pupil_mask.opds is None:
+            pupil_mask = standard_opds(
+                pupil_mask,
+                5 if fourier_modes is None else fourier_modes,
+                DEFAULT_FILTER_MODES if filter_modes is None else filter_modes,
+            )
+        if opd_sharing is not None:
+            sharing = dict(pupil_mask.opd_sharing or ())
+            sharing.update(
+                {
+                    name: (fields,) if isinstance(fields, str) else tuple(fields)
+                    for name, fields in opd_sharing.items()
+                }
+            )
+            pupil_mask = copy(pupil_mask)
+            object.__setattr__(pupil_mask, "opd_sharing", tuple(sharing.items()))
 
-        # optical layers
-        layers = [("InvertY", dl.Flip(0)), ("pupil_mask", pupil_mask)]
+        # False means fixed, not absent. Keep all coefficients on the optics;
+        # only selected groups become optimisation parameters in AmigoModel.
+        flags = {
+            "fourier_coeffs": fit_fourier,
+            "filter_coeffs": fit_filter_opd,
+            "ptt_coeffs": fit_ptt,
+        }
+        groups = dict(pupil_mask.opd_sharing or ())
+        self.opd_fits = tuple(name for name in groups if flags.get(name, True))
+        supplied = {
+            "fourier_coeffs": fourier_coeffs,
+            "filter_coeffs": filter_coeffs,
+            "ptt_coeffs": ptt_coeffs,
+        }
+        for name, value in supplied.items():
+            if value is not None:
+                if name not in groups:
+                    raise ValueError(f"No OPD component accepts {name!r}")
+                self.opd_coefficients[name] = value
+        # Validate supplied/calibrated values for the filters available here.
+        for name, fields in groups.items():
+            if all(field == "filter" for field in fields):
+                for filt in filters:
+                    coefficient_value(pupil_mask, name, self.opd_coefficients, {"filter": filt})
+        # Apply values that need no exposure selection immediately.
+        common = tuple(
+            (name, fields)
+            for name, fields in groups.items()
+            if not fields or not isinstance(self.opd_coefficients.get(name), dict)
+        )
+        pupil_mask = apply_opds(pupil_mask, self.opd_coefficients, common, {})
+        layers += [("pupil_mask", pupil_mask)]
 
         super().__init__(
             wf_npixels,
             diameter,
             layers,
             psf_npixels,
-            np.array(psf_pixel_scale),
+            np.asarray(psf_pixel_scale),
             oversample,
         )
+        self.corners = pupil_mask.corners
 
-        self.psf_upsample = psf_upsample
-        self.defocus = np.array(defocus, float)
-        self.filters = dict([(filt, calc_throughput(filt, nwavels=nwavels)) for filt in filters])
+    def for_filter(self, filter_name):
+        """Select fixed OPD values for standalone propagation/visibility generation.
 
-        # Get the corners of the arrays for sparse propagation
-        if not hasattr(self, "holes"):
-            holes = get_initial_holes(diameter, wf_npixels)
-        else:
-            holes = self.holes
-        basis = np.zeros((1, 1, self.wf_npixels, self.wf_npixels))
-        coords = dlu.pixel_coords(self.wf_npixels, self.diameter)
-        _, corners = reduce_basis(basis, coords, holes, size=180)
-        self.corners = corners
-        # self.corners = np.array(corners, dtype=float)
+        Exposure-dependent values require ModelFit.update_optics instead. A
+        wavelength array alone cannot identify which filter calibration to use.
+        """
+        if filter_name not in self.filters:
+            raise ValueError(f"Unknown filter {filter_name!r}")
+        aperture = apply_opds(
+            self.pupil_mask,
+            self.opd_coefficients,
+            self.pupil_mask.opd_sharing or (),
+            {"filter": filter_name},
+        )
+        return self.set(["pupil_mask", "opd_selected"], [aperture, True])
 
     def propagate_mono(self, wavelength, offset=np.zeros(2), return_wf=False):
         """
@@ -916,14 +734,24 @@ class AMIOptics(dl.AngularOpticalSystem):
         offset : Array, radians = np.zeros(2)
             The (x, y) offset from the optical axis of the source.
         return_wf: bool = False
-            Should the Wavefront object be returned instead of the psf Array?
+            Return the propagated field before subpixel intensity averaging?
 
         Returns
         -------
         object : Array, Wavefront
             if `return_wf` is False, returns the psf Array.
-            if `return_wf` is True, returns the Wavefront object.
+            if `return_wf` is True, returns the field before intensity averaging.
         """
+        if not self.opd_selected:
+            groups = dict(self.pupil_mask.opd_sharing or ())
+            if any(
+                groups.get(name) and isinstance(value, dict) and value
+                for name, value in self.opd_coefficients.items()
+            ):
+                raise ValueError(
+                    "Select calibrated OPD with for_filter() or an exposure before propagation"
+                )
+
         # Get pixel scale in radians
         pixel_scale = dlu.arcsec2rad(self.psf_pixel_scale / self.oversample)
         psf_npixels = self.psf_npixels * self.oversample
@@ -955,22 +783,151 @@ class AMIOptics(dl.AngularOpticalSystem):
 
             wf = to_focal(wf)
 
-        # Upsample and then downsample to get more PSF precision
-        knots = dlu.pixel_coords(psf_npixels, diameter=2)
-        sample_coords = dlu.pixel_coords(psf_npixels * self.psf_upsample, diameter=2)
-        psf = interp(wf.psf, knots, sample_coords, "cubic2")  # Upsampling with interp
-        psf = dlu.downsample(psf, self.psf_upsample, mean=True)
-        psf = np.where(psf < 0, 0.0, psf)  # clipping
-
-        # resetting amplitude while not affecting phase
-        amplitude = np.where(psf > 0, np.sqrt(np.where(psf > 0, psf, 1.0)), 0.0)  # sqrt'(0) = inf
-        phase = np.angle(wf.phasor)
-        wf = wf.set("phasor", amplitude * np.exp(1j * phase))
-
-        # Return PSF or Wavefront
+        # The propagator samples in metres; downstream detector/visibility
+        # models use radians per pixel, as before the dLux upgrade.
+        wf = wf.set("pixel_scale", pixel_scale)
         if return_wf:
             return wf
-        return wf.psf
+        if self.psf_interpolation == "intensity":
+            # Retain the explicit legacy option for comparisons with saved fits.
+            npixels = wf.phasor.shape[-1]
+            knots = dlu.pixel_coords(npixels, 2)
+            samples = dlu.pixel_coords(npixels * self.psf_upsample, 2)
+            intensity = interp(wf.psf, knots, samples, "cubic2")
+            intensity = dlu.downsample(intensity, self.psf_upsample, mean=True)
+            return np.where(intensity < 0, 0.0, intensity)
+        return resample_intensity(wf.phasor, self.psf_upsample)
+
+    def propagate(
+        self,
+        wavelengths,
+        offset=None,
+        weights=None,
+        return_wf=False,
+        return_psf=False,
+        return_intensity=False,
+    ):
+        """Return a broadband array, PSF, spectral Intensity, or optical fields.
+
+        Set at most one return flag. Fields precede subpixel intensity averaging;
+        Intensity retains the wavelength axis for visibility modelling.
+        """
+        if sum((return_wf, return_psf, return_intensity)) > 1:
+            raise ValueError("Set at most one of return_wf, return_psf, return_intensity")
+        wavelengths = np.atleast_1d(wavelengths)
+        weights = np.ones_like(wavelengths) / wavelengths.size if weights is None else weights
+        weights = np.atleast_1d(weights)
+        offset = np.zeros(2) if offset is None else np.asarray(offset)
+        if weights.shape != wavelengths.shape:
+            raise ValueError("Weights must have the same shape as wavelengths")
+        if offset.shape != (2,):
+            raise ValueError("Offset must have shape (2,) in radians")
+
+        result = eqx.filter_vmap(
+            lambda wavelength: self.propagate_mono(wavelength, offset, return_wf=return_wf)
+        )(wavelengths)
+        if return_wf:
+            return result.multiply("phasor", np.sqrt(weights)[:, None, None])
+        intensity = Intensity(
+            result * weights[:, None, None],
+            wavelengths,
+            dlu.arcsec2rad(self.psf_pixel_scale / self.oversample),
+        )
+        if return_intensity:
+            return intensity
+        psf = intensity.to_psf()
+        return psf if return_psf else psf.data
+
+    def visibility_model(
+        self,
+        filter_name,
+        *,
+        n_knots,
+        spectral_slope=None,
+        pad=2,
+        downsample=1,
+        n_modes=None,
+        retained_trace=0.99,
+        batch_size=8,
+        checkpoint=True,
+    ):
+        """Build a LogVisModel from this optics' centred, normalized-spectrum PSF.
+
+        Uses the configured optical field, pixel scale and interpolation, with
+        uniform image-pixel weighting and no source flux or detector response.
+        ``n_knots`` is an odd UV grid size spanning twice the pupil diameter.
+        ``spectral_slope=None`` uses throughput alone; otherwise apply the same
+        linear spectral weighting as the forward fit.
+
+        ``pad`` sets the FFT size factor for generation and later injection.
+        ``downsample`` sums optical pixels for basis selection only. Choose
+        ``n_modes`` explicitly or retain ``retained_trace`` of the JTJ spectrum.
+        ``batch_size`` limits derivative columns per batch; ``checkpoint``
+        trades recomputation for memory. The result stores complex modes,
+        the full eigenvalue spectrum and sampling choices.
+        """
+        from .vis_models import LogVisModel, visibility_jtj, select_visibility_modes
+
+        for name, value in (
+            ("n_knots", n_knots),
+            ("pad", pad),
+            ("downsample", downsample),
+            ("batch_size", batch_size),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if n_knots < 3 or n_knots % 2 == 0:
+            raise ValueError("n_knots must be odd and at least three")
+        if (self.psf_npixels * self.oversample) % downsample:
+            raise ValueError("downsample must divide the optical intensity image size")
+        if spectral_slope is not None:
+            if np.ndim(spectral_slope) != 0 or not bool(np.isfinite(spectral_slope)):
+                raise ValueError("spectral_slope must be a finite scalar")
+
+        # Propagate the reference PSF using the forward model's spectral weights.
+        wavelengths, throughput = self.filters[filter_name]
+        weights = spectral_weights(throughput, spectral_slope)
+        if not bool(np.all(np.isfinite(weights))):
+            raise ValueError("spectral weights must have a finite, nonzero total")
+        reference = self if self.opd_selected else self.for_filter(filter_name)
+        intensity = reference.propagate(
+            wavelengths,
+            offset=np.zeros(2),
+            weights=weights,
+            return_intensity=True,
+        )
+
+        # Each independent complex knot has two real degrees of freedom.
+        coords = dlu.pixel_coords(n_knots, 2 * self.diameter)
+        identity = np.eye((n_knots**2 - 1) // 2, dtype=complex)
+        knot_modes = np.concatenate([identity, 1j * identity])
+
+        # Rank combinations of knots by their unweighted image response.
+        jtj = visibility_jtj(
+            intensity,
+            knot_modes,
+            coords,
+            pad=pad,
+            downsample=downsample,
+            batch_size=batch_size,
+            checkpoint=checkpoint,
+        )
+        modes, eigenvalues = select_visibility_modes(
+            jtj,
+            knot_modes,
+            n_modes=n_modes,
+            retained_trace=retained_trace,
+        )
+        return LogVisModel(
+            {
+                "otf_coords": coords,
+                "modes": {filter_name: modes},
+                "eigen_values": {filter_name: eigenvalues},
+                "fft_pad": pad,
+                "basis_downsample": downsample,
+            },
+            filter_name,
+        )
 
     def _propagate_pupil_sparse(self, wavelength, offset, to_focal):
         """
@@ -1018,7 +975,7 @@ class AMIOptics(dl.AngularOpticalSystem):
 
         # Entrance-pupil complex field per hole
         amplitude = mask * (1 + amp)
-        phase = dlu.opd2phase(opd, wavelength)
+        phase = -dlu.opd2phase(opd, wavelength)
 
         # `InvertY` is applied to the wavefront before the pupil mask in the
         # dense path; on a flat tilted wavefront that only negates the
@@ -1029,6 +986,9 @@ class AMIOptics(dl.AngularOpticalSystem):
         field = amplitude * np.exp(1j * (phase + tilt))
         if pupil_mask.normalise:
             field = field / np.sqrt(np.sum(np.abs(field) ** 2))
+        else:
+            # Match dLux's initial wavefront amplitude when normalization is off.
+            field = field / self.wf_npixels**2
 
         prop_fn = vmap(
             lambda f, xi, yi: lct.lct_prop(
@@ -1037,23 +997,3 @@ class AMIOptics(dl.AngularOpticalSystem):
         )
         focal_field = prop_fn(field, x, y).sum(0)
         return dl.Wavefront.from_phasor(focal_field, wavelength, pixel_scale=to_focal.spec.d)
-
-
-# class Wavefront(dl.Wavefront):
-
-#     def downsample(self, factor=2):
-#         """
-#         Downsample the wavefront by a factor of 2.
-#         """
-#         phasor = self.phasor
-#         real = dlu.downsample(phasor.real, factor, mean=True)
-#         imag = dlu.downsample(phasor.imag, factor, mean=True)
-#         phasor = real + 1j * imag
-#         amplitude = np.abs(phasor)
-#         phase = np.angle(phasor)
-
-#         pixel_scale = self.pixel_scale * factor
-#         return self.set(
-#             ["pixel_scale", "amplitude", "phase"],
-#             [pixel_scale, amplitude, phase],
-#         )
