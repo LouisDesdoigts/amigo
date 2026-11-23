@@ -146,9 +146,11 @@ def _exposure_information(model, layout, exp, data, lower, nbatches, checkpoint)
     def inject(values):
         leaves = layout.unflatten(values)
         return model.set(list(layout.paths), [leaves[p] for p in layout.paths])
+
     part = Residuals((exp,), (data,), (lower,), data.size, 0.0)
-    result = zdx.gauss_newton(lambda x: part(inject(x)), layout.flatten(model),
-                             nbatches=nbatches, checkpoint=checkpoint)
+    result = zdx.gauss_newton(
+        lambda x: part(inject(x)), layout.flatten(model), nbatches=nbatches, checkpoint=checkpoint
+    )
     return result.matrix
 
 
@@ -220,7 +222,9 @@ class Coordinates(zdx.Base):
     transforms: tuple
     size: int = eqx.field(static=True)
 
-    def __init__(self, model, blocks, residuals, *, nbatches=None, checkpoint=False, rank_rtol=1e-12):
+    def __init__(
+        self, model, blocks, residuals, *, nbatches=None, checkpoint=False, rank_rtol=1e-12
+    ):
         blocks = tuple(blocks)
         paths = [p for block in blocks for p in block.paths]
         if not paths:
@@ -675,19 +679,23 @@ def _objective_information(
         raise ValueError("Residual information requires residual_fn")
     if source == "residual" and check_loss:
         origin = layout.flatten(model)
+
         def inject(values):
             leaves = layout.unflatten(values)
             return model.set(list(layout.paths), [leaves[p] for p in layout.paths])
-        _check_objectives(lambda x: loss(inject(x))[0],
-                          lambda x: 0.5 * np.sum(residual(inject(x)) ** 2), origin)
+
+        _check_objectives(
+            lambda x: loss(inject(x))[0], lambda x: 0.5 * np.sum(residual(inject(x)) ** 2), origin
+        )
     return _objective_information_impl(
         model, layout, loss, residual, source, nbatches, checkpoint, diagonal
     )
 
 
 @eqx.filter_jit
-def _objective_information_impl(model, layout, loss, residual, source, nbatches,
-                                checkpoint, diagonal):
+def _objective_information_impl(
+    model, layout, loss, residual, source, nbatches, checkpoint, diagonal
+):
     # Stage the whole derivative calculation with model and objective arrays as
     # explicit operands, including inner linearisation/column-reduction JITs.
     origin = layout.flatten(model)
@@ -703,9 +711,11 @@ def _objective_information_impl(model, layout, loss, residual, source, nbatches,
             # Stage linearisation and column reduction together. Eager linearize
             # materialises optical intermediates that the later scan captures as
             # huge compilation constants (and can exhaust host RAM).
-            values = jax.jit(lambda x: _residual_diagonal(
-                lambda v: residual(inject(v)), x, nbatches, checkpoint
-            ))(origin)
+            values = jax.jit(
+                lambda x: _residual_diagonal(
+                    lambda v: residual(inject(v)), x, nbatches, checkpoint
+                )
+            )(origin)
             return zdx.TreeVector(values, layout)
         result = zdx.gauss_newton(
             lambda x: residual(inject(x)), origin, nbatches=nbatches, checkpoint=checkpoint
@@ -782,8 +792,9 @@ def _residuals_least_squares(residuals, model):
 def _custom_residual(function, exposures, args, model):
     if not exposures:
         return np.asarray(function(model, args)).reshape(-1)
-    return np.concatenate([np.asarray(function(model, exp, args)).reshape(-1)
-                           for exp in exposures])
+    return np.concatenate(
+        [np.asarray(function(model, exp, args)).reshape(-1) for exp in exposures]
+    )
 
 
 def _custom_loss(function, residual, exposures, args, model):
@@ -793,14 +804,17 @@ def _custom_loss(function, residual, exposures, args, model):
     if not exposures:
         return _loss_output(function(model, args))
     outputs = [_loss_output(function(model, exp, args)) for exp in exposures]
-    return (sum(item[0] for item in outputs),
-            {exp.key: item[1] for exp, item in zip(exposures, outputs)})
+    return (
+        sum(item[0] for item in outputs),
+        {exp.key: item[1] for exp, item in zip(exposures, outputs)},
+    )
 
 
 @eqx.filter_jit
 def _batch_value_gradient(values, loss, coordinates, names):
     def objective(values):
         return loss(coordinates(np.concatenate([values[name] for name in names])))
+
     return jax.value_and_grad(objective, has_aux=True)(values)
 
 
@@ -865,11 +879,15 @@ class Trainer(zdx.Base):
             residuals = self.residuals
             if residuals is None or not eqx.tree_equal(residuals.exposures, exposures):
                 residuals = Residuals.from_exposures(exposures)
-            return (eqx.Partial(_residuals_loss, residuals),
-                    eqx.Partial(_residuals_least_squares, residuals))
+            return (
+                eqx.Partial(_residuals_loss, residuals),
+                eqx.Partial(_residuals_least_squares, residuals),
+            )
 
-        residual = None if self.residual_fn is None else eqx.Partial(
-            _custom_residual, self.residual_fn, exposures, self.args
+        residual = (
+            None
+            if self.residual_fn is None
+            else eqx.Partial(_custom_residual, self.residual_fn, exposures, self.args)
         )
         loss = eqx.Partial(_custom_loss, self.loss_fn, residual, exposures, self.args)
         return loss, residual
@@ -1165,8 +1183,10 @@ class Trainer(zdx.Base):
         initial = objective(coordinates.zero)
         # GD may already be at the minimum. Allow floating-point roundoff in
         # the refinement loss; solver success and the gradient gate still apply.
-        loss_roundoff = 64 * np.finfo(value.dtype).eps * np.maximum(
-            1.0, np.maximum(np.abs(initial), np.abs(value))
+        loss_roundoff = (
+            64
+            * np.finfo(value.dtype).eps
+            * np.maximum(1.0, np.maximum(np.abs(initial), np.abs(value)))
         )
         finite = bool(np.isfinite(value) & np.isfinite(score) & np.isfinite(initial))
         successful = bool(solution.result == optx.RESULTS.successful)
@@ -1263,9 +1283,7 @@ class Trainer(zdx.Base):
         if self.loss_fn is None and self.residual_fn is None:
             parts = [Residuals.from_exposures(batch) for batch in batch_values]
             size = sum(part.size for part in parts)
-            losses = [
-                eqx.Partial(_residuals_loss, part, scale=part.size / size) for part in parts
-            ]
+            losses = [eqx.Partial(_residuals_loss, part, scale=part.size / size) for part in parts]
         else:
             losses = [self._objective(batch)[0] for batch in batch_values]
 
