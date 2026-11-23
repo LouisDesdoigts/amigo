@@ -3,7 +3,6 @@ from jax import numpy as np, random as jr, scipy as jsp
 import dLux.utils as dlu
 import matplotlib.pyplot as plt
 from matplotlib import colormaps, colors
-from .model_fits import WF_PARAMS
 
 # from .stats import posterior
 
@@ -287,15 +286,7 @@ def summarise_fit(
 
     if aberrations:
         # Get the AMI mask and applied mask
-        pupil_mask = model.optics.pupil_mask
-        # every wavefront part the model fits (model_fits.WF_PARAMS), at this exposure's values
-        for param in WF_PARAMS:
-            if param in model.params.keys():
-                pupil_mask = pupil_mask.set(param, model.get(exposure.map_param(param)))
-        if hasattr(model, "reflectivity"):
-            pupil_mask = pupil_mask.set(
-                "amp_coeffs", model.reflectivity[exposure.get_key("reflectivity")]
-            )
+        pupil_mask = exposure.update_optics(model).pupil_mask
 
         optics = model.optics
         if hasattr(pupil_mask, "calc_mask"):

@@ -126,14 +126,14 @@ class ReadModel(LayeredDetector):
         if per_pixel_dark and type(dark_current) == float:
             dark_current = dark_current * np.ones((80, 80))
 
-        super().__init__(
-            [
-                ("read", DarkCurrent(dark_current, per_pixel=per_pixel_dark)),
-                ("pixel_non_linearity", PixelNonLinearity(gain=gain)),
-                ("IPC", ipc),
-                ("amplifier", Amplifier(one_on_fs)),
-            ]
-        )
+        layers = [
+            ("read", DarkCurrent(dark_current, per_pixel=per_pixel_dark)),
+            ("pixel_non_linearity", PixelNonLinearity(gain=gain)),
+            ("IPC", ipc),
+            ("amplifier", Amplifier(one_on_fs)),
+        ]
+        # dLux's LayeredDetector only takes layers: leave IPC out when it is off
+        super().__init__([(name, layer) for name, layer in layers if layer is not None])
 
 
 # def gen_fourier_signal(single_ramp, coeffs, period=1024):

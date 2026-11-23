@@ -6,6 +6,7 @@ import jax.numpy as np
 import jax.tree as jtu
 from jax.lax import dynamic_slice as lax_slice
 from jax.flatten_util import ravel_pytree
+from .opd import init_opds, OPDCalibration
 
 
 class BaseModeller(zdx.Base):
@@ -41,7 +42,16 @@ class AmigoModel(BaseModeller):
     ramp_model: None
     read: None
 
-    def __init__(self, exposures, optics, detector, ramp_model, read, state=None, vis_model=None):
+    def __init__(
+        self,
+        exposures,
+        optics,
+        detector,
+        ramp_model,
+        read,
+        state=None,
+        vis_model=None,
+    ):
         if state is not None:
             # NOTE: a dynamic (non-static) AMIOptics pupil mask has no
             # "transmission" leaf, so calibration states built against it
@@ -72,6 +82,11 @@ class AmigoModel(BaseModeller):
                 [state["dark_current"], state["non_linearity"]],
             )
 
+        # OPD definitions and sharing belong to the optical model.
+        opd_sharing = optics.pupil_mask.opd_sharing
+        if opd_sharing is not None and state is not None and "aberrations" in state:
+            raise ValueError("Install calibrated OPD on the aperture before grouped fitting")
+
         params = {}
         for exp in exposures:
             if vis_model is not None:
@@ -82,6 +97,15 @@ class AmigoModel(BaseModeller):
                 if param not in params.keys():
                     params[param] = {}
                 params[param][key] = value
+
+        if opd_sharing is not None:
+            params.pop("aberrations", None)
+            active = tuple(
+                (name, fields) for name, fields in opd_sharing if name in optics.opd_fits
+            )
+            params["opds"] = init_opds(
+                optics.pupil_mask, exposures, active, optics.opd_coefficients
+            )
 
         if state is not None:
             params["defocus"] = state["defocus"]
@@ -112,7 +136,8 @@ class AmigoModel(BaseModeller):
             if isinstance(x, jax.Array):
                 if "i" in x.dtype.str:
                     return x
-                return np.array(x, dtype=float)
+                dtype = complex if np.iscomplexobj(x) else float
+                return np.array(x, dtype=dtype)
             return x
 
         self.params = jtu.map(lambda x: fn(x), params)
@@ -121,6 +146,13 @@ class AmigoModel(BaseModeller):
         self.ramp_model = jtu.map(lambda x: fn(x), ramp_model)
         self.read = jtu.map(lambda x: fn(x), read)
         self.vis_model = jtu.map(lambda x: fn(x), vis_model)
+
+    def opd_calibration(self):
+        """Export bases, mappings and latest fixed/fitted coefficient groups together."""
+        coefficients = {**self.optics.opd_coefficients, **self.params.get("opds", {})}
+        return OPDCalibration(
+            self.optics.pupil_mask, coefficients, filters=tuple(self.optics.filters)
+        )
 
     def __getattr__(self, key):
         if key in self.params:
@@ -189,10 +221,10 @@ class ModelParams(BaseModeller):
     def map(self, fn):
         return jtu.map(lambda x: fn(x), self)
 
-    def ravel(self, return_unvael=False):
+    def ravel(self, return_unravel=False):
         """Returns the flattened parameters"""
         X, unravel_fn = ravel_pytree(self)
-        if return_unvael:
+        if return_unravel:
             return X, unravel_fn
         return X
 
@@ -217,32 +249,6 @@ class ModelParams(BaseModeller):
 
     def combine(self, params2):
         return ModelParams({**self.params, **params2.params})
-
-    def jacfwd(self, fn, n_batch=1):
-        return self.jac(fn, n_batch=n_batch, type="fwd")
-
-    def jacrev(self, fn, n_batch=1):
-        return self.jac(fn, n_batch=n_batch, type="rev")
-
-    def jac(self, fn, n_batch=1, type="fwd"):
-        # X, unravel_fn = ravel_pytree(self)
-        X, unravel_fn = self.ravel(return_unvael=True)
-        Xs = np.array_split(X, n_batch)
-        rebuild = lambda X_batch, index: X.at[index : index + len(X_batch)].set(X_batch)
-        lens = np.cumsum(np.array([len(x) for x in Xs]))[:-1]
-        starts = np.concatenate([np.array([0]), lens])
-
-        def batch_fn(x, index):
-            model_params = unravel_fn(rebuild(x, index))
-            return eqx.filter_jit(fn)(model_params)
-
-        if type == "fwd":
-            batched_jac_fn = eqx.filter_jacfwd(batch_fn)
-
-        elif type == "rev":
-            batched_jac_fn = eqx.filter_jacrev(batch_fn)
-
-        return np.concatenate([batched_jac_fn(x, index) for x, index in zip(Xs, starts)], axis=-1)
 
 
 import numpy as onp

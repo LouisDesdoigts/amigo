@@ -1,0 +1,359 @@
+2026-10-30 — Simplified, separate null construction
+
+Fourier: vis_null(optics, vis_model, filt, null_params, spectra=...).
+Optical paths are relative to optics. "spectra" selects the explicit source
+slope. The visibility basis is fixed; source position is zero and flux unity.
+No exposure is involved. vis_jac exposes the response for inspection.
+
+Image: image_null(model, exp, null_params, weighting=None).
+Uses exp.to_vec(exp(model)): the existing fitted forward model and valid pixel
+support, including detector, ramp and read effects. The visibility path comes
+from exp.map_param("vis"). image_jacs exposes both responses for inspection.
+No separate normalization, artificial background pedestal or sampling code.
+This supersedes the earlier detector_plane/downsample/background API.
+
+Construct K once at an explicitly chosen common reference, then reuse it for
+all science/calibrator measurements, predictions and covariance in the same
+visibility basis. Filter-specific or otherwise different bases are not
+interchangeable. If responses at multiple references must be nulled, combine
+responses in common coefficient coordinates BEFORE constructing one kernel;
+separately computed kernels cannot be directly subtracted or pooled.
+
+weighting=None is uniform. Explicit weighting must match the forward model's
+selected observable rows, including group differences; no PSF is inferred.
+Only parameters present in the forward model can be nulled. In particular,
+there is no synthetic background parameter. Wholly zero selected responses
+are rejected. Existing forward-model gradient stops still apply.
+
+PENDING: numerical validation of derivatives through the full forward model,
+finite-difference checks for extended parameters, retained signal and leakage,
+and sensitivity to the chosen common optical/image/spectrum reference.
+This changes the image response from a separately normalized PSF to the fitted
+observable. It does not claim equivalence to archived extended24 results.
+The derivative adapter and both matrix kernel algorithms are unchanged.
+
+2026-10-30 — Optimization machinery queued for pipeline review
+
+Review Trainer and pipeline optimization together before changing behavior:
+- populate_lr_model: diagonal inverse-curvature learning-rate scaling versus
+  explicit Zodiax parameterisation/whitening; preserve coordinate conventions.
+- Trainer.populate_fishers: flux/80**2 scaling, piston suppression and obsolete
+  amplitude/phase truncation. Separate reference curvature from fitted curvature.
+- orthogonalise: covariance rotation versus whitening; do not conflate them.
+- Parameter normalization, gradient transformations, optimizer state and mapping
+  estimates/covariances back to physical parameters.
+- Choose exact Hessian versus residual Gauss-Newton intentionally for each use;
+  audit loss signs, covariance weighting and parameter ordering.
+- Prefer committed Zodiax methods over bespoke flattening, projections and
+  curvature machinery. Do not rely on uncommitted eigen_projection changes.
+
+Implemented for review: Trainer.update_fishers calls zdx.hessian directly;
+removed FIM wrapper and manual Hessian machinery. nbatches/checkpoint replace
+batch_size/reduce_ram translation. Existing caching, reference covariance and
+minus-Hessian convention remain. Callers supplying batch_size must migrate.
+No optimizer/whitening policy changes have been made in this step.
+
+2026-10-30 — New fitting core, isolated from legacy Trainer (uncommitted)
+
+Legacy isolation: src/amigo/legacy/{fitting,fisher,calibration}. New code does
+not import it. Existing pipeline Fitter explicitly imports legacy routines;
+its curvature controls now use nbatches/checkpoint. Old notebook imports of
+Trainer/adam/sgd must use amigo.legacy.fitting. No exposure classes changed.
+
+Prepared residuals: amigo.optimisation.prepare(exposures). Cache supported data
+and full per-pixel group Cholesky factors once. residuals(model) returns raw
+whitened residuals; loss(model) is their GLOBAL mean square; least_squares(model)
+is sqrt(2/N)*r for a solver minimizing half its squared norm; nll(model) includes
+fixed Gaussian normalization. Noise parameters changing C are outside this API.
+
+Parameter API: optimisation.Block(paths, scaling, metric=None), followed by
+Coordinates(model, blocks, residuals). Scaling is none/diagonal/full. Blocks
+are explicit independent parameter groups; combine paths for cross-correlations.
+The metric contains raw residual JTJ (or its diagonal), not MSE curvature.
+Coordinates converts it by 2/N. Full projection uses committed Zodiax with
+unit-diagonal equilibration and rejects rank loss. Diagonal scaling retains all
+coordinates and requires positive information. No implicit parameter clipping,
+regularization, eigenvalue flooring or post-update transformations.
+
+information(residuals, model, paths) sums exact JTJ across exposures with
+zdx.gauss_newton. Use it at the reference for optimizer conditioning, and again
+at the endpoint with all required parameters for later uncertainty work.
+Automatic diagonal scaling currently computes full block JTJ; a lower-cost
+column-only calculation remains to be reviewed. Cached diagonals avoid this.
+
+Caches: save_information/load_information require explicit matching reference
+context. Context should include optical state/spectrum/basis/sampling/noise and
+code/data hashes. No inferred validity across reference changes. scale is an
+explicit information multiplier, so flux scaling is a declared approximation,
+not an automatic replacement for endpoint information.
+
+Optimizer: optimisation.armijo(residuals, coordinates). Fixed coordinates, standard
+Armijo sufficient decrease with reset starting step and backtracking; explicit
+iteration-cap/nonfinite/line-search failures. No custom GD factors. Returns
+model, coordinates, z, loss, gradient, acceptance, status and step history.
+The same coordinates can be reused by BFGS/LM via loss/least_squares closures;
+no BFGS/LM adapter or statistical covariance reporting added in this step.
+
+FOLLOW-UP: compare two-way Armijo step growth/shrinkage against this baseline.
+One campaign variant already attempts 1.5x growth capped at one, so include it
+in the comparison rather than assuming all prior descent only shrank steps.
+Review global-vs-block scaling and exposure-support effects on stopping criteria.
+Keep exposure integration, pipeline adoption and removal of legacy code separate.
+
+Validation: synthetic two-parameter correlated-noise checks passed for residual,
+MSE/LS/NLL conventions, JTJ, identity/diagonal/full coordinates, Armijo recovery,
+cache round trips/context/scaling, bad covariance/rank rejection and iteration
+cap rejection. Ran tiny CPU algebra checks after Everest SSH timed out; no
+science data fits or GPU equivalence claims. Dataset comparison fits pending.
+
+2026-10-30 — Consolidated implementation and AMIGO conventions
+The new residual, normalization, cache and fitting code lives in optimisation.py.
+Removed the three provisional residuals/normalization/fitting modules. Existing
+pipeline legacy imports are unchanged. Containers derive from zodiax.Base;
+arrays and linear algebra use jax.numpy as np. Static fields describe paths,
+scaling choices and sizes; transforms/data stay dynamic PyTree leaves.
+
+Covariance validation, block transforms and backtracking are named helper
+functions. Preparation and iteration control remain Python orchestration;
+model/derivative evaluations are JAX and use filtered JIT. Failed JAX Cholesky
+factors are checked explicitly because JAX returns NaNs rather than raising.
+Information caches now use Zodiax archives, not the provisional NPZ format.
+No change to residual scaling, normalization policy or Armijo acceptance rules.
+
+The previous synthetic checks passed against this module, plus Zodiax/PyTree
+and filtered-JIT derivative checks. Real-data comparison fitting remains pending.
+
+2026-10-30 — Familiar Trainer interface over the new internals (uncommitted)
+
+Trainer(loss_fn=None, residual_fn=None) supports custom scalar objectives and
+residuals. With exposures the callbacks take (model, exposure, args); without
+exposures they take (model, args). Scalar callbacks may return (loss, aux).
+With neither callback, use the canonical prepared Cholesky objective.
+
+trainer = trainer.normalise(model, parameters, exposures=..., method=...)
+Named parameters resolve through exposure.map_param and deduplicate shared paths.
+Generic model paths and nested dictionary leaves also work. A mapping of group
+names to lists of parameters declares a coupled normalization/optimizer block.
+Method is none/diagonal/full, globally or per group. Information source is
+residual JTJ or exact scalar Hessian. Custom scalar losses default to Hessian;
+residual/Cholesky objectives default to JTJ. Supplied information={group: metric}
+bypasses derivatives for that group. Metrics must use OBJECTIVE curvature units:
+for canonical MSE this is 2/N times unscaled statistical residual JTJ.
+
+Inspect trainer.groups, methods, sources, reference, reference_args,
+reference_exposures, information, transforms and layouts. Canonical data factors
+are retained as trainer.prepared and reused for matching exposures. Information
+is not recalculated during fitting. Each stage rebases the coordinate origin to
+the supplied model, retaining the same transforms and unselected parameters.
+
+trainer.gd uses Armijo, trainer.bfgs and trainer.lm use Optimistix, and
+trainer.train accepts ordinary per-group Optax transformations and schedules.
+Training batch gradients accumulate before one update per epoch, matching the
+previous Trainer. Canonical MSE is weighted by the global sample count, so
+changing batch partition does not change the objective. Full blocks cannot be
+split across different per-parameter optimizers. No post-update normalization.
+LM requires residuals; if both scalar and residual functions are supplied their
+values and gradients are checked for consistency at the start and endpoint.
+These checks cannot prove equivalence everywhere; callers own that contract.
+
+Results include model, loss, normalized gradient, acceptance/status, aux and
+optimizer state. parameter_history stacks the recorded physical states. GD and
+Optax record each update; BFGS/LM record only start/endpoint and retain the full
+Optimistix solution for diagnostics. Fixed epoch completion without a gradient
+tolerance is not certified convergence. Generic result histories are not the
+old ParamHistory plotting object; notebooks need explicit plot input updates.
+
+Pipeline defaults, legacy removal, dataset comparison fits, efficient diagonal
+information, and two-way Armijo remain separate review items. The generic API
+has no default dataset-specific parameter list or scientific acceptance policy.
+
+
+2026-10-30 — Fixed objective state and explicit preconditioners (uncommitted)
+
+Supersedes the per-call exposures/args and information= API above.
+Trainer(loss_fn=None, residual_fn=None, *, exposures=(), args=None) owns the
+objective state. The default is full-covariance Cholesky residuals and global
+mean-square loss. Generic callbacks use (model, args); exposure callbacks use
+(model, exp, args). A custom residual-only objective uses half its squared norm.
+
+normalise(model, parameters, method="diagonal", source=None,
+          preconditioner=None, check=False, ...) prepares fixed reference scales.
+Source defaults to scalar Hessian for custom scalar objectives, residual JTJ
+otherwise. Supplied labelled matrices are explicitly approximate preconditioners;
+missing groups are derived from the objective. Canonical MSE curvature includes
+2/N; raw statistical JTJ caches require explicit rescaling. Sources are recorded
+per group. check=True reports normalized objective curvature at the reference,
+without replacing supplied values; it does not prove global equivalence.
+
+Fits reuse stored data and reference transforms, rebasing their origins to the
+supplied model. Changed objective state requires normalise again or explicitly
+using old information as an approximate preconditioner on a new Trainer.
+Batches must partition stored exposures; canonical MSE is partition-invariant.
+
+GD exposes normalized gradient tolerance and Armijo controls. BFGS/LM expose
+native rtol/atol plus an additional normalized gradient tolerance. tolerance=None
+uses native successful termination (with finite, non-increasing objective).
+Optimistix throw=False preserves expected failure results: step caps are
+max_steps, accepted=False, with the partial endpoint and native message.
+Programming/input errors are not swallowed. Optax epochs_complete is not a
+convergence claim. FitResult.criteria records the requested thresholds.
+
+Validation: tiny synthetic correlated-data and custom-objective checks cover
+solvers, scaling, cache mismatch reporting, changed-state guards, batching,
+Optax histories and step-limit handling. Real AMIGO data fitting remains pending.
+Future: investigate bidirectional Armijo step-size adaptation, separately.
+
+
+2026-10-30 — Two-way Armijo search
+
+GD reuses the last accepted step. If its initial trial fails, shrink to the
+first Armijo-valid step; otherwise grow while Armijo holds and loss improves.
+Rejected/nonfinite expansion keeps the best accepted trial. A search with no
+accepted trial leaves the model unchanged. One budget covers all trials.
+API: growth=2, max_search_steps=30 replaces max_backtracks. growth=1 disables
+expansion but still reuses steps; it is not the old reset-every-iteration policy.
+Histories record accepted rate and search_evaluations. FitResult.evaluations
+counts loss_only and value_and_grad calls, including failed searches; Trainer.gd
+also counts its endpoint auxiliary evaluation. No objective or scaling change.
+
+Controlled JAX float64 comparisons against committed a263313 used identical
+starts, identity coordinates, initial step 1, gradient threshold 1e-5 and budget
+5000. All cases converged. Total loss evaluations (including value-and-gradient
+calls, excluding the Trainer endpoint auxiliary call common to both):
+                                  old      two-way
+Unit quadratic                      3            4
+Quadratic curvature 100            249           99
+Quadratic curvature 0.01          1653           29
+Mixed quadratic curvature 1/100   4403         1893
+Quartic plus quadratic             14           20
+Expansion can cost more when resetting to one already works well. These are
+synthetic evaluation counts, not measured AMIGO fitting speedups. Full Trainer
+and correlated-residual checks pass; real-data performance remains pending.
+
+
+ERS real-data Armijo comparison, completed
+HD116084 F380M, jw01386012001_03102_00001_nis, full covariance.
+Current AMIGO with calibrated pupil held fixed; free position, flux, spectral
+slope, physical defocus and rotation. Both use the exact same starting model
+and once-computed residual information: full position block, diagonal others.
+Current physical-defocus default used instead of interpreting old calibration
+units as ABCD displacement. Shared setup 122.691s; shared compile 16.116s.
+Gradient threshold 1e-3; initial step 1; cap 300. Both converge after 18 updates.
+Initial MSE 1453.24267297; both end at 647.47282519 and gradient 0.000730437.
+Baseline: 18 loss-only + 19 value/gradient calls; warm solve 12.114s.
+Two-way: 36 loss-only + 19 value/gradient calls; warm solve 15.170s.
+Both retain rate 1 throughout. Expansion adds one unsuccessful extra trial per
+update, with no convergence gain. This is a single paired runtime measurement,
+not a claim about all ERS fits or full wavefront/visibility optimization.
+Three pre-solve setup failures preserved: GPU reservation OOM; optional JAX
+constant handling compatibility error; full-model callable serialization.
+Successful attempt uses checkpointed normalization, 65% GPU reservation,
+numerical-state export and exact warmed gradient wrapper reuse for timing.
+Inputs and final result archives verified by local/remote SHA256.
+Detailed evidence: ../Analysis/Validation/armijo_ers_20261030/remote_results/
+ers_armijo_20261030_04/comparison.json (relative to workspace amigo directory).
+
+
+PDS70 real-data Armijo comparison, completed
+F380M; newly fit HD123991 calibrator with the existing 17-mode OPD corrections,
+position, flux, spectrum, physical defocus and rotation. Calibrator MSE
+51.74905 -> 2.80443; normalized gradient 7.55e-8. Convergence gates passed.
+Recovered pupil and defocus frozen for a new AMIOptics.visibility_model basis:
+51 UV knots, pad=2, image downsample=3, throughput-only spectral weighting,
+99% unweighted-JTJ trace, 757 retained real coefficients on complex modes.
+Science uses the existing full primary-beam+5% background-star mask and full
+covariance. Free position/flux/spectrum/vis: 761 total parameters. One fixed
+shared diagonal residual-JTJ normalization; identical zero-vis starting model.
+Normalization currently materializes full JTJ even for diagonal scaling; this
+setup took 483.122s, separate from both search times. Compilation: 19.589s.
+Baseline: 104 updates,104 loss-only+105 value/gradient calls,63.981s,
+loss1.7497056127,gradient0.0009998585.
+Two-way:60 updates,138 loss-only+61 value/gradient calls,52.768s,
+loss1.7496218864,gradient0.0008923066.
+Both pass the same 1e-3 gradient threshold. Two-way is17.5% faster in this
+single paired run, despite more loss-only trials; total objective calls fall
+209->199. It uses larger accepted steps, reducing expensive gradients.
+Results are optimizer comparisons, not full posterior/scientific acceptance.
+An initial driver tree-update error was preserved; it occurred before fitting.
+Calibrator, basis, normalization and both endpoints archived with matching
+local/remote SHA256 under Analysis/Validation/armijo_pds70_20261031.
+
+
+2026-10-31 — BFGS refinement of the saved GD endpoints
+
+All four GPU refinements reused the original fixed normalization; saved
+transforms and starting losses were checked before each solve. No calibrator
+fit or visibility basis was regenerated. Gradient target 1e-6, native rtol/atol
+1e-10, maximum 300 solver steps. All four passed the gradient target.
+                         total/accepted steps   final loss       seconds
+ERS baseline                      59/9          647.472824643     40.962
+ERS two-way                       17/9          647.472824643     30.348
+PDS70 baseline                   101/54           1.749427483     58.777
+PDS70 two-way                     90/61           1.749427483     56.219
+Steps are Optimistix counts, including line-search trials in the total.
+Times include compilation per API call, unlike the warm GD comparisons.
+ERS loss reductions are approximately 5.49e-7; PDS70 reductions are 2.78e-4
+and 1.94e-4 respectively. Both GD methods refine to the same final loss to
+numerical precision. Final normalized gradients range from 3.07e-10 to
+1.28e-8. These timings do not establish a speed advantage between endpoints.
+An initial checkpoint-order validation failure was preserved; no refinement
+ran before its driver-only correction. Final archives match remote SHA256.
+Evidence: ../Analysis/Validation/bfgs_refinement_20261031/remote_results/
+bfgs_refinement_20261031_02/results.json (relative to workspace amigo directory).
+
+
+2026-10-31 — Exact diagonal residual normalisation
+
+Trainer.normalise already defaults to diagonal scaling. That path now sums
+squared whitened-residual Jacobian columns directly, retaining only the diagonal
+as a labelled Zodiax TreeVector. It avoids full JTJ construction and reverse
+products. Full scaling and scalar-Hessian calculations remain unchanged.
+Cached diagonals and check=True use the same objective-curvature convention.
+No Zodiax changes or batching/checkpoint default changes.
+
+GPU validation reused the saved 761-parameter PDS70 reference, with 381 batches
+and checkpoint=True. Diagonal values agree with the archived full calculation
+to 6.33e-15 relative; coordinate scales agree to 3.06e-15. New normalisation
+wall time including synchronisation: 245.869s; earlier setup: 483.122s, including
+saving information. This is a single practical setup comparison, not isolated
+kernel timing. Synthetic checks also cover uneven batches, checkpoint modes,
+cached diagonals, optional validation and explicit full scaling.
+Evidence: ../Analysis/Validation/diagonal_normalisation_20261031/results/results.json.
+Results archived with matching local/remote SHA256.
+
+
+2026-10-31 — Self-contained DISCO representation
+
+Disco(data, uncertainty, operator, uv, wavel, transform=None) owns the measured
+coefficients, independent errors, complex projection, optical UV coordinates
+in metres and wavelength in metres (scalar or per operator column).
+The 2x2 transform maps optical angular offsets to sky East/North; it includes
+rotation and parity. sky_uv = solve(transform.T, uv) preserves Fourier phase.
+Already sky-oriented coordinates use identity. Never apply the roll again.
+
+project(vis) applies Re(operator @ conj(vis)) to an explicitly prepared vector.
+model(source) evaluates source.model(u, v, wavel) on sky_uv and projects log(V).
+No spectral integration, reference state, file schema or metadata lives here.
+The optional amigo.discos.to_virgil(disco) constructs native OIData with the
+same geometry and log-complex prediction, without extra geometry arguments.
+Existing campaign bundle I/O and reference/chromatic forward modelling remain
+outside the core object. There are no Product/Response classes or aliases.
+
+2026-10-31 — Full-rank calibration assembly
+
+combine(data, covariance) precision-combines independent estimates of the same
+coefficient vector, with full positive-definite covariance. It does not select
+calibrators, repair singular matrices, or account for shared-calibrator
+cross-observation correlations. The rank-deficient pipeline path is unchanged.
+The pipeline owns the sequence; AMIGO supplies the numerical tools:
+
+    science, science_cov = combine(science_data, science_covariances)
+    cal, cal_cov = combine(calibrator_data, calibrator_covariances)
+    c, C = calibrate(science, science_cov, cal, cal_cov)
+    data, covariance, rotation, variance = orthogonalise(K @ c, K @ C @ K.T)
+    operator = build_disco(basis, K, rotation)
+    disco = Disco(data, sqrt(variance), operator, uv, wavel, transform)
+
+K is chosen upstream and expressed in the common coefficient basis; basis maps
+complex log visibility into that basis. Orthogonalise only after the final null.
+Selection, persistence, reports and validation remain pipeline responsibilities.

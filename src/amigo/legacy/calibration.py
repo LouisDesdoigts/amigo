@@ -7,8 +7,8 @@ import time
 import os
 from datetime import timedelta
 from tqdm.auto import tqdm
-from .core_models import ModelParams, ParamHistory
-from .misc import BIG
+from ..core_models import ModelParams, ParamHistory
+from ..misc import BIG
 from .fitting import (
     get_optimiser,
     get_val_grad_fn,

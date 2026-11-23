@@ -7,8 +7,8 @@ an OPD neither rebuilds its basis nor removes any modes.
 
 from copy import copy
 import equinox as eqx
-import numpy as onp
 import jax.numpy as np
+import numpy as onp
 from jax import Array, vmap
 import dLux.utils as dlu
 import zodiax as zdx
@@ -244,10 +244,10 @@ def ptt_defocus(coords):
     return np.concatenate([ptt, (coords**2).sum(axis=1)[None]])
 
 
-class OPDSetup(zdx.Base):
+class OPDRecipe(zdx.Base):
     """Construction settings consumed by the aperture, not runtime fit state."""
 
-    sharing: tuple = eqx.field(default=("program", "filter"), kw_only=True, static=True)
+    sharing: tuple = eqx.field(default=(), kw_only=True, static=True)
     weighting: str = eqx.field(default="intensity", kw_only=True, static=True)
     references: tuple | None = eqx.field(default=None, kw_only=True)
     rtol: float | None = eqx.field(default=None, kw_only=True, static=True)
@@ -285,12 +285,15 @@ class OPDSetup(zdx.Base):
         return component.set("x", mapping)
 
 
-class PTT(OPDSetup):
+class PTTRecipe(OPDRecipe):
     """Residual-fit local planes, excluding global piston/tip/tilt/defocus.
 
     Every hole uses the same three polynomials; only its coefficients differ.
     Construction mixes those coefficients into reduced, RMS-normalised modes.
+    One correction is shared by all filters within an observing program.
     """
+
+    sharing: tuple = eqx.field(default=("program",), kw_only=True, static=True)
 
     def component(self, aperture):
         local = dlu.pixel_coords(aperture.size, 2)
@@ -298,7 +301,7 @@ class PTT(OPDSetup):
         return BasisOPD(basis), (len(aperture.corners), 3)
 
 
-class Fourier(OPDSetup):
+class FourierRecipe(OPDRecipe):
     """Calibration Fourier modes excluding global piston/tip/tilt/defocus.
 
     This is an alternative to the residual PTT fit, not a joint PTT+Fourier
@@ -318,7 +321,7 @@ def build_opds(aperture, sharing=None):
     aliases = dict(aperture.alias or ())
     groups = {}
     for name, component in opds.items():
-        if isinstance(component, OPDSetup):
+        if isinstance(component, OPDRecipe):
             opds[name] = component.build(aperture)
             alias = name + "_coeffs"
             target = f"opds.{name}.x.x"
@@ -416,29 +419,29 @@ def standard_opds(
         raise ValueError("zernike_indices must contain distinct Noll indices >= 5")
     amplitude, coords = reference_pupil(aperture)
     weights = amplitude**2
-    gauge = ptt_defocus(coords)
-    if exclude_hole_ptt:
-        # unit-coefficient PTT stamps: each hole's piston/tip/tilt in its own window
-        hole_ptt = opd_basis(*PTT().component(aperture))
-        gauge = np.concatenate([gauge, hole_ptt])
 
     # Sparse pupils break the full-circle orthogonality of ordinary Zernikes.
     # Remove global gauge patterns from the shapes before normalising the span.
     global_basis = zernike_opd(coords, zernike_indices, aperture.diameter).M
+    gauge = ptt_defocus(coords)
+    if exclude_hole_ptt:
+        # unit-coefficient PTT stamps: each hole's piston/tip/tilt in its own window
+        hole_ptt = opd_basis(*PTTRecipe().component(aperture))
+        gauge = np.concatenate([gauge, hole_ptt])
     global_basis = project_opd(global_basis, gauge, weights)
     mapping = opd_map(global_basis, weights).set("s", np.array(1e-9))
     global_opd = zdx.Map(x=mapping, M=global_basis)
 
     # Both calibration terms then occupy disjoint spaces in the same metric.
     fourier_null = np.concatenate([hole_ptt, global_basis]) if exclude_hole_ptt else global_basis
-    fourier = Fourier(n_modes=fourier_modes).build(aperture, extra_null=fourier_null)
-    ptt = PTT().build(aperture)
+    fourier = FourierRecipe(n_modes=fourier_modes).build(aperture, extra_null=fourier_null)
+    ptt = PTTRecipe().build(aperture)
     opds = {"fourier": fourier, "zernike": global_opd, "ptt": ptt}
     aliases = {name + "_coeffs": f"opds.{name}.x.x" for name in opds}
     sharing = (
         ("fourier_coeffs", ()),
         ("zernike_coeffs", ("filter",)),
-        ("ptt_coeffs", ("program", "filter")),
+        ("ptt_coeffs", ("program",)),
     )
     # Alias/sharing metadata are static Equinox fields, not fitted leaves.
     result = copy(aperture)

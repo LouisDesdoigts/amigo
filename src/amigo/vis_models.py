@@ -1,6 +1,5 @@
 import zodiax as zdx
 import dLux as dl
-import jax.tree as jtu
 import jax.numpy as np
 import equinox as eqx
 import dLux.utils as dlu
@@ -8,185 +7,205 @@ from .misc import interp
 from jax import vmap
 
 
-def fft_coords(wl, npix, pscale, pad=2):
-    x = np.fft.fftshift(np.fft.fftfreq(pad * npix, d=pscale / wl))
+def fft_coords(wavelength, npix, pscale, pad=2):
+    x = np.fft.fftshift(np.fft.fftfreq(pad * npix, d=pscale / wavelength))
     return np.array(np.meshgrid(x, x))
 
 
-def wf_fft_coords(wfs, pad=2):
-    wls = wfs.wavelength
-    # dLux 0.15 returns pixel_scale as a per-wavelength vector, but it is
-    # constant across wavelengths for a given wavefront.
-    psf_pscale = wfs.pixel_scale[0]
-    psf_npix = wfs.npixels
-    return vmap(lambda wl: fft_coords(wl, psf_npix, psf_pscale, pad=pad))(wls)
+def intensity_fft_coords(intensity, pad=2):
+    """Fourier coordinates per wavelength, in metres of baseline."""
+    return vmap(
+        lambda wavelength: fft_coords(
+            wavelength, intensity.npixels, intensity.pixel_scale[0], pad=pad
+        )
+    )(intensity.wavelength)
 
 
-def vis_to_im(log_amps, phases, shape):
-    # Conjugate the amplitudes and phases
-    log_amps = np.concatenate([log_amps, np.array([0.0]), log_amps[::-1]], axis=0)
-    phases = np.concatenate([phases, np.array([0.0]), -phases[::-1]], axis=0)
-    return log_amps.reshape(shape), phases.reshape(shape)
+def vis_to_uvgrid(log_visibility, shape):
+    """Complete a complex log-visibility half-grid by conjugate symmetry.
+
+    Zero at the central knot fixes the DC multiplier to one.
+    """
+    return np.concatenate(
+        [
+            log_visibility,
+            np.zeros(1, dtype=log_visibility.dtype),
+            np.conj(log_visibility[::-1]),
+        ]
+    ).reshape(shape)
 
 
-def inject_vis(wfs, log_amps, phases, otf_coords):
-    # Get the amplitudes and phases
-    log_amps, phase = vis_to_im(log_amps, phases, otf_coords.shape[1:])
+def inject_vis(intensity, log_visibility, otf_coords, *, pad=2):
+    """Apply complex log visibility to wavelength-weighted intensity.
 
-    # Interpolate the visibility maps to uv coordinates
-    uv_coords = wf_fft_coords(wfs, pad=2)
-    interp_fn = lambda im, uv: interp(im, otf_coords, uv, method="linear", fill=0.0)
-    log_amps = vmap(lambda uv: interp_fn(log_amps, uv))(uv_coords)
-    phases = vmap(lambda uv: interp_fn(phase, uv))(uv_coords)
+    Interpolate in baseline coordinates, multiply each image's Fourier
+    transform, then crop and sum the corrected images over wavelength.
+    """
+    log_visibility = vis_to_uvgrid(log_visibility, otf_coords.shape[1:])
+    uv_coords = intensity_fft_coords(intensity, pad=pad)
+    sampled = vmap(lambda uv: interp(log_visibility, otf_coords, uv, method="linear", fill=0.0))(
+        uv_coords
+    )
 
-    # Fourier Functions (use 2x pad)
-    n = uv_coords.shape[-1] // 4
-    crop_fn = lambda x: x[n:-n, n:-n]
-    pad_fn = lambda x: np.pad(x, n, mode="constant")
-    to_uv = vmap(lambda x: np.fft.fftshift(np.fft.fft2(pad_fn(x))))
-    from_uv = vmap(lambda x: crop_fn(np.fft.ifft2(np.fft.ifftshift(x))))
+    size = intensity.npixels
+    extra = (pad - 1) * size
+    before, after = extra // 2, extra - extra // 2
+    to_uv = vmap(
+        lambda image: np.fft.fftshift(
+            np.fft.fft2(np.pad(image, ((before, after), (before, after))))
+        )
+    )
+    from_uv = vmap(
+        lambda spectrum: np.fft.ifft2(np.fft.ifftshift(spectrum))[
+            before : before + size, before : before + size
+        ]
+    )
+    spectrum = to_uv(intensity.data) * np.exp(sampled)
+    # Recover intensity without folding negative predictions positive.
+    return np.real(from_uv(spectrum)).sum(0)
 
-    # Apply the visibility maps
-    splodges = to_uv(wfs.psf) * np.exp(log_amps + 1j * phases)
-    return np.abs(from_uv(splodges)).sum(0)
 
+class LogVisModel(zdx.Base):
+    """Real coefficients on complex, orthonormal log-visibility modes.
 
-class BaseLogVisModel(zdx.Base):
-    V_amp: np.ndarray
-    V_phase: np.ndarray
+    Rows of each half-grid basis are orthonormal under Re(B @ B.conj().T).
+    """
+
+    modes: dict
+    eigenvalues: dict
+    fft_pad: int = eqx.field(static=True)
+    basis_downsample: int = eqx.field(static=True)
     otf_coords: np.ndarray
+    n_modes: int = eqx.field(static=True)
     n_knots: int = eqx.field(static=True)
-    n_basis: int = eqx.field(static=True)
+    active_filter: str | None = eqx.field(static=True)
 
-    def __init__(self, otf_coords, V_amp, V_phase, n_basis=500):
-        # Populate the model
-        self.n_basis = int(n_basis)
-        self.n_knots = int(otf_coords.shape[-1])
-        self.otf_coords = np.array(otf_coords, float)
-        self.V_amp = np.array(V_amp, float)
-        self.V_phase = np.array(V_phase, float)
+    def __init__(self, basis, filt=None, *, n_modes=None):
+        if "modes" not in basis:
+            raise ValueError("Expected complex 'modes' per filter; regenerate the old split basis")
+        if "eigen_values" in basis:
+            raise ValueError("Rename the basis key 'eigen_values' to 'eigenvalues'")
+        self.fft_pad = basis.get("fft_pad", 2)
+        self.basis_downsample = basis.get("basis_downsample", 1)
+        for name in ("fft_pad", "basis_downsample"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        self.eigenvalues = {
+            name: np.asarray(values) for name, values in basis.get("eigenvalues", {}).items()
+        }
+        self.otf_coords = np.asarray(basis["otf_coords"], dtype=float)
+        self.n_knots = int(self.otf_coords.shape[-1])
+        self.active_filter = filt
+        self.modes = {
+            name: np.asarray(rows[:n_modes], dtype=complex)
+            for name, rows in basis["modes"].items()
+        }
+        if filt is None:
+            counts = {len(rows) for rows in self.modes.values()}
+            if len(counts) != 1:
+                raise ValueError("Specify filt when filters have different mode counts")
+            self.n_modes = counts.pop()
+        else:
+            self.n_modes = len(self.modes[filt])
 
-    def upsample_uv(self, coords, log_amps, phases):
-        interp_fn = lambda im, uv: interp(im, self.otf_coords, uv, method="linear", fill=0.0)
-        log_amps = vmap(lambda uv: interp_fn(log_amps, uv))(coords)
-        phases = vmap(lambda uv: interp_fn(phases, uv))(coords)
-        return log_amps, phases
+    def from_latent(self, coefficients, filt):
+        if self.active_filter is not None and filt != self.active_filter:
+            raise ValueError(f"Model configured for {self.active_filter}, received {filt}")
+        return coefficients @ self.modes[filt]
 
-    def inject_to_wfs(self, wfs, log_amps, phases):
-        # Get the bits for mapping to UV plane
-        uv_coords = wf_fft_coords(wfs, pad=2)
-        n = uv_coords.shape[-1] // 4  # Per edge - 2x pad
-        crop_fn = lambda x: x[n:-n, n:-n]
-        pad_fn = lambda x: np.pad(x, n, mode="constant")
+    def to_latent(self, log_visibility, filt):
+        return np.real(log_visibility @ self.modes[filt].conj().T)
 
-        # Inject the visibility maps
-        log_amps, phases = self.upsample_uv(uv_coords, log_amps, phases)
-        cplx_vis = np.exp(log_amps + 1j * phases)
+    def model_vis(self, intensity, coefficients, filt):
+        log_visibility = self.from_latent(coefficients, filt)
+        image = inject_vis(intensity, log_visibility, self.otf_coords, pad=self.fft_pad)
+        return dl.PSF(image, intensity.pixel_scale.mean(0))
 
-        # Apply through FFT
-        to_uv = vmap(lambda x: np.fft.fftshift(np.fft.fft2(pad_fn(x))))
-        from_uv = vmap(lambda x: crop_fn(np.fft.ifft2(np.fft.ifftshift(x))))
-        vis_splodges = to_uv(wfs.psf) * cplx_vis
-        return np.abs(from_uv(vis_splodges)).sum(0)
-
-    def wfs_to_otf(self, wfs, oversample=2):
-        # Get the bits for mapping to UV plane
-        wls = wfs.wavelength
-        psf_pscale = wfs.pixel_scale
+    def intensity_to_otf(self, intensity, oversample=2):
+        wavelengths = intensity.wavelength
+        psf_pscale = intensity.pixel_scale[0]
         npix = oversample * self.otf_coords.shape[-1]
         pscale = np.diff(self.otf_coords[0, 0]).mean() / oversample
+        to_uv = vmap(lambda arr, wavelength: dlu.MFT(arr, wavelength, psf_pscale, npix, pscale))
+        downsample = vmap(lambda arr: dlu.downsample(arr, oversample, mean=True))
+        return np.mean(downsample(to_uv(intensity.data, wavelengths)), axis=0)
 
-        # Project to otf_coords (oversampled)
-        to_uv = vmap(lambda arr, wl: dlu.MFT(arr, wl, psf_pscale, npix, pscale))
-        downsample = vmap(lambda arr: dlu.downsample(arr, 2, mean=True))
-        vis = downsample(to_uv(wfs.psf, wls))
-        return np.mean(vis, axis=0)
-
-
-class LogVisModel(BaseLogVisModel):
-    V_amp: dict
-    V_phase: dict
-    otf_coords: np.ndarray
-    n_knots: int = eqx.field(static=True)
-    n_basis: int = eqx.field(static=True)
-
-    def __init__(self, basis_dict, n_basis=500):
-        # Load the values from the basis dictionary
-        otf_coords = basis_dict["otf_coords"]
-        V_amp = basis_dict["eigen_vectors"]["log_amp"]
-        V_phase = basis_dict["eigen_vectors"]["phase"]
-
-        # Populate the model
-        self.n_basis = int(n_basis)
-        self.n_knots = int(otf_coords.shape[-1])
-        self.otf_coords = np.array(otf_coords, float)
-        self.V_amp = jtu.map(lambda x: x[:n_basis], V_amp)
-        self.V_phase = jtu.map(lambda x: x[:n_basis], V_phase)
-
-    def latent_to_im(self, latent_amps, latent_phases, filter):
-        # Project the latent amplitudes and phases to the the pixel space
-        log_amps, phases = self.from_latent(latent_amps, latent_phases, filter)
-
-        # Conjugate the amplitudes and phases
-        log_amps = np.concatenate([log_amps, np.array([0.0]), log_amps[::-1]], axis=0)
-        phases = np.concatenate([phases, np.array([0.0]), -phases[::-1]], axis=0)
-
-        # Reshape to an image
-        shape = self.otf_coords.shape[1:]
-        return log_amps.reshape(shape), phases.reshape(shape)
-
-    def latent_to_wf(self, wfs, latent_amps, latent_phases, filter):
-        # log_amps, phases = self.project(latent_amps, latent_phases, filter)
-        log_amps, phases = self.latent_to_im(latent_amps, latent_phases, filter)
-        return self.inject_to_wfs(wfs, log_amps, phases)
-
-    def from_latent(self, latent_amps, latent_phases, filter):
-        log_amps = np.dot(latent_amps, self.V_amp[filter])
-        log_phases = np.dot(latent_phases, self.V_phase[filter])
-        return log_amps, log_phases
-
-    def to_latent(self, log_amps, log_phases, filter):
-        log_amps = np.dot(log_amps, np.linalg.pinv(self.V_amp[filter]))
-        log_phases = np.dot(log_phases, np.linalg.pinv(self.V_phase[filter]))
-        return log_amps, log_phases
-
-    def model_vis(self, wfs, latent_amps, latent_phases, filter):
-        psf = self.latent_to_wf(wfs, latent_amps, latent_phases, filter)
-        return dl.PSF(psf, wfs.pixel_scale)
-
-    def wfs_to_latent(self, wfs, filter):
-        vis = self.wfs_to_otf(wfs)
-        vis = vis.flatten()[: vis.size // 2]
-
-        # # Project the resulting visibilities to the latent space
-        log_vis = np.log(vis)
-        return self.to_latent(log_vis.real, log_vis.imag, filter)
+    def intensity_to_latent(self, intensity, filt):
+        vis = self.intensity_to_otf(intensity)
+        return self.to_latent(np.log(vis.flatten()[: vis.size // 2]), filt)
 
 
-def vis_jac_fn(model_params, args):
-    optics, vis_model, filter = args
+class PlaceholderVisModel(zdx.Base):
+    """
+    No visibility modulation: placeholder for initialising the AmigoModel with
+    a vis_model but if no visibility modulation is (yet) required. For example,
+    use in amigo_pipeline for 1.instrument and 2.reference stages, before the
+    relevant vis_basis is calculated.
+    """
 
-    # Populate the optics with any bits we want
-    for key, value in model_params.items():
-        if hasattr(optics, key):
-            optics = optics.set(key, value)
+    n_modes = 0
 
-    # Get the spectrally weighted wavelengths
-    wavels, filt_weights = optics.filters[filter]
-    xs = np.linspace(-1, 1, len(wavels), endpoint=True)
-    spectra_slopes = 1 + model_params.spectra * xs
-    weights = filt_weights * spectra_slopes
-    weights /= weights.sum()
+    def model_vis(self, intensity, coefficients, filt):
+        return dl.PSF(intensity.data.sum(0), intensity.pixel_scale.mean(0))
 
-    # Apply flux if in there
-    if "flux" in model_params.keys():
-        weights *= 10**model_params.flux
 
-    # Propagate the wavefront and project to the latent space
-    if "positions" in model_params.keys():
-        wavels, weights = optics.filters[filter]
-        offset = dlu.arcsec2rad(model_params.positions)
-        wfs = optics.propagate(wavels, offset, weights, return_wf=True)
-    else:
-        wfs = optics.propagate(wavels, weights=weights, return_wf=True)
-    return vis_model.wfs_to_latent(wfs, filter)
+def visibility_jtj(
+    intensity,
+    knot_modes,
+    coords,
+    *,
+    pad=2,
+    downsample=1,
+    batch_size=8,
+    checkpoint=True,
+):
+    """Calculate unweighted image J.T @ J at zero visibility coefficients."""
+
+    def image(coefficients):
+        result = inject_vis(intensity, coefficients @ knot_modes, coords, pad=pad)
+        return dlu.downsample(result, downsample, mean=False).reshape(-1)
+
+    # Differentiate the image directly, without noise or PSF weighting.
+    dimension = len(knot_modes)
+    jtj = zdx.gauss_newton(
+        image,
+        np.zeros(dimension),
+        nbatches=(dimension + batch_size - 1) // batch_size,
+        checkpoint=checkpoint,
+    ).matrix
+    if not bool(np.all(np.isfinite(jtj))):
+        raise FloatingPointError("visibility JTJ contains non-finite values")
+    return jtj
+
+
+def select_visibility_modes(jtj, knot_modes, *, n_modes=None, retained_trace=0.99):
+    """Return leading complex modes and the full descending JTJ spectrum."""
+    dimension = len(knot_modes)
+    if n_modes is not None:
+        if (
+            isinstance(n_modes, bool)
+            or not isinstance(n_modes, int)
+            or not 1 <= n_modes <= dimension
+        ):
+            raise ValueError(f"n_modes must be between 1 and {dimension}")
+    elif not 0 < retained_trace <= 1:
+        raise ValueError("retained_trace must lie in (0, 1]")
+
+    # Symmetrize roundoff, then order modes by image response.
+    eigenvalues, vectors = np.linalg.eigh((jtj + jtj.T) / 2)
+    eigenvalues, rows = eigenvalues[::-1], vectors[:, ::-1].T
+    positive = np.maximum(eigenvalues, 0)
+    if not bool(positive.sum() > 0):
+        raise ValueError("optical model has no visibility response")
+    if n_modes is None:
+        cumulative = np.cumsum(positive) / positive.sum()
+        n_modes = min(int(np.searchsorted(cumulative, retained_trace)) + 1, dimension)
+    if not bool(np.all(eigenvalues[:n_modes] > 0)):
+        raise ValueError("requested modes include a zero or negative JTJ eigenvalue")
+
+    # Fix the arbitrary eigenvector sign before expressing modes on the UV grid.
+    rows = rows[:n_modes]
+    pivots = np.argmax(np.abs(rows), axis=1)
+    rows = rows * np.sign(rows[np.arange(n_modes), pivots])[:, None]
+    return rows @ knot_modes, eigenvalues

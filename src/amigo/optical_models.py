@@ -3,7 +3,7 @@ from importlib import resources
 from copy import copy
 import equinox as eqx
 import zodiax as zdx
-from jax import Array, vmap
+from jax import Array, vmap, lax
 import jax.numpy as np
 import dLux as dl
 import dLux.utils as dlu
@@ -553,7 +553,7 @@ class AMIOptics(dl.AngularOpticalSystem):
     By default construct Fourier (5 modes per axis), per-filter global Zernikes
     (Noll 5--10), and residual PTT. Only PTT is fitted by default. fit_fourier,
     fit_zernike and fit_ptt select fitted groups; false retains fixed values.
-    calibrated accepts model.opd_calibration(), preserving reference geometry,
+    opd_calibration accepts model.opd_calibration(), preserving reference geometry,
     basis arrays and coefficient mappings. No basis is rebuilt on this path.
     """
 
@@ -563,9 +563,10 @@ class AMIOptics(dl.AngularOpticalSystem):
     corners: np.ndarray
     psf_upsample: int
     psf_interpolation: str
+    wavelength_batch_size: int = eqx.field(static=True)
     opd_coefficients: dict
     opd_fits: tuple = eqx.field(static=True)
-    opd_selected: bool
+    opds_applied: bool
 
     def __init__(
         self,
@@ -573,7 +574,7 @@ class AMIOptics(dl.AngularOpticalSystem):
         filters=["F380M", "F430M", "F480M"],
         radial_orders=None,
         aperture_distortion=None,
-        coherence_orders=4,
+        amplitude_orders=4,
         oversample=3,
         psf_upsample=3,
         pupil_mask=None,
@@ -599,15 +600,16 @@ class AMIOptics(dl.AngularOpticalSystem):
         fit_fourier=False,
         fit_zernike=False,
         fit_ptt=True,
-        calibrated=None,
+        opd_calibration=None,
+        wavelength_batch_size=1,
     ):
         # A calibration supplies the exact reference geometry and basis mappings.
         self.opd_coefficients = {}
-        self.opd_selected = False
-        if calibrated is not None:
-            if not isinstance(calibrated, OPDCalibration):
+        self.opds_applied = False
+        if opd_calibration is not None:
+            if not isinstance(opd_calibration, OPDCalibration):
                 raise TypeError(
-                    "calibrated must be an OPDCalibration from model.opd_calibration()"
+                    "opd_calibration must be an OPDCalibration from model.opd_calibration()"
                 )
             if pupil_mask is not None or opds is not None or radial_orders is not None:
                 raise ValueError("A calibrated OPD already supplies its reference aperture")
@@ -615,12 +617,19 @@ class AMIOptics(dl.AngularOpticalSystem):
                 raise ValueError(
                     "A calibration retains its basis definitions; do not supply new modes"
                 )
-            pupil_mask = calibrated.aperture
+            pupil_mask = opd_calibration.aperture
             wf_npixels, diameter = pupil_mask.npixels, pupil_mask.diameter
-            self.opd_coefficients = dict(calibrated.coefficients)
+            self.opd_coefficients = dict(opd_calibration.coefficients)
 
         self.sparse = bool(sparse)
         self.psf_upsample = psf_upsample
+        if (
+            isinstance(wavelength_batch_size, bool)
+            or not isinstance(wavelength_batch_size, int)
+            or wavelength_batch_size < 1
+        ):
+            raise ValueError("wavelength_batch_size must be a positive integer")
+        self.wavelength_batch_size = wavelength_batch_size
         if psf_interpolation not in ("intensity", "phasor"):
             raise ValueError("psf_interpolation must be 'intensity' or 'phasor'")
         self.psf_interpolation = psf_interpolation
@@ -643,7 +652,7 @@ class AMIOptics(dl.AngularOpticalSystem):
                 normalise=normalise,
                 aberration_orders=radial_orders if opds is None else None,
                 opds=opds,
-                amplitude_orders=coherence_orders,
+                amplitude_orders=amplitude_orders,
                 oversize=oversize,
                 polike=polike,
             )
@@ -707,21 +716,21 @@ class AMIOptics(dl.AngularOpticalSystem):
         )
         self.corners = pupil_mask.corners
 
-    def for_filter(self, filter_name):
+    def for_filter(self, filt):
         """Select fixed OPD values for standalone propagation/visibility generation.
 
         Exposure-dependent values require ModelFit.update_optics instead. A
         wavelength array alone cannot identify which filter calibration to use.
         """
-        if filter_name not in self.filters:
-            raise ValueError(f"Unknown filter {filter_name!r}")
+        if filt not in self.filters:
+            raise ValueError(f"Unknown filter {filt!r}")
         aperture = apply_opds(
             self.pupil_mask,
             self.opd_coefficients,
             self.pupil_mask.opd_sharing or (),
-            {"filter": filter_name},
+            {"filter": filt},
         )
-        return self.set(["pupil_mask", "opd_selected"], [aperture, True])
+        return self.set(["pupil_mask", "opds_applied"], [aperture, True])
 
     def propagate_mono(self, wavelength, offset=np.zeros(2), return_wf=False):
         """
@@ -742,7 +751,7 @@ class AMIOptics(dl.AngularOpticalSystem):
             if `return_wf` is False, returns the psf Array.
             if `return_wf` is True, returns the field before intensity averaging.
         """
-        if not self.opd_selected:
+        if not self.opds_applied:
             groups = dict(self.pupil_mask.opd_sharing or ())
             if any(
                 groups.get(name) and isinstance(value, dict) and value
@@ -811,6 +820,7 @@ class AMIOptics(dl.AngularOpticalSystem):
 
         Set at most one return flag. Fields precede subpixel intensity averaging;
         Intensity retains the wavelength axis for visibility modelling.
+        wavelength_batch_size limits concurrent monochromatic propagations.
         """
         if sum((return_wf, return_psf, return_intensity)) > 1:
             raise ValueError("Set at most one of return_wf, return_psf, return_intensity")
@@ -823,9 +833,13 @@ class AMIOptics(dl.AngularOpticalSystem):
         if offset.shape != (2,):
             raise ValueError("Offset must have shape (2,) in radians")
 
-        result = eqx.filter_vmap(
-            lambda wavelength: self.propagate_mono(wavelength, offset, return_wf=return_wf)
-        )(wavelengths)
+        # Bound field-interpolation workspace without changing spectral sampling.
+        # The wavelength axis and its final weighted sum retain their ordering.
+        result = lax.map(
+            lambda wavelength: self.propagate_mono(wavelength, offset, return_wf=return_wf),
+            wavelengths,
+            batch_size=self.wavelength_batch_size,
+        )
         if return_wf:
             return result.multiply("phasor", np.sqrt(weights)[:, None, None])
         intensity = Intensity(
@@ -840,7 +854,7 @@ class AMIOptics(dl.AngularOpticalSystem):
 
     def visibility_model(
         self,
-        filter_name,
+        filt,
         *,
         n_knots,
         spectral_slope=None,
@@ -885,11 +899,11 @@ class AMIOptics(dl.AngularOpticalSystem):
                 raise ValueError("spectral_slope must be a finite scalar")
 
         # Propagate the reference PSF using the forward model's spectral weights.
-        wavelengths, throughput = self.filters[filter_name]
+        wavelengths, throughput = self.filters[filt]
         weights = spectral_weights(throughput, spectral_slope)
         if not bool(np.all(np.isfinite(weights))):
             raise ValueError("spectral weights must have a finite, nonzero total")
-        reference = self if self.opd_selected else self.for_filter(filter_name)
+        reference = self if self.opds_applied else self.for_filter(filt)
         intensity = reference.propagate(
             wavelengths,
             offset=np.zeros(2),
@@ -921,12 +935,12 @@ class AMIOptics(dl.AngularOpticalSystem):
         return LogVisModel(
             {
                 "otf_coords": coords,
-                "modes": {filter_name: modes},
-                "eigen_values": {filter_name: eigenvalues},
+                "modes": {filt: modes},
+                "eigenvalues": {filt: eigenvalues},
                 "fft_pad": pad,
                 "basis_downsample": downsample,
             },
-            filter_name,
+            filt,
         )
 
     def _propagate_pupil_sparse(self, wavelength, offset, to_focal):

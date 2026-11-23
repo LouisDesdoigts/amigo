@@ -11,7 +11,7 @@ from amigo.misc import interp
 
 # from drpangloss.grid_fit import azimuthalAverage
 # from numpyro.distributions.util import gammaincinv
-from amigo.stats import orthogonalise
+from amigo.stats import build_disco, orthogonalise
 from copy import deepcopy
 
 
@@ -311,9 +311,9 @@ def analyse_vis(
 
     # Ruffio upper limits
     perc = jsp.stats.norm.cdf(n_sigma)
-    contrast_clipped = np.clip(contrast_im, 0, min_flux)  # clip to min_flux
-    ruffio_im = ruffio_upperlimit(contrast_clipped, sigma_im, perc)
-    # ruffio_im = ruffio_upperlimit(contrast_im, sigma_im, perc)
+    # Ruffio's truncated-normal upper limit is conditioned on the signed MLE;
+    # do not cap a positive estimate at the minimum grid flux.
+    ruffio_im = ruffio_upperlimit(contrast_im, sigma_im, perc)
 
     # Radial Ruffio upper limits
     avg_fn = lambda ruffio, **kwargs: azimuthalAverage(
@@ -340,8 +340,16 @@ def analyse_vis(
     # loss, limits_im = batched_grid(jit(vmap(fit_fn)), mle_param_grid, n_batch=n_batch)
 
     # Upsample the log-likelihood and contrast images via interpolation
-    knots = dlu.pixel_coords(n_grid, 2 * size)
-    sample_pts = dlu.pixel_coords(n_pts, 2 * size)
+    # Interpolate using the exact endpoint-inclusive coordinates on which the
+    # likelihood was evaluated. Reinterpreting them as pixel centres contracts
+    # all separations by (n_grid - 1) / n_grid.
+    knots = coords
+    sample_pts = np.array(
+        np.meshgrid(
+            np.linspace(size, -size, n_pts),
+            np.linspace(-size, size, n_pts),
+        )
+    )
     loglike_im = interp(loglike_im, knots, sample_pts, method="cubic", fill=np.nan)
     contrast_im = interp(contrast_im, knots, sample_pts, method="cubic", fill=np.nan)
     sigma_im = interp(sigma_im, knots, sample_pts, method="cubic", fill=np.nan)
@@ -418,8 +426,8 @@ def generate_photon_data(vis_eig_vals, n_terms, n_phot, cal_vis_dict, key=jr.key
     K_phi_cov = np.dot(K_phi_mat, np.dot(phase_cov, np.linalg.pinv(K_phi_mat)))
 
     # Orthonormalise the visibilities
-    o_vis, o_vis_cov, o_vis_mat = orthogonalise(K_vis, K_vis_cov, normalise=False)
-    o_phi, o_phi_cov, o_phi_mat = orthogonalise(K_phi, K_phi_cov, normalise=False)
+    o_vis, o_vis_cov, o_vis_mat, o_vis_eigv = orthogonalise(K_vis, K_vis_cov)
+    o_phi, o_phi_cov, o_phi_mat, o_phi_eigv = orthogonalise(K_phi, K_phi_cov)
 
     phot_cal_vis_dict = deepcopy(cal_vis_dict)
 
@@ -429,6 +437,16 @@ def generate_photon_data(vis_eig_vals, n_terms, n_phot, cal_vis_dict, key=jr.key
     phot_cal_vis_dict["O_phi_cov"] = o_phi_cov
     phot_cal_vis_dict["O_vis_mat"] = o_vis_mat
     phot_cal_vis_dict["O_phi_mat"] = o_phi_mat
+    phot_cal_vis_dict["O_vis_eigv"] = o_vis_eigv
+    phot_cal_vis_dict["O_phi_eigv"] = o_phi_eigv
+    # The covariance-dependent orthogonal rotations changed, so the composite
+    # latent-to-DISCO maps must change with them as well.
+    phot_cal_vis_dict["disco_vis_mat"] = build_disco(
+        cal_vis_dict["vis_mat"], K_vis_mat, o_vis_mat
+    )
+    phot_cal_vis_dict["disco_phi_mat"] = build_disco(
+        cal_vis_dict["phi_mat"], K_phi_mat, o_phi_mat
+    )
 
     return phot_cal_vis_dict
 
