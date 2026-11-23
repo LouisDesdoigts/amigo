@@ -1,4 +1,4 @@
-"""Checks for the tridiagonal slope covariance (read- plus photon-noise model)."""
+"""Checks for the tridiagonal slope covariance (measured variances, read-noise correlation)."""
 
 from types import SimpleNamespace
 from unittest import TestCase
@@ -57,7 +57,7 @@ def fake_file(slope_cov):
 class TridiagonalCovarianceTests(TestCase):
     def test_strong_anticorrelation_gives_positive_definite_covariance(self):
         # Neighbouring correlation -0.55 is past the -0.5 limit for many slopes: the
-        # tridiagonal cut is not positive definite, the read/photon-noise model is.
+        # tridiagonal cut is not positive definite, the model (off-diagonals capped) is.
         n, variance = 10, np.linspace(1.0, 2.0, 6)
         cut = toeplitz(n, variance, -0.55 * variance)
         data = np.zeros((variance.size, n))
@@ -66,11 +66,11 @@ class TridiagonalCovarianceTests(TestCase):
         lower = _cholesky(data, by_pixel(tridiagonal_covariance(cut)))
         self.assertTrue(bool(np.all(np.isfinite(lower))))
 
-    def test_keeps_measured_diagonal_and_sets_off_diagonals_to_minus_read_noise(self):
+    def test_keeps_measured_variances_and_caps_off_diagonals_at_read_noise(self):
         n = 6
         diagonal = np.array(
             [
-                [1.0, 1.2, 1.5, 2.0, 0.3, 1.1],  # slope 4 below 2r: its photon noise clips to 0
+                [1.0, 1.2, 1.5, 2.0, 0.3, 1.1],  # slope 4 below 2r: its off-diagonals cap at 0.15
                 [0.9, 1.0, 1.1, 1.2, 1.3, 1.4],
                 [0.5, 0.6, 0.7, 0.8, 0.9, 1.0],  # positive neighbours: read noise clips to 0
             ]
@@ -87,17 +87,18 @@ class TridiagonalCovarianceTests(TestCase):
         model = tridiagonal_covariance(cov)
         read = np.maximum(0.0, -off_diagonal.mean(0))
         npt.assert_allclose(read, [0.25, 0.4, 0.0])
-        npt.assert_allclose(np.diagonal(model, 0, 0, 1), np.maximum(diagonal.T, 2 * read[:, None]))
-        npt.assert_allclose(
-            np.diagonal(model, 1, 0, 1), -np.broadcast_to(read[:, None], (3, n - 1))
-        )
-        npt.assert_allclose(
-            np.diagonal(model, -1, 0, 1), -np.broadcast_to(read[:, None], (3, n - 1))
-        )
+        # the variances are exactly the measured ones (those "full" and "diagonal" use)
+        npt.assert_array_equal(np.diagonal(model, 0, 0, 1), diagonal.T)
+        expected = [
+            [-0.25, -0.25, -0.25, -0.15, -0.15],  # capped at half of slope 4's variance 0.3
+            [-0.4] * 5,
+            [0.0] * 5,
+        ]
+        npt.assert_allclose(np.diagonal(model, 1, 0, 1), expected)
+        npt.assert_allclose(np.diagonal(model, -1, 0, 1), expected)
         npt.assert_allclose(np.diagonal(model, 2, 0, 1), 0.0)
-        unclipped = diagonal.T >= 2 * read[:, None]
-        self.assertEqual(int((~unclipped).sum()), 1)
-        npt.assert_allclose(np.diagonal(model, 0, 0, 1)[unclipped], diagonal.T[unclipped])
+        lower = _cholesky(np.zeros((3, n)), by_pixel(model))
+        self.assertTrue(bool(np.all(np.isfinite(lower))))
 
     def test_single_slope_is_unchanged(self):
         cov = np.array([[[0.7, 1.3, 2.0]]])

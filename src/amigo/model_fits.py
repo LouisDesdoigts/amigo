@@ -218,10 +218,10 @@ class ModelFit(Exposure):
     ):
         """
         covariance sets how each exposure's slope covariance is used: "full" uses
-        the measured matrix, "tridiagonal" replaces it with a read- plus photon-noise
-        model fitted to its main and first off-diagonals (see tridiagonal_covariance),
-        and "diagonal" treats every slope as independent. use_cov and only_diag are
-        deprecated aliases for it.
+        the measured matrix, "tridiagonal" keeps its variances and replaces the rest
+        with the read-noise correlation of neighbouring slopes (see
+        tridiagonal_covariance), and "diagonal" treats every slope as independent.
+        use_cov and only_diag are deprecated aliases for it.
         """
         covariance = _covariance_option(covariance, use_cov, only_diag)
         if covariance not in COVARIANCES:
