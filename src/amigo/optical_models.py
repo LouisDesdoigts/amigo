@@ -14,7 +14,7 @@ from .opd import (
     zernike_opd,
     build_opds,
     standard_opds,
-    DEFAULT_FILTER_MODES,
+    DEFAULT_ZERNIKE_INDICES,
     OPDCalibration,
     apply_opds,
     coefficient_value,
@@ -552,7 +552,7 @@ class AMIOptics(dl.AngularOpticalSystem):
 
     By default construct Fourier (5 modes per axis), per-filter global Zernikes
     (Noll 5--10), and residual PTT. Only PTT is fitted by default. fit_fourier,
-    fit_filter_opd and fit_ptt select fitted groups; false retains fixed values.
+    fit_zernike and fit_ptt select fitted groups; false retains fixed values.
     opd_calibration accepts model.opd_calibration(), preserving reference geometry,
     basis arrays and coefficient mappings. No basis is rebuilt on this path.
     """
@@ -593,12 +593,12 @@ class AMIOptics(dl.AngularOpticalSystem):
         opds=None,
         opd_sharing=None,
         fourier_modes=None,
-        filter_modes=None,
+        zernike_indices=None,
         fourier_coeffs=None,
-        filter_coeffs=None,
+        zernike_coeffs=None,
         ptt_coeffs=None,
         fit_fourier=False,
-        fit_filter_opd=False,
+        fit_zernike=False,
         fit_ptt=True,
         opd_calibration=None,
         wavelength_batch_size=1,
@@ -613,7 +613,7 @@ class AMIOptics(dl.AngularOpticalSystem):
                 )
             if pupil_mask is not None or opds is not None or radial_orders is not None:
                 raise ValueError("A calibrated OPD already supplies its reference aperture")
-            if fourier_modes is not None or filter_modes is not None:
+            if fourier_modes is not None or zernike_indices is not None:
                 raise ValueError(
                     "A calibration retains its basis definitions; do not supply new modes"
                 )
@@ -660,7 +660,7 @@ class AMIOptics(dl.AngularOpticalSystem):
             pupil_mask = standard_opds(
                 pupil_mask,
                 5 if fourier_modes is None else fourier_modes,
-                DEFAULT_FILTER_MODES if filter_modes is None else filter_modes,
+                DEFAULT_ZERNIKE_INDICES if zernike_indices is None else zernike_indices,
             )
         if opd_sharing is not None:
             sharing = dict(pupil_mask.opd_sharing or ())
@@ -677,14 +677,14 @@ class AMIOptics(dl.AngularOpticalSystem):
         # only selected groups become optimisation parameters in AmigoModel.
         flags = {
             "fourier_coeffs": fit_fourier,
-            "filter_coeffs": fit_filter_opd,
+            "zernike_coeffs": fit_zernike,
             "ptt_coeffs": fit_ptt,
         }
         groups = dict(pupil_mask.opd_sharing or ())
         self.opd_fits = tuple(name for name in groups if flags.get(name, True))
         supplied = {
             "fourier_coeffs": fourier_coeffs,
-            "filter_coeffs": filter_coeffs,
+            "zernike_coeffs": zernike_coeffs,
             "ptt_coeffs": ptt_coeffs,
         }
         for name, value in supplied.items():

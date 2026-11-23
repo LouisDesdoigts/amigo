@@ -291,7 +291,10 @@ class Trainer(zdx.Base):
                 return loss
 
             curvature = zdx.hessian(
-                objective, values, nbatches=nbatches, checkpoint=checkpoint,
+                objective,
+                values,
+                nbatches=nbatches,
+                checkpoint=checkpoint,
             )
             # Preserve Trainer's existing log-likelihood sign convention.
             return -curvature.matrix

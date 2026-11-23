@@ -41,6 +41,37 @@ def build_cov(var, read_std):
     return slope_cov + read_cov
 
 
+def tridiagonal_covariance(cov):
+    """Tridiagonal model of a slope covariance of shape (slopes, slopes, ...).
+
+    Consecutive slopes share a read, so a pixel's read noise r makes neighbouring slopes covary
+    by -r, and slopes further apart are independent. Per pixel, r = max(0, -mean of the measured
+    first off-diagonal). The model keeps the measured variances C_ii on its diagonal, sets entry
+    (i, i+1) to -min(r, C_ii / 2, C_(i+1)(i+1) / 2) and zeroes everything beyond. The cap only
+    acts next to a slope whose measured variance came out below 2 r, which sampling noise does
+    to about half the slopes of read-noise-dominated pixels. It makes the matrix diagonally
+    dominant, so positive definite wherever the variances are positive. The variances are
+    exactly those "full" and "diagonal" use, so the three options differ only in their
+    correlations. Cutting the measured matrix to its tridiagonal band is not positive definite:
+    neighbouring slopes in read-noise-dominated pixels are correlated at about -0.45, just
+    inside the -0.5 limit, and sampling noise pushes many pixels past it. A single slope is
+    left unchanged.
+    """
+    n = cov.shape[0]
+    if n < 2:
+        return cov
+    variance = np.diagonal(cov, 0, 0, 1)  # (..., n)
+    read = np.maximum(0.0, -np.diagonal(cov, 1, 0, 1).mean(-1))
+    off = np.minimum(read[..., None], 0.5 * np.minimum(variance[..., :-1], variance[..., 1:]))
+    off = np.moveaxis(np.concatenate([off, np.zeros_like(off[..., :1])], -1), -1, 0)  # (n, ...)
+    shape = (n, n) + (1,) * (cov.ndim - 2)
+    return (
+        np.eye(n).reshape(shape) * np.moveaxis(variance, -1, 0)[None]
+        - np.eye(n, k=1).reshape(shape) * off[:, None]
+        - np.eye(n, k=-1).reshape(shape) * off[None]
+    )
+
+
 def check_symmetric(mat):
     """Checks if a matrix is symmetric"""
     return np.allclose(mat, mat.T)
@@ -90,8 +121,10 @@ def covariance_model(model, exposure):
 
 
 def mv_zscore(x, mu, cov):
-    """Multivariate z-score, return identical gradients to normal log-likelihood"""
-    return -0.5 * np.dot(x - mu, np.dot(np.linalg.inv(cov), x - mu))
+    """Negative chi-squared, -(x - mu)^T C^-1 (x - mu): twice the Gaussian log-likelihood's
+    dependence on mu, so the legacy loss (its negative mean) is the mean chi-squared per
+    pixel, like optimisation.Residuals.loss."""
+    return -np.dot(x - mu, np.dot(np.linalg.inv(cov), x - mu))
 
 
 def loglike(x, mu, cov):

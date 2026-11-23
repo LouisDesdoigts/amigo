@@ -14,7 +14,7 @@ from .misc import find_position, gen_surface, spectral_weights
 from .ramp_models import Ramp
 from .optical_models import gen_powers
 from .opd import apply_opds
-from .stats import mv_zscore, loglike
+from .stats import mv_zscore, loglike, tridiagonal_covariance
 
 
 class Exposure(zdx.Base):
@@ -178,7 +178,7 @@ class Exposure(zdx.Base):
         return (fill * np.ones((80, 80))).at[*self.support].set(vec)
 
 
-COVARIANCES = ("full", "banded", "diagonal")
+COVARIANCES = ("full", "tridiagonal", "diagonal")
 
 
 def _covariance_option(covariance, use_cov, only_diag):
@@ -188,13 +188,13 @@ def _covariance_option(covariance, use_cov, only_diag):
     if covariance != "full":
         raise ValueError("Pass covariance, not covariance with use_cov/only_diag")
     warnings.warn(
-        "use_cov and only_diag are deprecated: use covariance='full', 'banded', 'diagonal'",
+        "use_cov and only_diag are deprecated: use covariance='full', 'tridiagonal', 'diagonal'",
         FutureWarning,
         stacklevel=3,
     )
     if use_cov is not None and not use_cov:
         return "diagonal"
-    return "banded" if only_diag else "full"
+    return "tridiagonal" if only_diag else "full"
 
 
 class ModelFit(Exposure):
@@ -217,9 +217,10 @@ class ModelFit(Exposure):
         **kwargs,
     ):
         """
-        covariance sets how much of each exposure's slope covariance is used:
-        "full" uses all of it, "banded" keeps the main diagonal and the two
-        neighbouring ones, and "diagonal" treats every slope as independent.
+        covariance sets how each exposure's slope covariance is used: "full" uses
+        the measured matrix, "tridiagonal" keeps its variances and replaces the rest
+        with the read-noise correlation of neighbouring slopes (see
+        tridiagonal_covariance), and "diagonal" treats every slope as independent.
         use_cov and only_diag are deprecated aliases for it.
         """
         covariance = _covariance_option(covariance, use_cov, only_diag)
@@ -235,12 +236,8 @@ class ModelFit(Exposure):
         if covariance == "diagonal":
             self.cov = self.cov * np.eye(len(self.slopes))[..., None, None]
 
-        if covariance == "banded":
-            n = self.nslopes
-            mask = np.eye(n, dtype=bool)
-            mask |= np.eye(n, k=1, dtype=bool)
-            mask |= np.eye(n, k=-1, dtype=bool)
-            self.cov = self.cov * mask[..., None, None]
+        if covariance == "tridiagonal":
+            self.cov = tridiagonal_covariance(self.cov)
 
     def mv_zscore(self, model, return_im=False):
         slopes = self(model)
