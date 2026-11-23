@@ -107,6 +107,7 @@ import time
 from datetime import timedelta
 from ..core_models import ModelParams, ParamHistory
 from ..misc import tqdm
+from .fitting import BIG
 from .fitting import (
     get_optimiser,
     get_val_grad_fn,
@@ -444,7 +445,7 @@ class ValBatchedTrainer(BatchedTrainer):
         loop_fn = self.default_looper if self.looper_fn is None else self.looper_fn
 
         aux = {}
-        best_val = 1e100
+        best_val = BIG
         best_batch = batch_params
         best_state = model_params
 

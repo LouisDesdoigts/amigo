@@ -339,7 +339,7 @@ def build_opds(aperture, sharing=None):
 
 # Default calibration/science components
 
-DEFAULT_FILTER_MODES = (5, 6, 7, 8, 9, 10)
+DEFAULT_ZERNIKE_INDICES = (5, 6, 7, 8, 9, 10)
 
 
 class OPDCalibration(zdx.Base):
@@ -373,16 +373,16 @@ class OPDCalibration(zdx.Base):
         return self._bound("fourier", values)
 
     @property
-    def filter_opds(self):
+    def zernike(self):
         """Per-filter Zernike components with their calibrated coefficients.
 
         The returned components share the exact sampled basis and coefficient
         mapping; each can be evaluated or inspected separately from Fourier.
         """
-        values = self.coefficients.get("filter_coeffs", self.aperture.filter_coeffs)
+        values = self.coefficients.get("zernike_coeffs", self.aperture.zernike_coeffs)
         if not isinstance(values, dict):
             values = {filt: values for filt in self.filters}
-        return {key: self._bound("filter", value) for key, value in values.items()}
+        return {key: self._bound("zernike", value) for key, value in values.items()}
 
 
 def project_opd(basis, null, weights):
@@ -396,7 +396,7 @@ def project_opd(basis, null, weights):
     return (modes - overlap @ patterns).reshape(basis.shape)
 
 
-def standard_opds(aperture, fourier_modes=5, filter_modes=DEFAULT_FILTER_MODES):
+def standard_opds(aperture, fourier_modes=5, zernike_indices=DEFAULT_ZERNIKE_INDICES):
     """Construct all three default components once, independent of fit flags.
 
     Global Zernikes own their gauge-removed sampled span. Fourier excludes that
@@ -404,17 +404,17 @@ def standard_opds(aperture, fourier_modes=5, filter_modes=DEFAULT_FILTER_MODES):
     PTT/defocus: it is intended for fitting after the calibration is fixed.
     """
     if (
-        not filter_modes
-        or any(j < 5 for j in filter_modes)
-        or len(set(filter_modes)) != len(filter_modes)
+        not zernike_indices
+        or any(j < 5 for j in zernike_indices)
+        or len(set(zernike_indices)) != len(zernike_indices)
     ):
-        raise ValueError("filter_modes must contain distinct Noll indices >= 5")
+        raise ValueError("zernike_indices must contain distinct Noll indices >= 5")
     amplitude, coords = reference_pupil(aperture)
     weights = amplitude**2
 
     # Sparse pupils break the full-circle orthogonality of ordinary Zernikes.
     # Remove global gauge patterns from the shapes before normalising the span.
-    global_basis = zernike_opd(coords, filter_modes, aperture.diameter).M
+    global_basis = zernike_opd(coords, zernike_indices, aperture.diameter).M
     global_basis = project_opd(global_basis, ptt_defocus(coords), weights)
     mapping = opd_map(global_basis, weights).set("s", np.array(1e-9))
     global_opd = zdx.Map(x=mapping, M=global_basis)
@@ -422,11 +422,11 @@ def standard_opds(aperture, fourier_modes=5, filter_modes=DEFAULT_FILTER_MODES):
     # Both calibration terms then occupy disjoint spaces in the same metric.
     fourier = FourierRecipe(n_modes=fourier_modes).build(aperture, extra_null=global_basis)
     ptt = PTTRecipe().build(aperture)
-    opds = {"fourier": fourier, "filter": global_opd, "ptt": ptt}
+    opds = {"fourier": fourier, "zernike": global_opd, "ptt": ptt}
     aliases = {name + "_coeffs": f"opds.{name}.x.x" for name in opds}
     sharing = (
         ("fourier_coeffs", ()),
-        ("filter_coeffs", ("filter",)),
+        ("zernike_coeffs", ("filter",)),
         ("ptt_coeffs", ("program",)),
     )
     # Alias/sharing metadata are static Equinox fields, not fitted leaves.

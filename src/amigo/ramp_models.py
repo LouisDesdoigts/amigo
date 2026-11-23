@@ -531,8 +531,11 @@ class NonLinearRamp(zdx.Base):
             charges = np.array(charges)
 
         else:
-            illum = dlu.downsample(illuminance * sensitivity, 3)
-            charges = np.cumsum(np.array([illum for _ in range(self.time_steps)]), axis=0)
+            # Exactly the bleed branch with zero migration: each step adds the pixel's summed,
+            # sensitivity-weighted subpixel illuminance to the initial charge.
+            step = dlu.downsample(illuminance * sensitivity, 3, mean=False)
+            steps = charge + np.cumsum(np.array([step for _ in range(self.time_steps)]), axis=0)
+            charges = np.concatenate([charge[None], steps], axis=0)
 
         if self.use_charge:
             return charges

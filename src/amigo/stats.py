@@ -116,8 +116,10 @@ def covariance_model(model, exposure):
 
 
 def mv_zscore(x, mu, cov):
-    """Multivariate z-score, return identical gradients to normal log-likelihood"""
-    return -0.5 * np.dot(x - mu, np.dot(np.linalg.inv(cov), x - mu))
+    """Negative chi-squared, -(x - mu)^T C^-1 (x - mu): twice the Gaussian log-likelihood's
+    dependence on mu, so the legacy loss (its negative mean) is the mean chi-squared per
+    pixel, like optimisation.Residuals.loss."""
+    return -np.dot(x - mu, np.dot(np.linalg.inv(cov), x - mu))
 
 
 def loglike(x, mu, cov):
