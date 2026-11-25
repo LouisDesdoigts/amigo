@@ -1,5 +1,6 @@
 import os
 import shutil
+import jax
 import jax.numpy as np
 import numpy as onp
 from jax import vmap
@@ -9,6 +10,15 @@ from astropy.stats import sigma_clip
 # import pkg_resources as pkg
 from importlib import resources
 from tqdm.auto import tqdm
+
+
+def require_x64():
+    """Calslopes are processed in float64: float32 changes the sigma clipping and the variances."""
+    if not jax.config.read("jax_enable_x64"):
+        raise RuntimeError(
+            "Calslope processing needs 64-bit JAX: call "
+            "jax.config.update('jax_enable_x64', True) before any JAX arrays are made"
+        )
 
 
 def delete_contents(path):
@@ -31,6 +41,7 @@ def process_calslope(
     flat=False,  # includes NIS_LAMP, NIS_DARK
     clean_dir=True,
 ):
+    require_x64()
     if input_dir[-1] != "/":
         input_dir += "/"
     if output_dir[-1] != "/":
@@ -77,6 +88,11 @@ def process_calslope(
             print("Only one group, skipping...")
             continue
 
+        # The processing (bad-pixel map, reference columns) is for the 80 x 80 AMI subarray
+        if file[0].header.get("SUBARRAY") != "SUB80":
+            print(f"Subarray {file[0].header.get('SUBARRAY')}, not SUB80, skipping...")
+            continue
+
         # # Get the data (cast to float so we can nan the bad pixels)
         # data = np.array(file["SCI"].data, float)
 
@@ -103,9 +119,14 @@ def process_calslope(
         # Create the new file
         shutil.copy(file_path, file_calslope)
 
-        # Open new file and process the data
-        file = fits.open(file_calslope)
-        file = process_file(file, sigma=sigma, correct_ADC=correct_ADC, flat=flat)
+        # Open new file and process the data; a failure must not leave the raw copy behind under a
+        # calslope name
+        try:
+            file = fits.open(file_calslope)
+            file = process_file(file, sigma=sigma, correct_ADC=correct_ADC, flat=flat)
+        except BaseException:
+            os.remove(file_calslope)
+            raise
 
         file[0].header["FILENAME"] = file_name
 
@@ -129,6 +150,7 @@ def process_calslope(
 
 
 def process_file(file, sigma=3.0, min_supp=5, correct_ADC=True, flat=False):
+    require_x64()
     # # Get the read noise to populate the covariance matrix
     # read_std = np.load(pkg.resource_filename(__name__, "data/SUB80_readnoise.npy"))
     # read_std = np.load(resources.files(__package__) / "data" / "SUB80_readnoise.npy")
