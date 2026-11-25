@@ -4,12 +4,15 @@ An instrument record (``<name>.json`` + ``<name>.npz``) holds a model's instrume
 and calibrated optics as plain values and construction settings, never Python
 objects. ``save_calibration`` writes one; ``load_calibration`` returns the arguments
 to build the model from it, e.g. a versioned base model from the ``amigo_files``
-repository: ``load_calibration("amigo_files/v0.1/base_model")``. Custom instruments
-need their own record adapter; they are not silently coerced into the standard
-architecture.
+repository: ``load_calibration("amigo_files/v0.2/base_model")``. amigo 0.2 writes and
+reads schema ``amigo-instrument-v3``; amigo 0.1's records (v2) load with amigo 0.1.
+Custom instruments need their own record adapter; they are not silently coerced into
+the standard architecture.
 """
 
 from contextlib import contextmanager
+from copy import copy
+from datetime import date
 from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -24,7 +27,7 @@ import jax.numpy as np
 import numpy as onp
 import zodiax as zdx
 
-from .detector_models import LinearDetector, GaussianJitter
+from .detector_models import LinearDetector
 from .optical_models import (
     StaticApertureMask,
     DynamicApertureMask,
@@ -206,24 +209,29 @@ def _component(value):
     if value is None or not isinstance(value, zdx.Base):
         return value
     if type(value) is zdx.Map:
-        return dict(
-            kind="map",
-            x=_component(value.x),
-            s=value.s,
-            M=value.M,
-            b=value.b,
-            alias=value.alias,
-        )
+        return {
+            "kind": "map",
+            "x": _component(value.x),
+            "s": value.s,
+            "M": value.M,
+            "b": value.b,
+            "alias": value.alias,
+        }
     if type(value) is BasisOPD:
-        return dict(kind="basis", x=_component(value.x), basis=value.basis, alias=value.alias)
+        return {
+            "kind": "basis",
+            "x": _component(value.x),
+            "basis": value.basis,
+            "alias": value.alias,
+        }
     if type(value) is FourierOPD:
-        return dict(
-            kind="fourier",
-            x=_component(value.x),
-            kx=value.kx,
-            ky=value.ky,
-            alias=value.alias,
-        )
+        return {
+            "kind": "fourier",
+            "x": _component(value.x),
+            "kx": value.kx,
+            "ky": value.ky,
+            "alias": value.alias,
+        }
     raise TypeError(f"Unsupported OPD component: {type(value).__name__}")
 
 
@@ -245,36 +253,36 @@ def _restore_component(record):
 
 
 def _aperture(aperture):
-    fields = dict(
-        size=aperture.size,
-        npixels=aperture.npixels,
-        diameter=aperture.diameter,
-        normalise=bool(aperture.normalise),
-        corners=aperture.corners,
-        amp_basis=aperture.amp_basis,
-        amp_coeffs=aperture.amp_coeffs,
-        alias=aperture.alias,
-        sharing=aperture.opd_sharing,
-        opds={key: _component(value) for key, value in (aperture.opds or {}).items()},
-    )
+    fields = {
+        "size": aperture.size,
+        "npixels": aperture.npixels,
+        "diameter": aperture.diameter,
+        "normalise": bool(aperture.normalise),
+        "corners": aperture.corners,
+        "amp_basis": aperture.amp_basis,
+        "amp_coeffs": aperture.amp_coeffs,
+        "alias": aperture.alias,
+        "sharing": aperture.opd_sharing,
+        "opds": {key: _component(value) for key, value in (aperture.opds or {}).items()},
+    }
     if type(aperture) is StaticApertureMask:
-        return dict(kind="static", transmission=aperture.transmission, **fields)
+        return {"kind": "static", "transmission": aperture.transmission, **fields}
     if type(aperture) is DynamicApertureMask:
         distortion = aperture.distortion
         if type(distortion) not in (AffineDistortion, PolynomialDistortion):
             raise TypeError("Custom aperture distortions need an explicit record adapter")
-        return dict(
-            kind="dynamic",
-            holes=_component(aperture.holes),
-            f2f=aperture.f2f,
-            oversample=aperture.oversample,
-            distortion=dict(
-                powers=distortion.powers,
-                coefficients=distortion.coefficients,
-                kind="affine" if type(distortion) is AffineDistortion else "polynomial",
-            ),
+        return {
+            "kind": "dynamic",
+            "holes": _component(aperture.holes),
+            "f2f": aperture.f2f,
+            "oversample": aperture.oversample,
+            "distortion": {
+                "powers": distortion.powers,
+                "coefficients": distortion.coefficients,
+                "kind": "affine" if type(distortion) is AffineDistortion else "polynomial",
+            },
             **fields,
-        )
+        }
     raise TypeError("Custom apertures need an explicit record adapter")
 
 
@@ -341,9 +349,26 @@ def _restore_aperture(record):
     return aperture
 
 
-# Array paths are fixed by this schema, including the standard neural ramp.
+# amigo 0.2 writes and reads schema v3. v2 records hold amigo 0.1's instrument (a GaussianJitter
+# blur, the 0.1 ramp network and read model), which amigo 0.2 cannot build: amigo 0.1 loads them.
+SCHEMA = "amigo-instrument-v3"
+SCHEMA_V2 = "amigo-instrument-v2"
+RECORD_FIELDS = {
+    "schema",
+    "settings",
+    "instrument",
+    "aperture",
+    "coefficients",
+    "filters",
+    "fourier_epochs",
+    "defocus",
+    "sigmas",
+}
+
+# Array paths of the 0.2 detector, ramp and read model, fixed by schema v3. The read model's IPC
+# kernel is stored separately, as its layer is absent when IPC is off.
 INSTRUMENT_PATHS = (
-    ("jitter", "resampler.rotation", "resampler.anisotropy"),
+    ("resampler.rotation", "resampler.anisotropy", "convolution.sigma"),
     (
         "FF",
         "SRF",
@@ -354,6 +379,19 @@ INSTRUMENT_PATHS = (
     ),
     ("dark_current", "gain", "non_linearity", "amplifier.one_on_fs"),
 )
+SETTINGS = {
+    "detector": {"kernel_size", "oversample"},
+    "ramp": {
+        "time_steps",
+        "norm",
+        "bleed",
+        "use_charge",
+        "use_SRF",
+        "hidden_width",
+        "n_hidden_layers",
+    },
+    "read": {"ipc", "per_pixel_dark", "poly_order", "amplifier_axis"},
+}
 
 
 def _instrument_settings(detector, ramp, read):
@@ -363,37 +401,43 @@ def _instrument_settings(detector, ramp, read):
         ReadModel,
     ):
         raise TypeError("Custom instrument classes need an explicit record adapter")
-    return dict(
-        detector=dict(
-            kernel_size=detector.jitter_model.kernel_size,
-            kernel_oversample=detector.jitter_model.kernel_oversample,
-        ),
-        ramp=dict(
-            time_steps=ramp.time_steps,
-            norm=ramp.norm,
-            bleed=bool(ramp.bleed),
-            use_charge=bool(ramp.use_charge),
-        ),
-        read=dict(
-            ipc=read.layers["IPC"] is not None,
-            poly_order=read.non_linearity.shape[0] + 1,
-            amplifier_axis=read.amplifier.axis,
-        ),
-    )
+    blur = detector.layers["convolution"]
+    # the bleed network's convolution weights, (out, in, 3, 3): hidden layers, then the output
+    shapes = ramp.kernel_model.bleed_encoder.structure.shapes
+    return {
+        "detector": {"kernel_size": int(blur.kernel_size), "oversample": int(blur.oversample)},
+        "ramp": {
+            "time_steps": int(ramp.time_steps),
+            "norm": int(ramp.norm),
+            "bleed": bool(ramp.bleed),
+            "use_charge": bool(ramp.use_charge),
+            "use_SRF": bool(ramp.ff_model.use_SRF),
+            "hidden_width": int(shapes[0][0]),
+            "n_hidden_layers": len(shapes) - 1,
+        },
+        "read": {
+            "ipc": "IPC" in read.layers,
+            "per_pixel_dark": bool(read.layers["read"].per_pixel),
+            "poly_order": read.non_linearity.shape[0] + 1,
+            "amplifier_axis": read.amplifier.axis,
+        },
+    }
 
 
 def _construct_instrument(settings):
-    detector = LinearDetector()
-    detector = detector.set("layers.jitter_model", GaussianJitter(**settings["detector"]))
-    ramp = NonLinearRamp(**settings["ramp"])
-    read_settings = settings["read"]
-    if set(settings) != {"detector", "ramp", "read"} or set(read_settings) != {
-        "ipc",
-        "poly_order",
-        "amplifier_axis",
-    }:
+    if set(settings) != set(SETTINGS) or any(
+        set(settings[part]) != SETTINGS[part] for part in SETTINGS
+    ):
         raise ValueError("Unknown instrument construction settings")
-    read = ReadModel(ipc=read_settings["ipc"])
+    detector = LinearDetector(
+        kernel_size=settings["detector"]["kernel_size"],
+        kernel_osamp=settings["detector"]["oversample"],
+    )
+    ramp_settings = dict(settings["ramp"])
+    use_SRF = ramp_settings.pop("use_SRF")
+    ramp = NonLinearRamp(**ramp_settings).set("ff_model.use_SRF", use_SRF)
+    read_settings = settings["read"]
+    read = ReadModel(ipc=read_settings["ipc"], per_pixel_dark=read_settings["per_pixel_dark"])
     read = read.set(
         ["layers.pixel_non_linearity", "layers.amplifier"],
         [
@@ -402,6 +446,50 @@ def _construct_instrument(settings):
         ],
     )
     return detector, ramp, read
+
+
+def _fourier_epochs(aperture, coefficients, epochs):
+    """Validate {epoch: "YYYY-MM-DD"} against a Fourier part shared by "fourier_epoch"."""
+    by_epoch = tuple(dict(aperture.opd_sharing or ()).get("fourier_coeffs", ())) == (
+        "fourier_epoch",
+    )
+    if not by_epoch:
+        if epochs:
+            raise ValueError("Fourier epochs need a Fourier part shared by 'fourier_epoch'")
+        return None
+    sets = coefficients.get("fourier_coeffs")
+    if not epochs or not isinstance(sets, dict) or set(epochs) != set(sets):
+        raise ValueError(
+            "A Fourier part shared by 'fourier_epoch' needs one date per Fourier set "
+            "(fourier_epochs, {epoch: 'YYYY-MM-DD'})"
+        )
+    return {str(epoch): date.fromisoformat(epochs[epoch]).isoformat() for epoch in sorted(epochs)}
+
+
+def nearest_epoch(day, epochs):
+    """The epoch in ``epochs`` ({epoch: "YYYY-MM-DD"}) nearest ``day``; ties go to the earlier."""
+    if day is None:
+        raise ValueError("An exposure without a date (DATE-OBS) cannot choose a Fourier epoch")
+    day = date.fromisoformat(day)
+    return min(
+        epochs,
+        key=lambda epoch: (abs((date.fromisoformat(epochs[epoch]) - day).days), epochs[epoch]),
+    )
+
+
+def assign_fourier_epochs(exposures, epochs):
+    """Copies of ``exposures``, each using the Fourier set of the epoch nearest its own date.
+
+    A v3 record holds one Fourier wavefront set per calibrator epoch (``fourier_epochs`` from
+    ``load_calibration``); its Fourier part is shared by the exposures' ``fourier_epoch``.
+    Build the model and fit with the returned exposures, not the originals.
+    """
+    assigned = []
+    for exp in exposures:
+        exp = copy(exp)
+        object.__setattr__(exp, "fourier_epoch", nearest_epoch(exp.date, epochs))
+        assigned.append(exp)
+    return assigned
 
 
 def _structure(instrument):
@@ -419,11 +507,15 @@ def record_path(path):
     return path / "calibration" if path.is_dir() else path
 
 
-def save_calibration(path, model):
-    """Save ``model``'s instrument as the record ``<path>.json`` + ``<path>.npz``.
+def save_calibration(path, model, fourier_epochs=None):
+    """Save ``model``'s instrument as the record ``<path>.json`` + ``<path>.npz`` (schema v3).
 
-    For example ``save_calibration("amigo_files/v0.1/base_model", model)``. An
-    existing folder gets the record ``calibration`` inside it (``record_path``).
+    For example ``save_calibration("amigo_files/v0.2/base_model", model)``. An existing folder
+    gets the record ``calibration`` inside it (``record_path``). The record holds the
+    instrument's construction settings and arrays; the calibrated aperture (hole metrology and
+    wavefront modes) with its coefficient groups; ``params["defocus"]`` and the per-filter
+    detector blurs ``params["sigmas"]``. A Fourier part shared by ``"fourier_epoch"`` needs
+    ``fourier_epochs``, the date of each of its sets: ``{epoch: "YYYY-MM-DD"}``.
     """
     path = record_path(path)
     instrument = (model.detector, model.ramp_model, model.read)
@@ -433,19 +525,23 @@ def save_calibration(path, model):
     values = [
         {key: item.get(key) for key in paths} for item, paths in zip(instrument, INSTRUMENT_PATHS)
     ]
-    values[2]["IPC"] = None if instrument[2].layers["IPC"] is None else instrument[2].IPC.ipc
+    values[2]["IPC"] = instrument[2].IPC.ipc if settings["read"]["ipc"] else None
     calibration = model.opd_calibration()
     save_record(
         path,
-        dict(
-            schema="amigo-instrument-v2",
-            settings=settings,
-            instrument=values,
-            aperture=_aperture(calibration.aperture),
-            coefficients=calibration.coefficients,
-            filters=calibration.filters,
-            defocus=model.params["defocus"],
-        ),
+        {
+            "schema": SCHEMA,
+            "settings": settings,
+            "instrument": values,
+            "aperture": _aperture(calibration.aperture),
+            "coefficients": calibration.coefficients,
+            "filters": calibration.filters,
+            "fourier_epochs": _fourier_epochs(
+                calibration.aperture, calibration.coefficients, fourier_epochs
+            ),
+            "defocus": model.params["defocus"],
+            "sigmas": model.params["sigmas"],
+        },
     )
 
 
@@ -453,26 +549,23 @@ def load_calibration(path):
     """Load the instrument record at ``path`` as model-construction inputs.
 
     ``path`` names the record (``<path>.json`` + ``<path>.npz``, e.g.
-    ``amigo_files/v0.1/base_model``), or a folder holding one saved before
-    2026-11 (``record_path``). Keys match the arguments they feed: ``detector``,
-    ``ramp_model``, ``read`` and ``vis_model`` for ``AmigoModel``;
-    ``opd_calibration`` for ``AMIOptics``; ``defocus`` maps filter -> value for
-    ``params.defocus``. ``vis_model`` is a ``PlaceholderVisModel`` (no visibility
-    modulation) until the pipeline builds a basis; it is not part of the saved
-    record.
+    ``amigo_files/v0.2/base_model``), or a folder holding one saved before 2026-11
+    (``record_path``). Keys match the arguments they feed: ``detector``, ``ramp_model``,
+    ``read`` and ``vis_model`` for ``AmigoModel``; ``opd_calibration`` for ``AMIOptics``;
+    ``defocus`` and ``sigmas`` map keys (filters, in a base model) to starting values for
+    ``params.defocus`` and ``params.sigmas``; ``fourier_epochs`` dates each Fourier set
+    (``assign_fourier_epochs``), or is None; ``schema`` is the record's. ``vis_model`` is a
+    ``PlaceholderVisModel`` (no visibility modulation) until the pipeline builds a basis; it is
+    not part of the saved record. amigo 0.1's records (v2) load with amigo 0.1 only.
     """
     record = load_record(record_path(path))
-    fields = {
-        "schema",
-        "settings",
-        "instrument",
-        "aperture",
-        "coefficients",
-        "filters",
-        "defocus",
-    }
-    if set(record) != fields or record["schema"] != "amigo-instrument-v2":
-        raise ValueError("Expected a plain-value v2 instrument calibration")
+    if record.get("schema") == SCHEMA_V2:
+        raise ValueError(
+            f"{path} is an amigo 0.1 record ({SCHEMA_V2}): load it with amigo 0.1. amigo 0.2 "
+            f"builds only its own instrument ({SCHEMA})"
+        )
+    if set(record) != RECORD_FIELDS or record["schema"] != SCHEMA:
+        raise ValueError(f"Expected a plain-value {SCHEMA} instrument record")
     if len(record["instrument"]) != 3:
         raise ValueError("Calibration requires detector, ramp and read records")
     instrument = list(_construct_instrument(record["settings"]))
@@ -487,6 +580,8 @@ def load_calibration(path):
             if reference is not None and (value is None or np.shape(reference) != np.shape(value)):
                 raise ValueError(f"Calibration shape mismatch for {key}")
             item = item.set(key, None if value is None else np.asarray(value))
+        if i == 2 and (values["IPC"] is not None) != record["settings"]["read"]["ipc"]:
+            raise ValueError("The IPC kernel does not match the record's IPC setting")
         if i == 2 and values["IPC"] is not None:
             item = item.set("layers.IPC.ipc", np.asarray(values["IPC"]))
         instrument[i] = item
@@ -498,13 +593,19 @@ def load_calibration(path):
         ),
         filters=tuple(record["filters"]),
     )
+    epochs = _fourier_epochs(
+        calibration.aperture, calibration.coefficients, record["fourier_epochs"]
+    )
     detector, ramp_model, read = instrument
 
     return {
+        "schema": record["schema"],
         "detector": detector,
         "ramp_model": ramp_model,
         "read": read,
         "opd_calibration": calibration,
         "defocus": record["defocus"],
+        "sigmas": record["sigmas"],
+        "fourier_epochs": epochs,
         "vis_model": PlaceholderVisModel(),
     }

@@ -1,4 +1,5 @@
 import warnings
+from datetime import date
 
 import jax
 import equinox as eqx
@@ -35,6 +36,14 @@ ALLOW_CAL_PIXEL_GRADS = False
 WF_PARAMS = ("aberrations", "fourier_coeffs", "zernike_coeffs", "ptt_coeffs")
 
 
+def observation_date(header):
+    """The exposure's UTC start date, ISO "YYYY-MM-DD", from DATE-OBS (None without one)."""
+    value = header.get("DATE-OBS")
+    if value is None:
+        return None
+    return date.fromisoformat(str(value).strip()[:10]).isoformat()
+
+
 class Exposure(zdx.Base):
     """
     A class to hold all the data relevant to a single exposure, allowing it to be
@@ -58,12 +67,16 @@ class Exposure(zdx.Base):
     star: str = eqx.field(static=True)
     filename: str = eqx.field(static=True)
     program: str = eqx.field(static=True)
+    date: str | None = eqx.field(static=True)
     observation: str = eqx.field(static=True)
     act_id: str = eqx.field(static=True)
     visit: str = eqx.field(static=True)
     dither: str = eqx.field(static=True)
     POS: str = eqx.field(static=True)
     detector_to_sky_arcsec: tuple | None = eqx.field(default=None, kw_only=True, static=True)
+    # The calibrator epoch whose Fourier wavefront set this exposure uses, when an instrument
+    # record has several (amigo.files.assign_fourier_epochs); None until assigned.
+    fourier_epoch: str | None = eqx.field(default=None, kw_only=True, static=True)
 
     def __init__(self, file):
         # Display geometry only: retain the FITS tangent-plane Jacobian, including
@@ -109,6 +122,8 @@ class Exposure(zdx.Base):
         self.star = file[0].header["TARGPROP"]
         self.observation = file[0].header["OBSERVTN"]
         self.program = file[0].header["PROGRAM"]
+        self.date = observation_date(header)
+        self.fourier_epoch = None
         self.act_id = file[0].header["ACT_ID"]
         self.visit = file[0].header["VISITGRP"]
         self.dither = file[0].header["EXPOSURE"]

@@ -552,7 +552,8 @@ class AMIOptics(dl.AngularOpticalSystem):
 
     By default construct Fourier (5 modes per axis), per-filter global Zernikes
     (Noll 5--10), and residual PTT. Only PTT is fitted by default. fit_fourier,
-    fit_zernike and fit_ptt select fitted groups; false retains fixed values.
+    fit_zernike, fit_ptt and fit_filter_ptt (the fixed per-filter PTT term of
+    opd.add_filter_ptt) select fitted groups; false retains fixed values.
     opd_calibration accepts model.opd_calibration(), preserving reference geometry,
     basis arrays and coefficient mappings. No basis is rebuilt on this path.
     """
@@ -600,6 +601,7 @@ class AMIOptics(dl.AngularOpticalSystem):
         fit_fourier=False,
         fit_zernike=False,
         fit_ptt=True,
+        fit_filter_ptt=False,
         opd_calibration=None,
         wavelength_batch_size=1,
     ):
@@ -679,6 +681,7 @@ class AMIOptics(dl.AngularOpticalSystem):
             "fourier_coeffs": fit_fourier,
             "zernike_coeffs": fit_zernike,
             "ptt_coeffs": fit_ptt,
+            "filter_ptt_coeffs": fit_filter_ptt,
         }
         groups = dict(pupil_mask.opd_sharing or ())
         self.opd_fits = tuple(name for name in groups if flags.get(name, True))

@@ -454,6 +454,26 @@ def standard_opds(
     return result
 
 
+def add_filter_ptt(aperture):
+    """Add "filter_ptt": a second piston/tip/tilt part on the same modes and mapping as "ptt".
+
+    Its coefficients (alias ``filter_ptt_coeffs``) are shared by filter and add to the fitted
+    PTT: a fixed per-filter term, which amigo 0.2's base model takes from its calibrators'
+    PTT. AMIOptics holds it fixed unless ``fit_filter_ptt=True``.
+    """
+    opds = dict(aperture.opds or {})
+    if "ptt" not in opds or "filter_ptt" in opds:
+        raise ValueError("The aperture needs a 'ptt' part and no 'filter_ptt' part yet")
+    opds["filter_ptt"] = opds["ptt"]
+    result = aperture.set("opds", opds)
+    aliases = {**dict(aperture.alias or ()), "filter_ptt_coeffs": "opds.filter_ptt.x.x"}
+    sharing = (*(aperture.opd_sharing or ()), ("filter_ptt_coeffs", ("filter",)))
+    object.__setattr__(result, "alias", tuple(sorted(aliases.items())))
+    object.__setattr__(result, "opd_sharing", sharing)
+    result.validate_aliases()
+    return result
+
+
 def save_opds(path, opds, **extra):
     """Save standard_opds components' fixed arrays as an npz without pickle, plus
     any `extra` arrays. The modes come from eigendecompositions whose signs can
