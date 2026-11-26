@@ -1,7 +1,6 @@
 import jax.numpy as np
 import jax.scipy as jsp
 from jax import vmap, lax
-import equinox as eqx
 
 # import pkg_resources as pkg
 from importlib import resources
@@ -33,11 +32,44 @@ def build_cov(var, read_std):
     slope_cov_mask = get_slope_cov_mask(len(var))
 
     # Create the read noise covariance matrix
-    # 2x here to account for the two reads that contribute to the slope
-    read_cov = 2 * read_std[None, None, ...] * slope_cov_mask[..., None, None]
+    # Adjacent slopes share one read with opposite signs, so their covariance
+    # is -sigma_read**2. The factor of two belongs only on the diagonal
+    # variance because each slope contains two independent reads.
+    read_cov = read_std[None, None, ...] ** 2 * slope_cov_mask[..., None, None]
 
     # Return the combined covariance matrix
     return slope_cov + read_cov
+
+
+def tridiagonal_covariance(cov):
+    """Tridiagonal model of a slope covariance of shape (slopes, slopes, ...).
+
+    Consecutive slopes share a read, so a pixel's read noise r makes neighbouring slopes covary
+    by -r, and slopes further apart are independent. Per pixel, r = max(0, -mean of the measured
+    first off-diagonal). The model keeps the measured variances C_ii on its diagonal, sets entry
+    (i, i+1) to -min(r, C_ii / 2, C_(i+1)(i+1) / 2) and zeroes everything beyond. The cap only
+    acts next to a slope whose measured variance came out below 2 r, which sampling noise does
+    to about half the slopes of read-noise-dominated pixels. It makes the matrix diagonally
+    dominant, so positive definite wherever the variances are positive. The variances are
+    exactly those "full" and "diagonal" use, so the three options differ only in their
+    correlations. Cutting the measured matrix to its tridiagonal band is not positive definite:
+    neighbouring slopes in read-noise-dominated pixels are correlated at about -0.45, just
+    inside the -0.5 limit, and sampling noise pushes many pixels past it. A single slope is
+    left unchanged.
+    """
+    n = cov.shape[0]
+    if n < 2:
+        return cov
+    variance = np.diagonal(cov, 0, 0, 1)  # (..., n)
+    read = np.maximum(0.0, -np.diagonal(cov, 1, 0, 1).mean(-1))
+    off = np.minimum(read[..., None], 0.5 * np.minimum(variance[..., :-1], variance[..., 1:]))
+    off = np.moveaxis(np.concatenate([off, np.zeros_like(off[..., :1])], -1), -1, 0)  # (n, ...)
+    shape = (n, n) + (1,) * (cov.ndim - 2)
+    return (
+        np.eye(n).reshape(shape) * np.moveaxis(variance, -1, 0)[None]
+        - np.eye(n, k=1).reshape(shape) * off[:, None]
+        - np.eye(n, k=-1).reshape(shape) * off[None]
+    )
 
 
 def check_symmetric(mat):
@@ -88,27 +120,11 @@ def covariance_model(model, exposure):
     return slopes, cov
 
 
-def batched_jacobian(X, fn, n_batch=1):
-    Xs = np.array_split(X, n_batch)
-    rebuild = lambda X_batch, index: X.at[index : index + len(X_batch)].set(X_batch)
-    lens = np.cumsum(np.array([len(x) for x in Xs]))[:-1]
-    starts = np.concatenate([np.array([0]), lens])
-
-    @eqx.filter_jacfwd
-    def batched_jac_fn(x, index):
-        return eqx.filter_jit(fn)(rebuild(x, index))
-
-    return np.concatenate([batched_jac_fn(x, index) for x, index in zip(Xs, starts)], axis=-1).T
-
-
-def gauss_hessian(J, cov):
-    # Gauss-Newton hessian approximation under the assumption of a multivariate normal
-    return J @ (np.linalg.inv(cov) @ J.T)
-
-
 def mv_zscore(x, mu, cov):
-    """Multivariate z-score, return identical gradients to normal log-likelihood"""
-    return -0.5 * np.dot(x - mu, np.dot(np.linalg.inv(cov), x - mu))
+    """Negative chi-squared, -(x - mu)^T C^-1 (x - mu): twice the Gaussian log-likelihood's
+    dependence on mu, so the legacy loss (its negative mean) is the mean chi-squared per
+    pixel, like optimisation.Residuals.loss."""
+    return -np.dot(x - mu, np.dot(np.linalg.inv(cov), x - mu))
 
 
 def loglike(x, mu, cov):
@@ -157,27 +173,6 @@ def orthogonalise(x, cov):
 
 def build_disco(latent_mat, kernel_mat, ortho_mat):
     return ortho_mat @ (kernel_mat @ latent_mat)
-
-
-def calc_projection(fmat=None, cov=None, unit=True):
-    if fmat is None and cov is None:
-        raise ValueError("Must provide either fmat or cov")
-    mat = fmat if fmat is not None else cov
-
-    # Dont normalise the values since we need them
-    eig_vals, eig_vecs = decompose(mat, normalise=False)
-
-    # Eigen values of cov and fisher matrices are inverse
-    if fmat is not None:
-        scale = eig_vals**0.5
-    else:
-        scale = eig_vals**-0.5
-
-    # Project to orthogonal or ortho-normal space
-    projection = eig_vecs
-    if unit:
-        projection *= scale[:, None]
-    return projection, eig_vecs, eig_vals
 
 
 def weighted_average(values, errors):

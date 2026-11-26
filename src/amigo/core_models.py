@@ -1,3 +1,4 @@
+import warnings
 import jax
 import zodiax as zdx
 import equinox as eqx
@@ -5,6 +6,7 @@ import jax.numpy as np
 import jax.tree as jtu
 from jax.lax import dynamic_slice as lax_slice
 from jax.flatten_util import ravel_pytree
+from .opd import init_opds, OPDCalibration
 
 
 class BaseModeller(zdx.Base):
@@ -40,17 +42,50 @@ class AmigoModel(BaseModeller):
     ramp_model: None
     read: None
 
-    def __init__(self, exposures, optics, detector, ramp_model, read, state=None, vis_model=None):
+    def __init__(
+        self,
+        exposures,
+        optics,
+        detector,
+        ramp_model,
+        read,
+        state=None,
+        vis_model=None,
+    ):
         if state is not None:
-            optics = optics.set("transmission", state["transmission"])
-            detector = detector.set("jitter", state["jitter"])
-            ramp_model = ramp_model.set(
-                ["FF", "SRF", "nn_weights"], [state["FF"], state["SRF"], state["nn_weights"]]
-            )
+            # NOTE: a dynamic (non-static) AMIOptics pupil mask has no
+            # "transmission" leaf, so calibration states built against it
+            # won't have this key either.
+            if "transmission" in state and hasattr(optics.pupil_mask, "transmission"):
+                optics = optics.set("transmission", state["transmission"])
+
+            # NOTE: newer amigo detector models expose the jitter as "sigma";
+            # older calibration.npy files may still store it under "jitter".
+            jitter = state["sigma"] if "sigma" in state else state.get("jitter")
+            if jitter is not None:
+                detector = detector.set("sigma", jitter)
+
+            ramp_model = ramp_model.set(["FF", "nn_weights"], [state["FF"], state["nn_weights"]])
+
+            # NOTE: SRF is no longer part of the state. Older states that still
+            # carry it are applied for backwards compatibility.
+            if "SRF" in state:
+                warnings.warn(
+                    "'SRF' in the state is deprecated and will be ignored in future "
+                    "versions; new states should not include it.",
+                    FutureWarning,
+                    stacklevel=2,
+                )
+                ramp_model = ramp_model.set("SRF", state["SRF"])
             read = read.set(
                 ["dark_current", "non_linearity"],
                 [state["dark_current"], state["non_linearity"]],
             )
+
+        # OPD definitions and sharing belong to the optical model.
+        opd_sharing = optics.pupil_mask.opd_sharing
+        if opd_sharing is not None and state is not None and "aberrations" in state:
+            raise ValueError("Install calibrated OPD on the aperture before grouped fitting")
 
         params = {}
         for exp in exposures:
@@ -63,22 +98,46 @@ class AmigoModel(BaseModeller):
                     params[param] = {}
                 params[param][key] = value
 
+        if opd_sharing is not None:
+            params.pop("aberrations", None)
+            active = tuple(
+                (name, fields) for name, fields in opd_sharing if name in optics.opd_fits
+            )
+            params["opds"] = init_opds(
+                optics.pupil_mask, exposures, active, optics.opd_coefficients
+            )
+
         if state is not None:
             params["defocus"] = state["defocus"]
+            # one blur per filter: a state with only the single sigma (jitter) gives it to every filter
+            if "sigmas" in state:
+                params["sigmas"] = state["sigmas"]
+            elif jitter is not None:
+                params["sigmas"] = {key: np.asarray(jitter, float) for key in params["sigmas"]}
 
-            abb = {}
-            for key in params["aberrations"].keys():
-                prog, filt = key.split("_")
-                abb[key] = state["aberrations"][filt]
+            # the state's per-filter aberrations, on an aperture with the legacy per-hole Zernike set
+            if "aberrations" in params:
+                abb = {}
+                for key in params["aberrations"].keys():
+                    prog, filt = key.split("_")
+                    # Keep the model's own initial coefficients if the state's were
+                    # fitted with a different basis (e.g. Zernike vs eigenbasis)
+                    if np.shape(state["aberrations"][filt]) != np.shape(
+                        params["aberrations"][key]
+                    ):
+                        abb[key] = params["aberrations"][key]
+                        continue
+                    abb[key] = state["aberrations"][filt]
 
-            params["aberrations"] = abb  # jtu.map(lambda x: abb, params["aberrations"])
+                params["aberrations"] = abb  # jtu.map(lambda x: abb, params["aberrations"])
 
         # This seems to fix some recompile issues
         def fn(x):
             if isinstance(x, jax.Array):
                 if "i" in x.dtype.str:
                     return x
-                return np.array(x, dtype=float)
+                dtype = complex if np.iscomplexobj(x) else float
+                return np.array(x, dtype=dtype)
             return x
 
         self.params = jtu.map(lambda x: fn(x), params)
@@ -87,6 +146,13 @@ class AmigoModel(BaseModeller):
         self.ramp_model = jtu.map(lambda x: fn(x), ramp_model)
         self.read = jtu.map(lambda x: fn(x), read)
         self.vis_model = jtu.map(lambda x: fn(x), vis_model)
+
+    def opd_calibration(self):
+        """Export bases, mappings and latest fixed/fitted coefficient groups together."""
+        coefficients = {**self.optics.opd_coefficients, **self.params.get("opds", {})}
+        return OPDCalibration(
+            self.optics.pupil_mask, coefficients, filters=tuple(self.optics.filters)
+        )
 
     def __getattr__(self, key):
         if key in self.params:
@@ -184,32 +250,6 @@ class ModelParams(BaseModeller):
     def combine(self, params2):
         return ModelParams({**self.params, **params2.params})
 
-    def jacfwd(self, fn, n_batch=1):
-        return self.jac(fn, n_batch=n_batch, type="fwd")
-
-    def jacrev(self, fn, n_batch=1):
-        return self.jac(fn, n_batch=n_batch, type="rev")
-
-    def jac(self, fn, n_batch=1, type="fwd"):
-        # X, unravel_fn = ravel_pytree(self)
-        X, unravel_fn = self.ravel(return_unravel=True)
-        Xs = np.array_split(X, n_batch)
-        rebuild = lambda X_batch, index: X.at[index : index + len(X_batch)].set(X_batch)
-        lens = np.cumsum(np.array([len(x) for x in Xs]))[:-1]
-        starts = np.concatenate([np.array([0]), lens])
-
-        def batch_fn(x, index):
-            model_params = unravel_fn(rebuild(x, index))
-            return eqx.filter_jit(fn)(model_params)
-
-        if type == "fwd":
-            batched_jac_fn = eqx.filter_jacfwd(batch_fn)
-
-        elif type == "rev":
-            batched_jac_fn = eqx.filter_jacrev(batch_fn)
-
-        return np.concatenate([batched_jac_fn(x, index) for x, index in zip(Xs, starts)], axis=-1)
-
 
 import numpy as onp
 
@@ -220,7 +260,7 @@ class ParamHistory(ModelParams):
         self.params = jtu.map(lambda x: [onp.array(x)], model_params.params)
         # self.params = jtu.map(lambda x: [x], model_params.params)
 
-    def append(self, model_params):
+    def append(self, model_params, max_len=None):
         # Wrap the leaves in a list to ensure the same tree structure as self.params
         updates_list = jtu.map(lambda x: [onp.array(x)], model_params.params)
         # updates_list = jtu.map(lambda x: [x], model_params.params)
@@ -229,10 +269,25 @@ class ParamHistory(ModelParams):
         # map make it recognise lists as leaves
         is_leaf = lambda leaf: isinstance(leaf, list)
 
+        # max_len bounds memory (and the cost of this call, since `a + b` on plain
+        # python lists copies the whole of `a` every time -- an unbounded O(n) list
+        # growing over O(epochs) calls is O(epochs^2) over a run, same issue
+        # history_stride addresses for reg_history, just via capping length here
+        # instead of skipping calls, since ValBatchedTrainer's batch_history is
+        # appended once per BATCH not per epoch (this is what OOM-killed a
+        # 5000-epoch val_flag=True run at epoch 3000: nn_weights alone, appended
+        # 16x/epoch, unbounded, reached ~3.3GB and climbing). Keep enough tail for
+        # both retrain_fns.py's `[-n_batch:]` final-state averaging and a
+        # reasonably long trajectory plot; default None keeps every existing
+        # caller's behaviour (full, unbounded history) unchanged.
+        def combine(a, b):
+            merged = a + b
+            return merged[-max_len:] if max_len is not None else merged
+
         # Append the new values to the history dictionary
         return self.set(
             "params",
-            jtu.map(lambda a, b: a + b, self.params, updates_list, is_leaf=is_leaf),
+            jtu.map(combine, self.params, updates_list, is_leaf=is_leaf),
         )
 
 
