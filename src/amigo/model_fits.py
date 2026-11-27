@@ -17,6 +17,9 @@ from .optical_models import gen_powers
 from .opd import apply_opds
 from .stats import mv_zscore, loglike, tridiagonal_covariance
 
+# The primary dither position every other one is measured from (amigo.misc.primary_offset's label)
+REFERENCE_OFFSET = "x+0p0y+0p0"
+
 # Opt-in: when True, point-source exposures (calibrators, binaries -- anything
 # going through ModelFit.simulate or BinaryFit.simulate) stop blocking their
 # likelihood gradient to FF/non_linearity (normally done via nuke_pixel_grads, so
@@ -186,6 +189,11 @@ class Exposure(zdx.Base):
         params["defocus"] = (self.get_key("defocus"), np.array(0.01))
         params["sigmas"] = (self.get_key("sigmas"), np.array(0.0214))  # detector blur, arcsec
         params["rotations"] = (self.get_key("rotations"), np.array(0.0))  # degrees
+        # Fixed offsets of the primary dither position from (0, 0), shared by every exposure
+        # there: the rotation (degrees) and the focus (um) the instrument has at that position
+        if self.primary_offset not in (None, REFERENCE_OFFSET):
+            params["dither_rotation"] = (self.get_key("dither_rotation"), np.array(0.0))
+            params["dither_defocus"] = (self.get_key("dither_defocus"), np.array(0.0))
 
         # Reflectivity
         if self.fit_reflectivity:
@@ -224,9 +232,26 @@ class Exposure(zdx.Base):
     def key(self):
         return "_".join([self.program, self.observation, self.act_id, self.visit, self.dither])
 
+    def dither_offset(self, model, param):
+        """The primary dither position's offset of `param` ("dither_rotation" or
+        "dither_defocus") from the (0, 0) position, which is the reference: 0 there, for an
+        exposure without a position, and for a model without the parameter."""
+        if self.primary_offset in (None, REFERENCE_OFFSET) or param not in model.params:
+            return 0.0
+        return model.params[param][self.primary_offset]
+
     def rotation(self, model):
-        """This exposure's rotation (deg): the fitted one it reads, plus its fixed offset."""
-        return model.rotations[self.get_key("rotations")] + self.rotation_offset
+        """This exposure's rotation (deg): the fitted one it reads, plus its dither position's
+        offset and its fixed offset."""
+        return (
+            model.rotations[self.get_key("rotations")]
+            + self.dither_offset(model, "dither_rotation")
+            + self.rotation_offset
+        )
+
+    def defocus(self, model):
+        """This exposure's focus (um): the fitted one it reads, plus its position's offset."""
+        return model.defocus[self.get_key("defocus")] + self.dither_offset(model, "dither_defocus")
 
     def to_vec(self, image):
         return image[..., *self.support].T
@@ -375,6 +400,9 @@ class ModelFit(Exposure):
         if param in ["biases", "rotations"]:
             return self.program
 
+        if param in ["dither_rotation", "dither_defocus"]:
+            return self.primary_offset
+
         if param == "Teffs":
             return self.star
 
@@ -412,6 +440,8 @@ class ModelFit(Exposure):
             "defocus",
             "rotations",
             "sigmas",
+            "dither_rotation",
+            "dither_defocus",
         ]:
             return f"{param}.{self.get_key(param)}"
 
@@ -461,7 +491,7 @@ class ModelFit(Exposure):
             optics = optics.set("pupil_mask.amp_coeffs", coefficients)
 
         # Set the defocus
-        optics = optics.set("defocus", model.defocus[self.get_key("defocus")])
+        optics = optics.set("defocus", self.defocus(model))
 
         return optics
 

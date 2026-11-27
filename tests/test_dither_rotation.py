@@ -96,7 +96,7 @@ class RotationOffsetTests(unittest.TestCase):
 
     def test_rotation_adds_the_offset(self):
         exp = SplineVisFit(calslope(PWCPOS=205.0), covariance="diagonal")
-        model = SimpleNamespace(rotations={"01234": np.array(0.0125)})
+        model = SimpleNamespace(rotations={"01234": np.array(0.0125)}, params={})
         self.assertAlmostEqual(float(exp.rotation(model)), 0.0125)
         shifted = copy(exp)
         object.__setattr__(shifted, "rotation_offset", -0.0244)
@@ -105,6 +105,43 @@ class RotationOffsetTests(unittest.TestCase):
         leaves, tree = jax.tree.flatten(shifted)
         self.assertEqual(jax.tree.unflatten(tree, leaves).rotation_offset, -0.0244)
         self.assertEqual(exp.rotation_offset, 0.0)  # the original is unchanged
+
+    def test_position_constants_add_to_rotation_and_focus(self):
+        exp = SplineVisFit(calslope(XOFFSET=-0.915, YOFFSET=0.924), covariance="diagonal")
+        model = SimpleNamespace(
+            rotations={"01234": np.array(0.0125)},
+            defocus={"01234_F380M": np.array(-120.0)},
+            params={
+                "dither_rotation": {"x-1p0y+1p0": np.array(0.0028)},
+                "dither_defocus": {"x-1p0y+1p0": np.array(20.0)},
+            },
+        )
+        exp = copy(exp)
+        object.__setattr__(exp, "rotation_offset", -0.0244)
+        self.assertAlmostEqual(float(exp.rotation(model)), 0.0125 + 0.0028 - 0.0244)
+        self.assertEqual(exp.get_key("dither_rotation"), "x-1p0y+1p0")
+        self.assertEqual(exp.get_key("dither_defocus"), "x-1p0y+1p0")
+        self.assertEqual(exp.map_param("dither_defocus"), "dither_defocus.x-1p0y+1p0")
+
+    def test_the_reference_position_has_no_constant(self):
+        exp = SplineVisFit(calslope(XOFFSET=0.01, YOFFSET=-0.02), covariance="diagonal")
+        self.assertEqual(exp.primary_offset, "x+0p0y+0p0")
+        model = SimpleNamespace(params={"dither_rotation": {"x-1p0y+1p0": np.array(0.1)}})
+        self.assertEqual(exp.dither_offset(model, "dither_rotation"), 0.0)
+        other = SplineVisFit(calslope(XOFFSET=-0.915, YOFFSET=0.924), covariance="diagonal")
+        grads = jax.grad(
+            lambda c: other.dither_offset(
+                SimpleNamespace(params={"dither_rotation": c}), "dither_rotation"
+            )
+        )({"x-1p0y+1p0": np.array(0.0)})
+        self.assertEqual(float(grads["x-1p0y+1p0"]), 1.0)
+
+    def test_a_model_without_the_constants_reads_none(self):
+        exp = SplineVisFit(calslope(XOFFSET=-0.915, YOFFSET=0.924), covariance="diagonal")
+        self.assertEqual(exp.dither_offset(SimpleNamespace(params={}), "dither_rotation"), 0.0)
+        bare = SplineVisFit(calslope(), covariance="diagonal")  # no XOFFSET: no position
+        model = SimpleNamespace(params={"dither_rotation": {}})
+        self.assertEqual(bare.dither_offset(model, "dither_rotation"), 0.0)
 
     def test_flats_and_darks_still_construct(self):
         flat = FlatFit(calslope())
