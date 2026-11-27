@@ -88,9 +88,10 @@ def process_calslope(
             print("Only one group, skipping...")
             continue
 
-        # The processing (bad-pixel map, reference columns) is for the 80 x 80 AMI subarray
-        if file[0].header.get("SUBARRAY") != "SUB80":
-            print(f"Subarray {file[0].header.get('SUBARRAY')}, not SUB80, skipping...")
+        # The processing (bad-pixel map, reference columns) is for 80 x 80 images: the AMI subarray, or
+        # flats cut out of full-frame exposures (whose header still says SUBARRAY FULL)
+        if file["SCI"].shape[-2:] != (80, 80):
+            print(f"Image {file['SCI'].shape[-2:]}, not 80 x 80, skipping...")
             continue
 
         # # Get the data (cast to float so we can nan the bad pixels)
