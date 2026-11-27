@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 from jax import numpy as np, random as jr, scipy as jsp
 import dLux.utils as dlu
 import matplotlib.pyplot as plt
@@ -385,13 +386,18 @@ def plot(
     stride=1,
     full_res_keys=("nn_weights",),
 ):
-    """`stride` is the Trainer's history_stride: strided params are recorded every
+    """Each fitted parameter's values over the epochs, two parameters per figure.
+
+    `history` is the legacy Trainer's ParamHistory (`result.history`), or an
+    amigo.optimisation FitResult (or its `parameter_history`), as `Trainer.train` returns.
+    `stride` is the legacy Trainer's history_stride: strided params are recorded every
     `stride` epochs, so their x-axis is scaled to real epochs. `full_res_keys` are
     recorded every epoch regardless (see Trainer.history_full_res_keys)."""
 
     if save_path is not None:
         os.makedirs(save_path, exist_ok=True)
 
+    history = _history(history)
     params = list(history.params.keys())
     params_in = [param for param in params if param not in ignore]
 
@@ -441,6 +447,27 @@ def plot(
             plt.close()
         else:
             plt.show()
+
+
+def _history(history):
+    """A history with `.params` as {parameter: {key: [value per epoch]}}, as plot draws it.
+
+    The legacy Trainer's ParamHistory already has that shape. A FitResult's
+    `parameter_history` is flat, {"positions.<key>": values stacked over epochs}, so it is
+    split at the last "." into the parameter (e.g. "opds.ptt_coeffs") and its key.
+    """
+    if hasattr(history, "parameter_history"):  # a FitResult
+        history = history.parameter_history
+    elif hasattr(history, "params"):  # the legacy ParamHistory
+        return history
+    params = {}
+    for path, values in history.items():
+        if "." in path:
+            name, key = path.rsplit(".", 1)
+            params.setdefault(name, {})[key] = list(values)
+        else:
+            params[path] = list(values)
+    return SimpleNamespace(params=params)
 
 
 def _format_leaf(leaf, per_exp=False, keys=None):
@@ -516,34 +543,34 @@ def _plot_param(ax, arr, param, start=0, end=-1, x_scale=1, **kwargs):
             # rs = np.hypot(norm_pos[:, 0], norm_pos[:, 1])
             # ax.plot(epochs, rs, **kwargs)
             ax.plot(epochs, norm_pos, **kwargs)
-            ax.set(ylabel="$\Delta$ Position (arcsec)")
+            ax.set(ylabel=r"$\Delta$ Position (arcsec)")
 
         case "fluxes":
             norm_flux = arr - arr[0]
             # norm_flux = 100 * (1 - arr / arr[0])
             ax.plot(epochs, norm_flux, **kwargs)
-            ax.set(ylabel="$\Delta$ Flux (log)")
+            ax.set(ylabel=r"$\Delta$ Flux (log)")
 
         case "aberrations" | "ptt_coeffs":
             norm_ab = arr - arr[0]
             ax.plot(epochs, norm_ab, alpha=0.4, **kwargs)
-            ax.set(ylabel="$\Delta$ Aberrations (nm)")
+            ax.set(ylabel=r"$\Delta$ Aberrations (nm)")
 
         case "one_on_fs":
             norm_oneonf = arr - arr[0]
             ax.plot(epochs, norm_oneonf, alpha=0.25, **kwargs)
-            ax.set(ylabel="$\Delta$ one_on_fs")
+            ax.set(ylabel=r"$\Delta$ one_on_fs")
 
         case "SRF":
             srf = arr - arr[0]
             ax.plot(epochs, srf, **kwargs)
-            ax.set(ylabel="$\Delta$ SRF")
+            ax.set(ylabel=r"$\Delta$ SRF")
 
         case "holes":
             arr *= 1e3
             norm_holes = arr - arr[0]
             ax.plot(epochs, norm_holes, **kwargs)
-            ax.set(ylabel="$\Delta$ Pupil Mask Holes (mm)")
+            ax.set(ylabel=r"$\Delta$ Pupil Mask Holes (mm)")
 
         case "f2f":
             arr *= 1e2
@@ -553,7 +580,7 @@ def _plot_param(ax, arr, param, start=0, end=-1, x_scale=1, **kwargs):
         case "biases":
             norm_bias = arr - arr[0]
             ax.plot(epochs, norm_bias, alpha=0.25, **kwargs)
-            ax.set(ylabel="$\Delta$ Bias")
+            ax.set(ylabel=r"$\Delta$ Bias")
 
         case "rotation":
             # arr = dlu.rad2deg(arr)
@@ -573,23 +600,23 @@ def _plot_param(ax, arr, param, start=0, end=-1, x_scale=1, **kwargs):
             norm_arr = arr - arr[0]
             norm_arr *= 1e2
             ax.plot(epochs, norm_arr, **kwargs)
-            ax.set(ylabel="$\Delta$ translation (cm)")
+            ax.set(ylabel=r"$\Delta$ translation (cm)")
 
         case "holes":
             norm_arr = arr - arr[0]
             norm_arr *= 1e2
             ax.plot(epochs, norm_arr, **kwargs)
-            ax.set(ylabel="$\Delta$ Hole position (cm)")
+            ax.set(ylabel=r"$\Delta$ Hole position (cm)")
 
         case "dark_current":
             norm_arr = arr - arr[0]
             ax.plot(epochs, norm_arr, **kwargs)
-            ax.set(ylabel="$\Delta$ Dark Current")
+            ax.set(ylabel=r"$\Delta$ Dark Current")
 
         case "defocus":
             norm_arr = arr - arr[0]
             ax.plot(epochs, norm_arr, **kwargs)
-            ax.set(ylabel="$\Delta$ Defocus")
+            ax.set(ylabel=r"$\Delta$ Defocus")
 
         case "jitter.r":
             ax.plot(epochs, 1e3 * arr, **kwargs)
@@ -598,12 +625,12 @@ def _plot_param(ax, arr, param, start=0, end=-1, x_scale=1, **kwargs):
         case "amplitudes":
             norm_amplitudes = arr - arr[0]
             ax.plot(epochs, norm_amplitudes, **kwargs)
-            ax.set(ylabel="$\Delta$ Visibility Amplitude")
+            ax.set(ylabel=r"$\Delta$ Visibility Amplitude")
 
         case "phases":
             norm_phases = dlu.rad2deg(arr - arr[0])
             ax.plot(epochs, norm_phases, **kwargs)
-            ax.set(ylabel="$\Delta$ Visibility Phase (deg)")
+            ax.set(ylabel=r"$\Delta$ Visibility Phase (deg)")
 
         case "separations":
             ax.plot(epochs, arr, **kwargs)
@@ -620,12 +647,12 @@ def _plot_param(ax, arr, param, start=0, end=-1, x_scale=1, **kwargs):
         case "EDM.conv.values":
             norm_weights = arr - arr[0]
             ax.plot(epochs, norm_weights, **kwargs)
-            ax.set(ylabel="$\Delta$ Convolutional Values")
+            ax.set(ylabel=r"$\Delta$ Convolutional Values")
 
         case "EDM.amplitude":
             norm_weights = arr - arr[0]
             ax.plot(epochs, norm_weights, **kwargs)
-            ax.set(ylabel="$\Delta$ Convolutional Output Amplitude")
+            ax.set(ylabel=r"$\Delta$ Convolutional Output Amplitude")
 
         case "log_dist":
 
@@ -645,4 +672,4 @@ def _plot_param(ax, arr, param, start=0, end=-1, x_scale=1, **kwargs):
         case _:
             # print(f"No formatting function for {param}")
             ax.plot(epochs, arr - arr[0], **kwargs)
-            ax.set(ylabel="$\Delta$ values")
+            ax.set(ylabel=r"$\Delta$ values")
