@@ -1,3 +1,5 @@
+import math
+
 import jax
 from jax import numpy as np, scipy as jsp
 import numpy as onp
@@ -164,6 +166,36 @@ def get_pos(file, box=5, return_centroid=False):
         return labels[best_idx], target
     else:
         return labels[best_idx]
+
+
+def primary_offset(header):
+    """The exposure's primary dither position as a label, e.g. "x-1p0y+1p0", or None.
+
+    XOFFSET and YOFFSET (arcsec, the commanded offset from the aperture's reference point)
+    are each rounded to the nearest 0.5". On tauron's 540 program calslopes (2026-11-26) the
+    primary positions are (0, 0), (-0.915, +0.924), (-1.829, -1.044), (+0.915, -1.121) and
+    (-1.831, +1.127), labelled x+0p0y+0p0, x-1p0y+1p0, x-2p0y-1p0, x+1p0y-1p0 and x-2p0y+1p0,
+    and every sub-pixel dither is within 0.04" of its primary, so it keeps the primary's label.
+    The closest any of them comes to a rounding boundary is -1.829, 0.079" from -1.75. The
+    decimal point is written "p" because the label goes into parameter keys (focus and
+    rotation), and model parameter paths are dot-separated ("defocus.01234_F380M_x+0p0y+0p0").
+
+    Not get_pos: it matches the star's centroid to four pixel positions, and labels both the
+    4-point pattern's (-0.915, +0.924) and the 2-point pattern's (-1.831, +1.127) "POS2",
+    though the two sit at different detector positions (OzSTAR, 2026-11-26: the rotation
+    differs by ~0.012 deg between primary positions). Not PATTTYPE/NUMDTHPT/PATT_NUM either:
+    GO 8330's 10-point pattern is 2 primary x 5 sub-pixel positions, and some 1093 exposures
+    with no pattern (NONE, 1, 1) sit at (-0.915, +0.924).
+
+    None when the header has no XOFFSET or YOFFSET (JWST writes both for every AMI exposure;
+    flats, darks and synthetic files may not), so that keying by position fails loudly
+    instead of putting such an exposure at (0, 0).
+    """
+    if header.get("XOFFSET") is None or header.get("YOFFSET") is None:
+        return None
+    # floor(2v + 1/2) / 2 rounds to the nearest 0.5 (halves up); + 0.0 turns -0.0 into 0.0
+    x, y = (math.floor(2 * float(header[k]) + 0.5) / 2 + 0.0 for k in ("XOFFSET", "YOFFSET"))
+    return f"x{x:+.1f}y{y:+.1f}".replace(".", "p")
 
 
 def full_to_SUB80(full_arr, npix_out=80, fill=0.0):

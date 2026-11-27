@@ -11,7 +11,7 @@ from jax import lax, vmap
 
 # import pkg_resources as pkg
 from importlib import resources
-from .misc import find_position, get_pos, gen_surface, spectral_weights
+from .misc import find_position, get_pos, gen_surface, primary_offset, spectral_weights
 from .ramp_models import Ramp
 from .optical_models import gen_powers
 from .opd import apply_opds
@@ -77,6 +77,13 @@ class Exposure(zdx.Base):
     # The calibrator epoch whose Fourier wavefront set this exposure uses, when an instrument
     # record has several (amigo.files.assign_fourier_epochs); None until assigned.
     fourier_epoch: str | None = eqx.field(default=None, kw_only=True, static=True)
+    # The pupil wheel's reported angle (PWCPOS, deg; None without one) and the primary dither
+    # position (amigo.misc.primary_offset): both set where the exposure sits on the detector
+    pwcpos: float | None = eqx.field(default=None, kw_only=True, static=True)
+    primary_offset: str | None = eqx.field(default=None, kw_only=True, static=True)
+    # Degrees added to the fitted rotation this exposure reads (rotation()), held fixed: e.g.
+    # amigo-pipeline's -(PWCPOS - its calibrators' mean PWCPOS). 0 unless set.
+    rotation_offset: float = eqx.field(default=0.0, kw_only=True, static=True)
 
     def __init__(self, file):
         # Display geometry only: retain the FITS tangent-plane Jacobian, including
@@ -128,6 +135,9 @@ class Exposure(zdx.Base):
         self.visit = file[0].header["VISITGRP"]
         self.dither = file[0].header["EXPOSURE"]
         self.POS = get_pos(file)
+        self.pwcpos = None if header.get("PWCPOS") is None else float(header["PWCPOS"])
+        self.primary_offset = primary_offset(header)
+        self.rotation_offset = 0.0
         self.calibrator = bool(file[0].header["IS_PSF"])
         self.filename = "_".join(file[0].header["FILENAME"].split("_")[:4])
 
@@ -213,6 +223,10 @@ class Exposure(zdx.Base):
     @property
     def key(self):
         return "_".join([self.program, self.observation, self.act_id, self.visit, self.dither])
+
+    def rotation(self, model):
+        """This exposure's rotation (deg): the fitted one it reads, plus its fixed offset."""
+        return model.rotations[self.get_key("rotations")] + self.rotation_offset
 
     def to_vec(self, image):
         return image[..., *self.support].T
@@ -462,7 +476,7 @@ class ModelFit(Exposure):
         # The detector's resampler turns the whole image about the array centre (model_illuminance),
         # but the mask turns the pattern about the star, not the star: so turn the star back by the
         # same angle first, which also keeps the rotation from pulling on the fitted position.
-        angle = dlu.deg2rad(model.rotations[self.get_key("rotations")])
+        angle = dlu.deg2rad(self.rotation(model))
         x, y = model.positions[self.key]
         c, s = np.cos(angle), np.sin(angle)
         pos = dlu.arcsec2rad(np.array([c * x + s * y, -s * x + c * y]))
@@ -481,9 +495,7 @@ class ModelFit(Exposure):
         # This exposure's rotation, on top of the detector's (the NRM sits in the pupil wheel, which
         # does not come back to exactly the same angle between visits), and its filter's blur
         # (mostly charge diffusion, which depends on how deep the photons are absorbed)
-        detector = model.detector.add(
-            "layers.resampler.rotation", model.rotations[self.get_key("rotations")]
-        )
+        detector = model.detector.add("layers.resampler.rotation", self.rotation(model))
         detector = detector.set("layers.convolution.sigma", model.sigmas[self.get_key("sigmas")])
         psf = detector(psf, return_psf=True)
         return psf.multiply("data", flux)
